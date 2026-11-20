@@ -411,7 +411,7 @@ params {
   4. Role authorization (`unauthorized`)
   5. Payload decoding (`malformed`)
   6. Exposure queue capacity (`full` when `bound` is reached under `on_full: refuse`)
-- **Per-Receiver Serialization**: Transports read and write connections concurrently, but an exposure dispatches at most one call at a time to each receiver instance in FIFO order. Calls targeting different receiver instances run concurrently. If a receiver is draining, restarting, or replaced, calls to that receiver return `unavailable` while other receivers on the exposure continue serving.
+- **Per-Receiver Serialization**: Transports read and write connections concurrently, but an exposure dispatches at most one call at a time to each receiver instance in FIFO order. Calls targeting different receiver instances run concurrently. If a receiver is draining, restarting, or replaced, calls to that receiver return `unavailable` while other receivers on the exposure continue serving. When a receiver fails, every call it had been handed or had queued and not started is answered `unavailable` too, the call it failed in gets the server error, and none of them runs later: not even when its supervisor restarts it, since they were accepted under the incarnation that failed. Calls that arrive after the restart are served.
 - **The `http::Rest` fallback is not a receiver**: its requests are never queued or dispatched one at a time. Each connection calls the fallback handler on its own coroutine, as `std::http::Server` does, so long streams through the fallback run concurrently (see the `fallback:` rules below).
 
 ### Listener Placement and Child Server Loci
@@ -796,7 +796,7 @@ A transport refusal rejects a request before the handler runs:
 | `unauthorized` | `403` | `PERMISSION_DENIED` | Authenticated caller does not hold a role listed in the row's `requires:` (includes `"requires": [...]`). |
 | `digest_mismatch` | `409` | `FAILED_PRECONDITION` | Client's ` digest` matches neither the surface digest nor the member's digest (includes `"served": "<digest>"`). |
 | `full` | `429` | `RESOURCE_EXHAUSTED` | Exposure has reached its `bound` of in-flight requests under `on_full: refuse`. |
-| `unavailable` | `503` | `UNAVAILABLE` | Target receiver is draining, restarting, or replaced. |
+| `unavailable` | `503` | `UNAVAILABLE` | Target receiver is draining, restarting, replaced, or stopped after a failure; the call did not run. |
 | `shutting_down` | `503` | `UNAVAILABLE` | Exposure is stopping (`stop()` called); queued request did not run. |
 
 ### Caller Context (`std::api::Context`)

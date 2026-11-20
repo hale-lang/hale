@@ -133,6 +133,29 @@ fn build() -> PathBuf {
     .clone()
 }
 
+/// The program with `Orders::place` holding its pool's thread for 1.5 s
+/// before its check when the symbol is `BUSY` (GH #2098), built once per
+/// process.
+fn build_busy() -> PathBuf {
+    static BIN: OnceLock<PathBuf> = OnceLock::new();
+    BIN.get_or_init(|| {
+        let s = swap(
+            &witness_whole(),
+            "        if o.qty > 10000 { violate position_limit; }\n",
+            "        if o.symbol == \"BUSY\" { spin_for(1500); }\n        if o.qty > 10000 { violate position_limit; }\n",
+        );
+        let s = swap(
+            &s,
+            "fn written(path: String) -> Bool {",
+            "@unbounded\nfn spin_for(ms: Int) {\n    let until = std::time::monotonic_ns() + ms * 1000000;\n    let mut now = std::time::monotonic_ns();\n    while now < until { now = std::time::monotonic_ns(); }\n}\n\nfn written(path: String) -> Bool {",
+        );
+        let bin = harness::unique_bin("api_witness_whole_busy");
+        build_opts::build_source(&s, &bin, &build_opts::options()).expect("build the contract's program, busy");
+        bin
+    })
+    .clone()
+}
+
 const PUBLIC_DIGEST: &str = "fnv1a64:a8930d6e7998e986";
 const ADMIN_DIGEST: &str = "fnv1a64:40381db6685c9f75";
 
@@ -532,6 +555,75 @@ fn the_contracts_program_serves_its_rpc_and_stream_halves_in_one_run() {
     assert!(matches!(dave.recv_within(5000), Frame::Close(_)));
     assert_eq!(dave.recv_within(5000), Frame::Eof);
     assert!(std::net::TcpStream::connect(hub).is_err(), "the hub's address is released");
+}
+
+#[test]
+#[cfg_attr(not(target_os = "linux"), ignore = "binds 127.0.0.2 and up: macOS's loopback carries only 127.0.0.1")]
+fn calls_queued_for_a_receiver_that_fails_are_answered_on_every_transport() {
+    // GH #2098: public's `Orders` is bound to five exposures. A call over
+    // HTTP holds the receiver's pool's thread, then fails; meanwhile a second
+    // HTTP call queues behind it in public's exposure, and each other
+    // exposure hands the receiver a call of its own, which queues on the pool
+    // behind the failing one. The failure stops the receiver, so those cells
+    // are dropped unrun: each caller is answered `unavailable`, in its
+    // transport's words, instead of waiting for ever.
+    let w = start(&build_busy(), &[]);
+    let public = w.server.port.addr();
+    let mut dave = Ws::connect(w.hub, Some("t-dave"));
+    dave.subscribe("Fills");
+    assert_eq!(dave.text(), "{\"type\":\"subscribed\",\"topic\":\"Fills\"}");
+
+    let failing = std::thread::spawn(move || {
+        request(
+            public,
+            "POST",
+            "/call/Orders::place",
+            &[bearer("t-alice"), h("Hale-Surface-Digest", PUBLIC_DIGEST)],
+            Some("{\"symbol\":\"BUSY\",\"qty\":50000,\"limit\":12500}"),
+        )
+    });
+    // the failing call holds the thread for 1.5 s; everything below reaches
+    // the receiver well inside it
+    std::thread::sleep(Duration::from_millis(300));
+    let queued = std::thread::spawn(move || place(public, "t-alice"));
+    let sock = w.server.sock();
+    let admin = std::thread::spawn(move || {
+        unix_ask(&sock, &format!("{{\"call\":\"Orders::cancel\",\"payload\":{{\"order\":41}},\"id\":\"q-1\",\"digest\":\"{ADMIN_DIGEST}\"}}"))
+    });
+    let mcp = w.mcp;
+    let agent = std::thread::spawn(move || {
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"Orders__place","arguments":{{"symbol":"ACME","qty":10,"limit":12500}},"_meta":{{"hale/digest":"{PUBLIC_DIGEST}"}}}}}}"#
+        );
+        request(mcp, "POST", "/mcp", &[h("Content-Type", "application/json"), bearer("t-alice")], Some(&body))
+    });
+    let grpc = w.grpc;
+    let wire = std::thread::spawn(move || {
+        let mut g = super::api_grpc::h2_client::Client::connect_at(grpc);
+        super::api_grpc::unary(&mut g, 1, "/Public/Orders.place", Some("t-alice"), "{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}")
+    });
+    dave.send_text("{\"type\":\"call\",\"id\":\"q-2\",\"call\":\"Orders::place\",\"payload\":{\"symbol\":\"ACME\",\"qty\":10,\"limit\":12500}}");
+
+    let failed = failing.join().expect("the failing call");
+    assert_eq!((failed.status, failed.body.as_str()), (500, "{\"refusal\":{\"kind\":\"server\"}}"));
+    let queued = queued.join().expect("the call queued behind it");
+    assert_eq!(queued.status, 503, "{}", queued.body);
+    assert_eq!(queued.body, "{\"refusal\":{\"kind\":\"unavailable\",\"reason\":\"the receiver of Orders::place is unavailable; the call did not run\"}}");
+    let line = admin.join().expect("the Unix call");
+    assert!(line.contains("\"id\":\"q-1\",\"ok\":false,\"refusal\":{\"kind\":\"unavailable\""), "{line}");
+    let agent = agent.join().expect("the MCP call");
+    assert_eq!(agent.status, 200, "{}", agent.body);
+    assert!(agent.body.contains(r#""id":1,"error":{"code":-32008,"message":"unavailable""#), "{}", agent.body);
+    let wire = wire.join().expect("the gRPC call");
+    assert_eq!(wire.header("grpc-status"), Some("14"), "{wire:?}");
+    let reply = dave.text();
+    assert!(reply.contains("\"id\":\"q-2\",\"ok\":false,\"refusal\":{\"kind\":\"unavailable\""), "{reply}");
+    // none of them ran: no order was placed, so nothing was offered to the stream
+    dave.silence(200);
+
+    let done = w.server.finish();
+    assert!(done.status.success(), "{:?}\n{}\n{}", done.status, done.stdout, done.stderr);
+    assert!(done.stdout.contains("orders_failed=1"), "the failure reached its owner's on_failure once:\n{}", done.stdout);
 }
 
 #[test]

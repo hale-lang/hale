@@ -674,7 +674,7 @@ row	App@literal1	App	main	default
 row	~	Grow	main	default
 row	~.acc	Acc	main	inherited
 
-== crates/hale-stdlib/hl/api_rpc.hl#67370e32
+== crates/hale-stdlib/hl/api_rpc.hl#18ad8734
 
 == crates/hale-stdlib/hl/crypto.hl#31fcf297
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in the seed
@@ -8210,6 +8210,18 @@ row	App@literal1.far	Far	pool:far_pool	entry	off owner
 row	App@literal1.far_bad	FarBad	pool:bad_pool	entry	off owner
 row	App@literal1.near	Near	main	default
 row	App@literal1.near_bad	NearBad	main	default
+
+== tests/hale/api/queued_call_answered_test.hl
+root	App
+domain	pool:inline_pool	async_io
+domain	pool:held_pool	async_io
+domain	pool:back_pool	async_io
+domain	pool:gone_pool	async_io
+row	App@literal1	App	main	default
+row	App@literal1.back	Back	pool:back_pool	entry	off owner
+row	App@literal1.gone	Gone	pool:gone_pool	entry	off owner
+row	App@literal1.held	Held	pool:held_pool	entry	off owner
+row	App@literal1.inline	Inline	pool:inline_pool	entry	off owner
 
 == tests/hale/api/replace_test.hl
 root	App

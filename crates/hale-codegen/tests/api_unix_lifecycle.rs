@@ -471,10 +471,13 @@ fn a_receiver_violation_with_another_request_queued() {
     // receiver waits behind it in the exposure
     ops.send(&call("Ledger::boom", "{\"n\":150}", "v"));
     ops.send(&call("Ledger::stats", "{\"n\":0}", "q"));
-    let first = ops.line();
+    // the two answers in either order: the receiver announces its stop as
+    // it fails, which settles the queued call, before the failing call's
+    // server error, which comes after the owner's on_failure (GH #2098)
+    let (a, b) = (ops.line(), ops.line());
+    let (first, second) = if id_of(&a) == "v" { (a, b) } else { (b, a) };
     assert_eq!(id_of(&first), "v", "{first}");
     assert!(first.contains("\"refusal\":{\"kind\":\"server\"}"), "the violating call gets the server error: {first}");
-    let second = ops.line();
     assert_eq!((id_of(&second), refusal_kind(&second)), ("q".to_string(), "unavailable".to_string()), "the queued call did not run: {second}");
     assert!(second.contains("the call did not run"), "{second}");
 

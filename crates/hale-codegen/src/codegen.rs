@@ -9025,7 +9025,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // before a posted failure's handler has run.
                     self.builder.position_at_end(in_run_bb);
                     let kept_in_run = self.emit_failed_child_is_kept(&info, self_arg)?;
-                    self.emit_stop_kept_child(kept_in_run, self_arg)?;
+                    self.emit_stop_kept_child(&info, kept_in_run, self_arg)?;
                     self.builder
                         .build_unconditional_branch(ret_bb)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -9062,7 +9062,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.builder.position_at_end(end_bb);
                 }
                 let kept = self.emit_failed_child_is_kept(&info, self_arg)?;
-                self.emit_stop_kept_child(kept, self_arg)?;
+                self.emit_stop_kept_child(&info, kept, self_arg)?;
                 self.builder
                     .build_conditional_branch(kept, ret_bb, do_bb)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
@@ -9699,7 +9699,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // while an owner still holds it keeps its memory until that
             // owner's teardown — its field or binding still names it.
             let kept = self.emit_failed_child_is_kept(&info, self_arg)?;
-            self.emit_stop_kept_child(kept, self_arg)?;
+            self.emit_stop_kept_child(&info, kept, self_arg)?;
             let not_kept = self
                 .builder
                 .build_not(kept, &format!("{}.terminate.not_kept", locus_name))
@@ -20756,7 +20756,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // forever for an answer; GH #2091 made main quick enough
                 // to land in it). A restart puts the subscriptions back.
                 let kept_now = self.emit_failed_child_is_kept(&info, cs.self_ptr)?;
-                self.emit_stop_kept_child(kept_now, cs.self_ptr)?;
+                self.emit_stop_kept_child(&info, kept_now, cs.self_ptr)?;
 
                 // 2. Read parent_self + parent_on_failure.
                 let ps_ptr = self
@@ -35038,13 +35038,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .module
                 .get_function("lotus_bus_quarantine_self")
                 .expect("lotus_bus_quarantine_self declared in declare_builtins");
-            self.builder
+            let ended = self
+                .builder
                 .build_call(
                     unsub_fn,
                     &[child_ptr.into()],
                     "bus.quarantine.self.call",
                 )
-                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                .try_as_basic_value()
+                .left()
+                .expect("lotus_bus_quarantine_self returns i32")
+                .into_int_value();
+            // GH #2098: a child quarantined while it was live (one its
+            // failure did not already stop) says so to whoever handed
+            // it work, as a stop does.
+            self.emit_on_stop_hook(info, ended, child_ptr)?;
         }
         // m46: zero each closure's accumulators unless its
         // `persists_through(...)` clause names `quarantine`.

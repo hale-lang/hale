@@ -2029,10 +2029,35 @@ the call it failed in is answered with the server error, so the next
 call handed to it finds no subscriber however soon it comes (until
 GH #2091 the stop came as the failing handler returned, and a call
 handed over in between was dropped at the stop, never answered).
+
+**Every call accepted is answered when its receiver fails.** A call
+handed to the receiver before it failed and not yet started, queued
+behind the work it failed in (its `run()`, or another exposure's call),
+is dropped unrun at the stop, as every cell queued for a stopped child
+is. So the stop is announced as a `dissolve()` is: the receiver tells
+each exposure bound to it that its incarnation is gone, right where it
+stops, and each exposure settles the call it handed that incarnation
+and had not heard start, and every call queued behind it, `unavailable`.
+A `quarantine(c)` that ends a receiver still live (one its failure did
+not stop) announces the same. The call the receiver was executing keeps
+its place and is answered as it ends: the server error when it is the
+call that failed. Until GH #2098 nothing told the exposure, and those
+calls, with every call queued behind them, were never answered.
+
+A restart does not take them back. They were accepted under the
+incarnation that failed, and the restart's `birth()` is the next one:
+still queued, they are `unavailable` (a call accepted under one
+generation never executes under the next), and a cell of theirs that
+the restarted receiver is delivered carries the old stamp and is
+refused. Calls admitted once the restart has announced itself are the
+new generation's, and are served.
+
 A receiver whose stamp the exposure
 has not yet learned (it was born before the exposure, or has not
 answered) is asked, and its calls wait queued until it answers or the
-bus reports no subscriber to ask. A receiver found unavailable is asked
+bus reports no subscriber to ask; an incarnation that goes while the
+exposure is asking may take the question with it, so the exposure asks
+again. A receiver found unavailable is asked
 again when the next request for it arrives, since it may be back (a
 `restart(c)` lowers a failure's drain request and runs no `birth()`, so
 nothing is announced); one that answers is a new generation, which
@@ -2040,12 +2065,13 @@ calls accepted before it do not enter. An announcement of an incarnation
 the exposure already knows changes nothing, and the departure of an
 incarnation a successor has already replaced is news to nobody.
 
-One cell the exposure cannot take back: a call already handed to a
-receiver (executing, § The runtime boundaries, dispatch) when another
-exposure's call makes it fail. Two exposures bound to one instance each
-hand it a call; the runtime has no primitive that withdraws a queued
-cell, so the second runs if the failing receiver's pool still delivers
-it, and is answered as it ends (R2b may narrow the window).
+Two exposures bound to one instance each hand it a call, and the first
+makes it fail. The runtime has no primitive that withdraws a queued
+cell, but the receiver stops as it fails: the second call, queued
+behind the first, is dropped unrun and answered `unavailable` by the
+stop's announcement. Only a call the receiver had already started (a
+handler that yielded, § The runtime boundaries, dispatch) runs on and
+is answered as it ends.
 
 The instance bound is addressed by the number the serve site gives it,
 which the compiler writes into every literal that builds the field's

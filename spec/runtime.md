@@ -3006,7 +3006,14 @@ its `KNOWN_OPEN` table, which is empty today.
   cell is delivered only when the incarnation now at its address is
   live and is the cell's (`l19_reused_address_queued_cell.hl`, R33).
   A stopped failed child keeps its generation, so a restart delivers
-  what was queued before the stop. A cell built for no registration (a
+  what was queued before the stop and is still queued. The runtime
+  says whether a stop or a quarantine ended a live incarnation, and on
+  the first that did the compiler calls the locus's `__on_stop`, when
+  it has one: a `std::api` receiver's tells its exposures that the
+  incarnation is gone, so the calls whose cells the stop will drop are
+  answered (spec/api.md § Receiver failure and generations, GH #2098);
+  a restarted receiver refuses a call cell of the incarnation before.
+  A cell built for no registration (a
   run, a posted failure) is checked by its address's state only.
   Before the
   hold, replacing the child while its handler ran freed the storage

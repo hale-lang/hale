@@ -2104,7 +2104,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // declare void @lotus_bus_dispatch(ptr queue, ptr subject,
         //                                  ptr struct_payload, i64 struct_size,
         //                                  ptr serialize_fn)
-        // declare void @lotus_bus_quarantine_self(ptr self)
+        // declare i32 @lotus_bus_quarantine_self(ptr self)
         // declare void @lotus_bus_router_destroy()
         // m60: lotus_bus_register grows a 5th arg, the per-subject
         // deserialize fn ptr. The reader thread (m59) needs it to
@@ -2505,14 +2505,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 f.add_attribute(AttributeLoc::Function, willreturn);
             }
         }
-        let bus_quarantine_ty = void_t.fn_type(&[ptr_t.into()], false);
+        // Both return 1 when they ended a live incarnation, which the
+        // locus's `__on_stop` is then told (GH #2098).
+        // declare i32 @lotus_bus_quarantine_self(ptr self)
+        let bus_quarantine_ty = self.context.i32_type().fn_type(&[ptr_t.into()], false);
         self.module.add_function(
             "lotus_bus_quarantine_self",
             bus_quarantine_ty,
             None,
         );
         // A failed child's stop, which a restart undoes (GH #1069):
-        // declare void @lotus_bus_stop_failed_self(ptr self)
+        // declare i32 @lotus_bus_stop_failed_self(ptr self)
         // declare void @lotus_bus_restart_self(ptr self)
         self.module.add_function(
             "lotus_bus_stop_failed_self",
@@ -2521,7 +2524,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         );
         self.module.add_function(
             "lotus_bus_restart_self",
-            bus_quarantine_ty,
+            void_t.fn_type(&[ptr_t.into()], false),
             None,
         );
         let bus_router_destroy_ty = void_t.fn_type(&[], false);

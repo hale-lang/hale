@@ -204,7 +204,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
         self.builder.position_at_end(stop_bb);
         let kept = self.emit_failed_child_is_kept(info, self_ptr)?;
-        self.emit_stop_kept_child(kept, self_ptr)?;
+        self.emit_stop_kept_child(info, kept, self_ptr)?;
         self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
         self.builder.position_at_end(cont_bb);
         Ok(())
@@ -390,6 +390,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// (`lotus_bus_restart_self` in `__restart_<L>`).
     pub(crate) fn emit_stop_kept_child(
         &mut self,
+        info: &LocusInfo<'ctx>,
         kept: IntValue<'ctx>,
         self_ptr: PointerValue<'ctx>,
     ) -> Result<(), CodegenError> {
@@ -410,9 +411,62 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .module
             .get_function("lotus_bus_stop_failed_self")
             .expect("lotus_bus_stop_failed_self declared");
-        self.builder.build_call(unsub, &[self_ptr.into()], "kept.unsubscribe").map_err(e)?;
+        let ended = self
+            .builder
+            .build_call(unsub, &[self_ptr.into()], "kept.unsubscribe")
+            .map_err(e)?
+            .try_as_basic_value()
+            .left()
+            .expect("lotus_bus_stop_failed_self returns i32")
+            .into_int_value();
+        self.emit_on_stop_hook(info, ended, self_ptr)?;
         self.builder.build_unconditional_branch(cont_bb).map_err(e)?;
         self.builder.position_at_end(cont_bb);
+        Ok(())
+    }
+
+    /// GH #2098: a locus that declares `__on_stop` (a `std::api`
+    /// receiver's plumbing, spec/api.md § Receiver failure and
+    /// generations) is told when a stop or a quarantine has just ended
+    /// its live incarnation — `ended`, the runtime's answer, is 1 only
+    /// for the first of them, so a wrapper's repeat of the stop, or a
+    /// quarantine of a child already stopped, tells it nothing. From
+    /// here the cells still queued for it are dropped unrun at
+    /// materialization, so whoever handed it one hears it now, not
+    /// never.
+    pub(crate) fn emit_on_stop_hook(
+        &mut self,
+        info: &LocusInfo<'ctx>,
+        ended: IntValue<'ctx>,
+        self_ptr: PointerValue<'ctx>,
+    ) -> Result<(), CodegenError> {
+        let Some(hook) = info.user_methods.get("__on_stop").copied() else {
+            return Ok(());
+        };
+        if hook.count_params() != 1 {
+            return Err(CodegenError::Unsupported(
+                "`__on_stop` takes no parameter but `self`".to_string(),
+            ));
+        }
+        let e = |e: inkwell::builder::BuilderError| CodegenError::LlvmEmit(e.to_string());
+        let func = self
+            .builder
+            .get_insert_block()
+            .and_then(|bb| bb.get_parent())
+            .expect("inside a function");
+        let tell_bb = self.context.append_basic_block(func, "stopped.tell");
+        let done_bb = self.context.append_basic_block(func, "stopped.told");
+        let was_live = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, ended, ended.get_type().const_zero(), "stopped.was_live")
+            .map_err(e)?;
+        self.builder.build_conditional_branch(was_live, tell_bb, done_bb).map_err(e)?;
+        self.builder.position_at_end(tell_bb);
+        // a call to a user fn needs a location where the caller has debug info
+        self.di_ensure_synthetic_loc(func);
+        self.builder.build_call(hook, &[self_ptr.into()], "stopped.on_stop").map_err(e)?;
+        self.builder.build_unconditional_branch(done_bb).map_err(e)?;
+        self.builder.position_at_end(done_bb);
         Ok(())
     }
 
