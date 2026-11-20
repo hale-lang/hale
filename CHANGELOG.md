@@ -8,6 +8,23 @@ behavior.
 
 ## Unreleased
 
+## v0.36.3 — main's loops let go (2026-11-20)
+
+This patch makes a loop in `fn main`, or in a free function, free what each iteration makes when the iteration ends, as a loop in a locus method has done since #1765. Before, a main loop kept every iteration's values, and the records a helper returned into it, until `main` returned. Nothing a correct program means changes: values that leave the iteration (assigned to an outer binding, stored on a locus, pushed into an outer list, published, returned) are kept as before.
+
+- **Memory:** 20,000 rounds of a helper building and summarizing records held 299 MB, 200,000 `to_json` encodes held 35 MB, and 500,000 `@display` renders held 65 MB. Each now stays at about 4.5 MB.
+- **Speed:** those loops also run 10 to 33% faster. A loop that keeps nothing in its iteration opens no arena, so it costs nothing extra and still vectorizes (#2104, GH #2094).
+
+### Breaking
+
+None.
+
+The item-level notes follow.
+
+### Fixed
+
+- A loop in `fn main` or in a free function now frees what each iteration makes when the iteration ends, as a loop in a locus method has since #1765. Before, a main loop kept every iteration's values, and the records a helper returned into it, until `main` returned. 20,000 rounds of a helper building and summarizing records held 299 MB, 200,000 `to_json` encodes 35 MB and 500,000 `@display` renders 65 MB; each now stays at 4.5 MB and runs 10 to 33% faster. The same rule decides which loops qualify: a body that assigns a binding declared before the loop (other than a scalar or a locus reference), hands a call storage from outside it, or makes a locus keeps its values as before. A loop that keeps nothing in its iteration still pays nothing: only scalar work, calls of functions that allocate nothing, calls of locus methods returning nothing or a scalar, or `v.get(j) or raise` (GH #2094).
+
 ## v0.36.2 — every call answered, every copy whole (2026-11-20)
 
 This patch fixes two bugs that came up while reviewing v0.36.1. Neither changes what a correct program means.
