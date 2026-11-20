@@ -35,8 +35,10 @@
 //!   its receiver (the callee may write one argument into another), and
 //!   its result reaches what its arguments do. A binding given a value
 //!   that reaches the field, or a binding already found, is found too
-//!   (to a fixpoint). What only reads (`len`, `count`, `println`, a
-//!   comparison) carries nothing; a `return`, a `fail` and a send copy.
+//!   (to a fixpoint). What only reads and answers a scalar (`len`,
+//!   `count`, `println`, a comparison) carries nothing; `to_string` is not
+//!   one, as a `String`'s is the `String` itself. A `return`, a `fail` and
+//!   a send copy.
 //! - **The local.** If a value reaching the field (or a found binding) is
 //!   stored into `q` anywhere but under the field, or `q` is handed whole
 //!   to a call, `q` itself may hold a block of a copy: no store into that
@@ -134,13 +136,17 @@ fn overlaps(a: &[String], b: &[String]) -> bool {
     a[..n] == b[..n]
 }
 
-/// The builtins that only read their arguments and return what holds no
-/// block of them (a count, a flag, a fresh text).
+/// The builtins that only read their arguments and return a scalar or
+/// nothing (a count, a flag, a number), so their result holds no block of
+/// any argument. Nothing that returns text is here: `to_string` of a
+/// `String` is that `String` itself (GH #2107 review), and `min`/`max`
+/// may answer an argument; they and every other call carry what their
+/// arguments reach.
 fn reads_only(name: &str) -> bool {
     matches!(
         name,
-        "len" | "count" | "Int" | "Float" | "println" | "print" | "eprintln" | "eprint" | "to_string" | "contains"
-            | "starts_with" | "ends_with" | "abs" | "is_full" | "is_empty" | "capacity"
+        "len" | "count" | "Int" | "Float" | "println" | "print" | "eprintln" | "eprint" | "contains" | "starts_with"
+            | "ends_with" | "abs" | "is_full" | "is_empty" | "capacity"
     )
 }
 
@@ -421,7 +427,9 @@ impl Walk<'_> {
                 if let Some(t) = args.first().and_then(|a| self.place(a)) {
                     self.flows.push(Flow { sources, targets: vec![Target { binding: t.binding, path: t.path, whole_arg: false }] });
                 }
-                return Vec::new();
+                // A writer's result may be an element it took out (`pop`,
+                // `remove`) or handed back: it carries every argument.
+                return arg_sources.into_iter().flatten().collect();
             }
             _ => {}
         }
@@ -656,5 +664,18 @@ mod tests {
             fn f(r: Row) -> String { let mut q = Row { }; let mut o = Row { }; let mut i = 0;
             while i < 3 { q.tags = r.tags; let _ = count(q.tags, o); i = i + 1; } return o.label; }";
         assert_eq!(retiring(src, "f"), 0);
+    }
+
+    #[test]
+    fn a_string_kept_through_to_string_or_a_writers_result_holds_the_stores() {
+        // `to_string` of a String answers that String; `pop` the element
+        // it took out
+        for kept in ["to_string((at(q.tags, 0) or Tag { }).name)", "(pop(q.tags) or Tag { }).name"] {
+            let src = format!(
+                "fn f(r: Row) -> String {{ let mut q = Row {{ }}; let mut k = \"\"; let mut i = 0;
+                while i < 3 {{ q.tags = r.tags; k = {kept}; i = i + 1; }} return k; }}"
+            );
+            assert_eq!(retiring(&src, "f"), 0, "{kept}");
+        }
     }
 }

@@ -111,7 +111,10 @@ fn main() {
 /// String stored into another record (d) and into the local's own other
 /// field (e), a `for` over the list storing into it (f), the local pushed
 /// whole (g) and moved (h) into an outer list, the local handed whole to a
-/// callee (i), and a local declared in a body with an iteration arena (j).
+/// callee (i), a local declared in a body with an iteration arena (j), an
+/// element's String kept through `to_string`, which answers that String
+/// (k, the GH #2107 review's use-after-free), and through a slice,
+/// `std::str::trim` and an f-string (l).
 const CONTROLS: &str = r#"
 type Meta { note: String = ""; }
 type Tag { name: String = ""; meta: Meta = Meta { }; }
@@ -268,6 +271,43 @@ fn body_local(n: Int) -> Int {
     return total;
 }
 
+// k: an element's String kept through `to_string`, which returns it
+fn kept_to_string() -> String {
+    let r1 = source(11);
+    let r2 = source(12);
+    let mut q = Row { };
+    let mut kept = "";
+    let mut i = 0;
+    while i < 4 {
+        q.tags = if i % 2 == 0 { r1.tags } else { r2.tags };
+        if i == 0 { kept = to_string((at(q.tags, 0) or Tag { }).name); }
+        i = i + 1;
+    }
+    return kept;
+}
+
+// l: an element's String kept through a slice, `std::str::trim` and an f-string
+fn kept_views() -> String {
+    let r1 = source(13);
+    let r2 = source(14);
+    let mut q = Row { };
+    let mut a = "";
+    let mut b = "";
+    let mut c = "";
+    let mut i = 0;
+    while i < 4 {
+        q.tags = if i % 2 == 0 { r1.tags } else { r2.tags };
+        if i == 0 {
+            let e = at(q.tags, 0) or Tag { };
+            a = e.name[0..3];
+            b = std::str::trim(e.name);
+            c = f"{e.meta.note}";
+        }
+        i = i + 1;
+    }
+    return f"{a}/{b}/{c}";
+}
+
 fn main() {
     println("a ", alias_before());
     println("b ", pushed_live());
@@ -279,10 +319,12 @@ fn main() {
     println("h ", moved_out());
     println("i ", handed_whole());
     println("j ", body_local(100));
+    println("k ", kept_to_string());
+    println("l ", kept_views());
 }
 "#;
 
-const CONTROLS_OUT: &str = "a t1-0/n1-0\nb live-2 t2-1\nc n3-0\nd t4-2\ne n5-0\nf t6-0t6-1t6-2\ng n7-1\nh t8-2\ni t9-0\nj 500\n";
+const CONTROLS_OUT: &str = "a t1-0/n1-0\nb live-2 t2-1\nc n3-0\nd t4-2\ne n5-0\nf t6-0t6-1t6-2\ng n7-1\nh t8-2\ni t9-0\nj 500\nk t11-0\nl t13/t13-0/n13-0\n";
 
 fn run(name: &str, src: &str, asan: bool, env: &[(&str, &str)]) -> (String, String) {
     let bin = harness::unique_bin(&format!("local_field_retire_{name}_{asan}"));
@@ -360,6 +402,8 @@ fn only_the_stores_no_other_name_reaches_into_retire() {
         ("moved_out", 0),
         ("handed_whole", 0),
         ("body_local", 2),
+        ("kept_to_string", 0),
+        ("kept_views", 0),
     ] {
         assert_eq!(retiring(name), n, "`{name}`'s retiring stores");
     }
