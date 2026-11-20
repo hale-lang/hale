@@ -21,7 +21,7 @@
 
 use hale_graph::ids::SiteId;
 use hale_syntax::ast::{FnDecl, LocusDecl, TopDecl};
-use hale_syntax::Span;
+use hale_syntax::{Diag, Span};
 
 use crate::Bundle;
 
@@ -65,6 +65,67 @@ impl MainLocus {
     pub fn index_in(&self) -> Option<(usize, usize)> {
         Some((self.at.0.parse().ok()?, self.at.1))
     }
+
+    /// The name of the bundle program that holds it: a snapshot's
+    /// bundle names a program by its path.
+    pub fn program(&self) -> &str {
+        &self.at.0
+    }
+}
+
+/// The refusal of a seed whose own `main locus` nothing starts: the
+/// seed has no top-level `fn main` to instantiate it (`spec/semantics.md`
+/// § "The entry locus"). One wording, which the build rules beside the
+/// check report ([`unstarted_main_diags`]) and lowering keeps as its
+/// backstop.
+pub fn unstarted_main_message(locus: &str) -> String {
+    format!("a `main locus` is started by `fn main`, and this seed has none: add `fn main() {{ {locus} {{ }}; }}`")
+}
+
+/// GH #2108: [`unstarted_main_locus`]'s refusal, as the error a build
+/// rule reports (`crate::build_rule_diags`): `hale check`, the editor
+/// and every build path report it, at the locus's name.
+pub fn unstarted_main_diags(bundle: &Bundle<'_>, row: &EntryRow) -> Vec<Diag> {
+    unstarted_main_locus(bundle, row).map(|(decl, message)| Diag::ty(decl.name.span, message)).into_iter().collect()
+}
+
+/// GH #2108: the seed's own `main locus`, when nothing in the seed starts
+/// it, with where to report it (its name). A `main locus` does not start
+/// itself: the seed's top-level `fn main` instantiates it, and a seed
+/// that declares its own and no `fn main` has nothing to run, so `hale
+/// build`, `hale run` and `hale test` refuse it; `hale check` refuses it
+/// too, at the same name, so a seed the check accepts builds.
+///
+/// `None` when the seed has a `fn main` (the row's column), when its only
+/// `main locus` is imported (a library's, which the importer starts), and
+/// for the two programs whose entry is not their own `fn main`:
+///
+/// - an `@export` module, the wasm entry inversion's (an export-only
+///   module needs no `fn main`; a native target refuses the inversion
+///   itself, by the admission law); and
+/// - a `*_bench.hl` file, which must declare no `fn main`: `hale bench`
+///   appends the driver's.
+///
+/// With more than one own `main locus` (rule 1's error), the first in the
+/// bundle's order, as lowering names it.
+pub fn unstarted_main_locus<'b>(bundle: &Bundle<'b>, row: &EntryRow) -> Option<(&'b LocusDecl, String)> {
+    if row.fn_main.is_some() {
+        return None;
+    }
+    let exports = bundle.programs.values().flat_map(|p| p.items.iter()).any(|item| match item {
+        TopDecl::Fn(f) => f.export,
+        TopDecl::Locus(l) => l.export,
+        _ => false,
+    });
+    if exports {
+        return None;
+    }
+    let first = row.own().next()?;
+    if first.program().ends_with("_bench.hl") {
+        return None;
+    }
+    let decl = first.decl(bundle)?;
+    Some((decl, unstarted_main_message(&decl.name.name)))
 }
 
 /// The seed's `fn main`: the top-level one, the process's entry point.

@@ -190,6 +190,17 @@ fn borrow_diags(snap: &Snapshot) -> Vec<hale_syntax::Diag> {
     )
 }
 
+/// GH #2108: a seed whose own `main locus` nothing starts — no `fn main`
+/// — is refused at the locus's name, in the build's words: one of the
+/// rules a build refuses beside the check (`hale_types::build_rule_diags`),
+/// which `hale check` runs itself, as it runs the borrow rule.
+fn unstarted_main_diags(snap: &Snapshot) -> Vec<hale_syntax::Diag> {
+    match snap.demand_entry() {
+        Ok(entry) => hale_types::entry::unstarted_main_diags(&snap.bundle(), entry),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Where `span` is for `hale check --units`: its file relative to the
 /// directory checked, its line and column, and its text on one line. A
 /// file outside that directory — a sibling seed imported as
@@ -512,6 +523,7 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
         };
         checked_err
             || borrow_diags(snap).iter().any(|d| d.is_error())
+            || unstarted_main_diags(snap).iter().any(|d| d.is_error())
             || strict_secret_diags().iter().any(|d| d.is_error())
     };
     let dump_manifest = std::env::args().any(|a| a == "--dump-effects-manifest");
@@ -1137,6 +1149,7 @@ pub(crate) fn check_loaded(target: &Path, gate_warnings: bool, snap: &Snapshot) 
     diags.extend(strict_secret_diags());
     // GH #730 / #1048: a borrow must outlive its holder.
     diags.extend(borrow_diags(snap));
+    diags.extend(unstarted_main_diags(snap));
     // #8 LSP groundwork (2026-07-02): `hale check --json` emits
     // NDJSON diagnostics on STDOUT (one object per line: file,
     // line, col, severity, kind, message) for editor/LSP

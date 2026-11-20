@@ -38,3 +38,7 @@ main locus Lodge {
         println("idle ", self.b.idle, " ", self.s.stamp(1));
     }
 }
+
+fn main() {
+    Lodge { };
+}

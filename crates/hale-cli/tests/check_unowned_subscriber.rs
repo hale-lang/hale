@@ -238,7 +238,7 @@ fn an_unspecialized_template_is_not_judged() {
 #[test]
 fn the_nearest_accepting_ancestor_owns_it() {
     let program = format!(
-        "{}main locus App {{\n    params {{ d: Disp = Disp {{ }}; }}\n    accept(c: Child) {{ }}\n    run() {{ }}\n}}\n",
+        "{}main locus App {{\n    params {{ d: Disp = Disp {{ }}; }}\n    accept(c: Child) {{ }}\n    run() {{ }}\n}}\nfn main() {{ App {{ }}; }}\n",
         handler_birth(CHILD, "", "Child { id: 1 };")
     );
     assert_owned("ancestor", &program, "an accepting ancestor owns the birth");

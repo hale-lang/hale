@@ -40,26 +40,25 @@ fn hale(args: &[&str]) -> (bool, String) {
 //
 // `spec/semantics.md` § "The entry locus": a seed's entry point is its
 // top-level `fn main`, or the `main locus` that one instantiates. A seed
-// that declares its own top-level `main locus` and no `fn main` checks
-// clean — an application another seed imports and starts is checked
-// alone that way — but cannot be built: nothing starts the locus. The
-// build said so with codegen's spanless `program has no `fn main()``; it
-// says so now at the `main locus`'s name, with the line to add.
+// that declares its own top-level `main locus` and no `fn main` has
+// nothing that starts the locus. The build said so with codegen's
+// spanless `program has no `fn main()``, then (2026-10-14) at the `main
+// locus`'s name with the line to add, while `hale check` accepted the
+// seed; since GH #2108 the check refuses it too, at the same name, in the
+// same words, so every verb gives one answer.
 
 const STARTS: &str = "a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`";
 
 /// The shape: a `main locus` and nothing that starts it.
 const MAIN_LOCUS_ONLY: &str = "main locus App {\n    run {\n        println(\"hi\");\n    }\n}\n";
 
-/// `check` accepts it (an importer may start it); `build` and `run`
-/// refuse it at the locus's name — line 1, column 12 is the `App` in
-/// `main locus App {` — not with the spanless codegen line.
+/// `check`, `build` and `run` refuse it at the locus's name — line 1,
+/// column 12 is the `App` in `main locus App {` — not with the spanless
+/// codegen line, and the check and the build say the same thing.
 #[test]
-fn build_and_run_refuse_a_main_locus_with_no_fn_main_at_its_name() {
+fn check_build_and_run_refuse_a_main_locus_with_no_fn_main_at_its_name() {
     let d = seed("main_locus_build", MAIN_LOCUS_ONLY);
-    let (ok, out) = hale(&["check", &d.to_string_lossy()]);
-    assert!(ok, "check accepts a library application seed:\n{out}");
-    for verb in ["build", "run"] {
+    for verb in ["check", "build", "run"] {
         let (ok, out) = hale(&[verb, &d.to_string_lossy()]);
         assert!(!ok, "{verb} must fail:\n{out}");
         assert!(out.contains(STARTS), "{verb} names the line to add:\n{out}");
@@ -69,6 +68,26 @@ fn build_and_run_refuse_a_main_locus_with_no_fn_main_at_its_name() {
             "{verb}: the spanless codegen refusal is what this replaces:\n{out}"
         );
     }
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+/// An application another seed imports is started by the importer's
+/// `fn main`: the importer checks and runs, and the imported seed, checked
+/// alone, is the program it is and is refused.
+#[test]
+fn an_imported_main_locus_is_started_by_the_importer() {
+    let d = seed(
+        "main_locus_imported",
+        "import \"./app\" as app;\n\nfn main() {\n    app::App { };\n}\n",
+    );
+    std::fs::create_dir_all(d.join("app")).expect("mkdir");
+    std::fs::write(d.join("app/app.hl"), MAIN_LOCUS_ONLY).expect("write");
+    for verb in ["check", "run"] {
+        let (ok, out) = hale(&[verb, &d.to_string_lossy()]);
+        assert!(ok, "{verb} of the importer must pass:\n{out}");
+    }
+    let (ok, out) = hale(&["check", &d.join("app").to_string_lossy()]);
+    assert!(!ok && out.contains(STARTS), "the application alone is refused:\n{out}");
     let _ = std::fs::remove_dir_all(&d);
 }
 

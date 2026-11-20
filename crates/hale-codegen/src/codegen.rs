@@ -9975,20 +9975,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // A seed's own top-level `main locus` is started by
                     // `fn main` (spec/semantics.md, "The entry locus"),
                     // so a build of one without it says so at the
-                    // locus's name, with the line to add. `hale check`
-                    // accepts the seed: an application another seed
-                    // imports and starts is checked alone that way.
+                    // locus's name, with the line to add. The build
+                    // rules beside the check refuse the same seed in
+                    // the same words (`hale_types::build_rule_diags`,
+                    // GH #2108), so `hale check` does too and a build
+                    // that gates lowering on the check stops there;
+                    // this is the backstop for a view that does not.
                     let main_locus = self.program.items.iter().find_map(|item| match item {
                         TopDecl::Locus(l) if l.is_main && !l.imported => Some(l),
                         _ => None,
                     });
                     if let Some(l) = main_locus {
                         return Err(CodegenError::UnsupportedAt(
-                            format!(
-                                "a `main locus` is started by `fn main`, and this seed has none: \
-                                 add `fn main() {{ {} {{ }}; }}`",
-                                l.name.name
-                            ),
+                            hale_types::entry::unstarted_main_message(&l.name.name),
                             l.name.span,
                         ));
                     }

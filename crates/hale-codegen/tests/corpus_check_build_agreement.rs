@@ -102,11 +102,11 @@ fn has_fn_main(program: &hale_syntax::ast::Program) -> bool {
 /// the divergences that hide in a library-shaped snippet are reached.
 ///
 /// That includes a library APPLICATION seed: a `main locus` with no
-/// `fn main`, which an importer starts and which checks clean alone.
-/// Built alone it is refused at the locus's name ("a `main locus` is
-/// started by `fn main` ..."), the build's located answer for a seed
-/// nothing starts, not a divergence; built as a library it reaches
-/// every declaration the same way.
+/// `fn main`, which an importer starts. Alone, `hale check` and the build
+/// refuse it at the locus's name ("a `main locus` is started by `fn main`
+/// ...", GH #2108), a build rule the check's own diagnostics, which the
+/// sweep compares, do not hold; built as a library it reaches every
+/// declaration the same way.
 ///
 /// A program that already has a `fn main` is returned untouched: a
 /// second one would be the harness inventing a compile error.
@@ -499,11 +499,12 @@ fn an_entry_point_less_program_is_built() {
 }
 
 /// A library application seed — a `main locus` with no `fn main`, which
-/// an importer starts — checks clean alone, and `hale build` of it alone
-/// is refused at the locus's name (`entry_point_placement`). The sweep
-/// builds it as the library it is, with the synthetic `fn main() { }`
-/// it gives every seed without one, so its declarations are lowered and
-/// its being unstarted is not counted as a divergence.
+/// an importer starts — passes the check's own rules, and `hale check`
+/// and `hale build` of it alone refuse it at the locus's name, by the
+/// build rule beside the check (GH #2108, `entry_point_placement`). The
+/// sweep builds it as the library it is, with the synthetic `fn main()
+/// { }` it gives every seed without one, so its declarations are lowered
+/// and its being unstarted is not counted as a divergence.
 ///
 /// Plain string literals, for the reason given above.
 #[test]
@@ -515,7 +516,18 @@ fn a_library_application_seed_is_built_as_a_library() {
     assert!(!has_fn_main(&program));
     let errors: Vec<String> =
         entries::check_program(&program).into_iter().filter(|d| d.is_error()).map(|d| d.message).collect();
-    assert!(errors.is_empty(), "it checks clean alone: {errors:?}");
+    assert!(errors.is_empty(), "the check's own rules pass it: {errors:?}");
+    let programs = std::iter::once(("main.hl".to_string(), &program)).collect();
+    let refused: Vec<String> = entries::check_bundle_for_build(&hale_types::Bundle::new(programs), false)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message)
+        .collect();
+    assert_eq!(
+        refused,
+        vec!["a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`".to_string()],
+        "alone, the build rule beside the check refuses it, as `hale check` does"
+    );
     assert_eq!(sweep_verdict(library, "hale_cb_library_application"), Verdict::Built);
 }
 

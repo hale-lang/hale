@@ -514,10 +514,10 @@ root	App
 row	App@literal1	App	main	default
 dynamic	Listener	on main	in the seed
 
-== crates/hale-cli/tests/fixtures/deploy/served/main.hl#1810ee8a
+== crates/hale-cli/tests/fixtures/deploy/served/main.hl#f5beb54f
 root	App
-row	App@entry	App	main	default
--- App@entry.counter	Counter
+row	App@literal1	App	main	default
+-- App@literal1.counter	Counter
 row	~	Counter	main	default
 row	~.log	__StdLogLogger	main	inherited
 
@@ -576,17 +576,17 @@ dynamic	<hole>	on main|unresolved declaration `chat::Participant`	in the seed
 == crates/hale-cli/tests/fixtures/imported-main-claims/app-missing-collision/main.hl#374b15e0
 row	Bystander@main1	Bystander	main	default
 
-== crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl#4e88ddcd
+== crates/hale-cli/tests/fixtures/imported-main-claims/seed/chat.hl#bc27edd2
 root	ChatServer
-row	ChatServer@entry	ChatServer	main	default
-row	ChatServer@entry.ada	Participant	main	default
-shared	ChatServer@entry.lobby	Room #1682ebfe
+row	ChatServer@literal1	ChatServer	main	default
+row	ChatServer@literal1.ada	Participant	main	default
+shared	ChatServer@literal1.lobby	Room #1682ebfe
 
-== crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl#addd1e6d
+== crates/hale-cli/tests/fixtures/imported-main-claims/seed-adopt/chat.hl#ce3fdefc
 root	ChatServer
-row	ChatServer@entry	ChatServer	main	default
-row	ChatServer@entry.ada	Participant	main	default
-shared	ChatServer@entry.lobby	Room #1682ebfe
+row	ChatServer@literal1	ChatServer	main	default
+row	ChatServer@literal1.ada	Participant	main	default
+shared	ChatServer@literal1.lobby	Room #1682ebfe
 
 == crates/hale-cli/tests/fixtures/p3-namespace-method-app/main.hl#3a047afc
 root	App
@@ -599,12 +599,12 @@ dynamic	<hole>	on main|unresolved declaration `mat::Grid`	in the seed
 row	Renderer@main1	Renderer	main	default
 dynamic	<hole>	on main|unresolved declaration `gfx::Rect`	in the seed
 
-== crates/hale-cli/tests/fixtures/requirements/api/main.hl#775e09c3
+== crates/hale-cli/tests/fixtures/requirements/api/main.hl#ab44db44
 root	App
-row	App@entry	App	main	default
+row	App@literal1	App	main	default
 dynamic	__StdSecretCredential	on main	in the seed
 dynamic	__StdBytesBytesBuilder	on main	in the stdlib
--- App@entry.api	Api
+-- App@literal1.api	Api
 row	~	Api	main	default
 row	~.forge	__StdSecretCredential	main	inherited
 row	~.signer	__StdSecretSigner	main	inherited

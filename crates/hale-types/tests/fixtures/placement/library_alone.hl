@@ -1,6 +1,8 @@
 // Case 14: a library seed checked alone. Its only `main locus` is the
 // root lowering deploys, and no literal builds it: with no `fn main`,
-// the root is its own entry, constructed once.
+// the root is its own entry, constructed once. (`hale check` and the
+// build refuse the seed itself, since nothing starts its `main locus`,
+// GH #2108; the table is the check's, which judges it all the same.)
 locus K { }
 
 locus Worker {
