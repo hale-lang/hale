@@ -4303,6 +4303,12 @@ row	IntVec@main1	IntVec	main	default
 == crates/hale-codegen/tests/loop_iteration_reclaim.rs#9029d920
 row	IntVec@main1	IntVec	main	default
 
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#7bbf6e14
+row	Driver@main4	Driver	main	default
+row	Keeper@main1	Keeper	main	default
+row	Names@main2	Names	main	default
+row	Reg@main3	Reg	main	default
+
 == crates/hale-codegen/tests/main_locus_deferred_pool_join.rs#ff751d39
 root	App
 domain	pool:side

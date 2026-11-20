@@ -1130,6 +1130,7 @@ crates/hale-codegen/tests/loop_iteration_reclaim.rs#10 d4275fdcef4d5b13
 crates/hale-codegen/tests/loop_iteration_reclaim.rs#11 baa9afd02dcdd3b8
 crates/hale-codegen/tests/loop_iteration_reclaim.rs#12 908864a717d3eaf4
 crates/hale-codegen/tests/loop_iteration_reclaim.rs#13 3396584b6da9799a
+crates/hale-codegen/tests/loop_iteration_reclaim.rs#14 edb312c90ab024b0
 crates/hale-codegen/tests/loop_iteration_reclaim.rs#2 0548d595eaedd5a1
 crates/hale-codegen/tests/loop_iteration_reclaim.rs#3 25eb3e78179713a3
 crates/hale-codegen/tests/loop_iteration_reclaim.rs#5 8dfb5a30c3a0d770

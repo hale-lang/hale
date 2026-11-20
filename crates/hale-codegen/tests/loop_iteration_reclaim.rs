@@ -1083,3 +1083,161 @@ fn main() {
     let main = &main[..main.find("\n}\n").unwrap_or(main.len())];
     assert_eq!(main.matches("call ptr @lotus_arena_iteration_enter(").count(), 0, "no loop of main keeps anything in its iteration");
 }
+
+/// A free fn's loops take iteration arenas owned by its per-call
+/// subregion, which its epilogue destroys after the copy-out (GH #2094).
+/// What each hands on survives, read after the fn returned: stores through
+/// a locus parameter (a method storing a String, a record holding a
+/// `bounded` list, a String pushed into a `@form(vec)`), a String and a
+/// record made in the iteration and returned from inside the loop, a
+/// failure made in it, a loop recursing into its own fn, and free fns
+/// called from a method's loop. Plainly and under AddressSanitizer with the
+/// chunk pool off; the IR test below holds every one of these loops to its
+/// iteration arena.
+const FREE_FN_HANDS_ON: &str = r#"
+type Tag { name: String = ""; }
+type Entry { name: String = ""; tags: bounded[Tag; 2]; }
+
+locus Keeper {
+    params { last: String = ""; n: Int = 0; }
+    fn keep(s: String) { self.last = s; self.n = self.n + 1; }
+}
+
+@form(vec)
+locus Names { capacity { heap cells of String; } }
+
+locus Reg {
+    params { last: Entry = Entry { }; n: Int = 0; }
+    fn add(e: Entry) { self.last = e; self.n = self.n + 1; }
+}
+
+fn feed(k: Keeper, names: Names, reg: Reg, n: Int) {
+    let mut i = 0;
+    while i < n {
+        k.keep(f"fed-{i}");
+        names.push(f"nm-{i}");
+        let mut e = Entry { name: f"e-{i}" };
+        push(e.tags, Tag { name: f"et-{i}" }) or discard;
+        reg.add(e);
+        i = i + 1;
+    }
+}
+
+fn find(n: Int) -> String {
+    let mut i = 0;
+    while i < 100 {
+        let s = f"found-{i}";
+        if i == n { return s; }
+        i = i + 1;
+    }
+    return "none";
+}
+
+fn find_entry(n: Int) -> Entry {
+    let mut i = 0;
+    while i < 100 {
+        let mut e = Entry { name: f"entry-{i}" };
+        push(e.tags, Tag { name: f"tag-{i}" }) or discard;
+        if i == n { return e; }
+        i = i + 1;
+    }
+    return Entry { };
+}
+
+fn shown(e: String) -> String { return "caught:" + e; }
+
+fn check(n: Int) -> String fallible(String) {
+    let mut i = 0;
+    while i < 100 {
+        let msg = f"bad-{i}";
+        if i == n { fail msg; }
+        i = i + 1;
+    }
+    return "passed";
+}
+
+fn depth(n: Int) -> Int {
+    if n == 0 { return 0; }
+    let mut i = 0;
+    let mut t = 0;
+    while i < 3 {
+        let s = f"d{n}-{i}";
+        t = t + len(s) + depth(n - 1);
+        i = i + 1;
+    }
+    return t;
+}
+
+fn sum_lens(n: Int) -> Int {
+    let mut i = 0;
+    let mut t = 0;
+    while i < n {
+        let s = f"piece-{i}";
+        t = t + len(s);
+        i = i + 1;
+    }
+    return t;
+}
+
+locus Driver {
+    params { got: String = ""; total: Int = 0; }
+    fn go(n: Int) {
+        let mut i = 0;
+        while i < n {
+            self.got = find(i % 7);
+            self.total = self.total + sum_lens(5);
+            i = i + 1;
+        }
+    }
+}
+
+fn main() {
+    let k = Keeper { };
+    let names = Names { };
+    let reg = Reg { };
+    feed(k, names, reg, 30);
+    println("fed ", k.last, " ", k.n, " ", names.len(), " ", names.get(29) or "?", " ", reg.last.name, " ", (at(reg.last.tags, 0) or Tag { }).name);
+    println(find(42));
+    let e = find_entry(17);
+    println(e.name, " ", (at(e.tags, 0) or Tag { }).name);
+    println(check(9) or shown(err));
+    println(check(500) or shown(err));
+    println("depth ", depth(4));
+    let d = Driver { };
+    d.go(20);
+    println("driver ", d.got, " ", d.total);
+}
+"#;
+
+#[test]
+fn what_a_free_fn_loop_hands_on_survives_it_under_asan() {
+    plain_and_asan(
+        "free_fn_hands_on",
+        FREE_FN_HANDS_ON,
+        &[
+            "fed fed-29 30 30 nm-29 e-29 et-29",
+            "found-42",
+            "entry-17 tag-17",
+            "caught:bad-9",
+            "passed",
+            "depth 480",
+            "driver found-5 700",
+        ],
+    );
+}
+
+#[test]
+fn a_free_fn_loop_takes_an_iteration_arena() {
+    let bin = harness::unique_bin("loop_iteration_reclaim_free_fn_ir");
+    let ir = harness::build_source_ir_text(FREE_FN_HANDS_ON, &bin).expect("build");
+    let _ = std::fs::remove_file(&bin);
+    for name in ["feed", "find", "find_entry", "check", "depth", "sum_lens"] {
+        let head = format!(" @{name}(");
+        let body = ir
+            .split("\ndefine ")
+            .find(|f| f.lines().next().is_some_and(|l| l.contains(&head)))
+            .unwrap_or_else(|| panic!("`{name}` in the IR"));
+        let body = &body[..body.find("\n}\n").unwrap_or(body.len())];
+        assert_eq!(body.matches("call ptr @lotus_arena_iteration_enter(").count(), 1, "`{name}`'s loop on an iteration arena");
+    }
+}
