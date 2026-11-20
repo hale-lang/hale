@@ -547,6 +547,13 @@ fn member(row: &Row, book: &mut Book<'_, '_>, base: &str) -> J {
     let Handled::Fn(h) = &row.handler else {
         return o(vec![("name", s(&row.member))]);
     };
+    // GH #2109: a request that is no record is one value, which a caller
+    // names by its parameter (`hale api call … --id 7`, the MCP form's
+    // wrapping key); a record's fields name themselves
+    let param = match h.request.as_ref().map(|t| book.type_ref(&t.te)) {
+        Some(FieldSchema::Ref(_)) | None => None,
+        Some(_) => Some(h.params.first().map_or("request", |p| p.0.as_str())),
+    };
     let sc = book.schemas;
     let mut ty = |t: Option<&crate::surfaces::RowTy>| match t {
         Some(t) => field_schema(&book.type_ref(&t.te), base, sc),
@@ -560,10 +567,15 @@ fn member(row: &Row, book: &mut Book<'_, '_>, base: &str) -> J {
         ("name", s(&row.member)),
         ("digest", s(&digest_text(row.member_digest()))),
         ("request", request),
+    ];
+    if let Some(p) = param {
+        pairs.push(("param", s(p)));
+    }
+    pairs.extend([
         ("response", response),
         ("error", error),
         ("requires", strs(row.requires.iter().map(|(r, _)| r.as_str()))),
-    ];
+    ]);
     if let Some(d) = &row.doc {
         pairs.push(("description", s(d)));
     }

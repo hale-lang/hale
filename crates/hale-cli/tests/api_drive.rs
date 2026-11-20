@@ -993,3 +993,208 @@ fn a_route_is_called_by_its_method_and_path() {
     assert_eq!(lines[1], "POST /v1/items HTTP/1.1 | {\"name\":\"x\"}", "{lines:?}");
     assert_eq!(lines.len(), 3, "the GET with a body sent nothing: {lines:?}");
 }
+
+// ---- GH #2109: a request that is one value ------------------------------------------
+
+/// A surface whose rows take one value of each kind the description carries,
+/// and two records, one with a field named like a parameter, served over
+/// `http::Rpc` and `unix::Rpc`. (A whole `Decimal` request does not build yet,
+/// so the record carries one.)
+const SCALARS: &str = r#"
+unit cent;
+type Money = quantity Int in cent;
+type OrderId = distinct Int;
+type Color = enum { Red, Green, Blue };
+type Pair { id: Int; n: Int; }
+type Quote { price: Decimal<2>; }
+
+api Intake {
+    rpc Svc::submit;
+    rpc Svc::ratio;
+    rpc Svc::flag;
+    rpc Svc::echo;
+    rpc Svc::stamp;
+    rpc Svc::wait;
+    rpc Svc::charge;
+    rpc Svc::order;
+    rpc Svc::paint;
+    rpc Svc::pair;
+    rpc Svc::quote;
+}
+
+locus Svc {
+    fn submit(id: Int) -> Int { return id + 1; }
+    fn ratio(x: Float) -> Float { return x * 2.0; }
+    fn flag(on: Bool) -> Bool { return !on; }
+    fn echo(text: String) -> String { return f"<{text}>"; }
+    fn stamp(at: Time) -> Time { return at; }
+    fn wait(d: Duration) -> Duration { return d + 1ns; }
+    fn charge(m: Money) -> Money { return m + 1cent; }
+    fn order(o: OrderId) -> OrderId { return o; }
+    fn paint(c: Color) -> Color { return c; }
+    fn pair(p: Pair) -> Int { return p.id * 100 + p.n; }
+    fn quote(q: Quote) -> String { return to_string(q.price); }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: token };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus App {
+    params {
+        bearer: Tokens = Tokens { };
+        svc: Svc = Svc { };
+        web: api::Exposure = api::serve(
+            Intake,
+            http::Rpc { bind: std::env::var("BIND"), codec: json, principals: self.bearer },
+            as: "web",
+            receivers: { Svc: self.svc },
+            bound: 16,
+            on_full: refuse
+        );
+        local: api::Exposure = api::serve(
+            Intake,
+            unix::Rpc { path: std::env::var("SOCK") },
+            as: "local",
+            receivers: { Svc: self.svc },
+            bound: 16,
+            on_full: refuse
+        );
+    }
+    run() {
+        std::api::run_until_stopped(self.web);
+        self.web.stop();
+        self.local.stop();
+    }
+}
+
+fn main() { App { }; }
+"#;
+
+/// [`SCALARS`], running; dropping it kills it.
+struct Scalars {
+    child: Child,
+    dir: PathBuf,
+    http: String,
+    unix: String,
+}
+
+impl Scalars {
+    fn start() -> Scalars {
+        static BIN: OnceLock<PathBuf> = OnceLock::new();
+        let bin = BIN.get_or_init(|| {
+            let dir = unique_dir("scalars_build");
+            let file = dir.join("main.hl");
+            std::fs::write(&file, SCALARS).expect("write the program");
+            let bin = dir.join("scalars");
+            let out = hale().arg("build").arg(&file).arg("-o").arg(&bin).output().expect("hale build");
+            assert!(out.status.success(), "build: {}", String::from_utf8_lossy(&out.stderr));
+            bin
+        });
+        let dir = unique_dir("scalars");
+        let sock = dir.join("s.sock");
+        let mut child = Command::new(bin)
+            .env("BIND", format!("{BIND_HOST}:0"))
+            .env("SOCK", &sock)
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("run the program");
+        let port = child::tcp_port_on(&mut child, BIND_HOST);
+        let start = Instant::now();
+        while !sock.exists() {
+            assert!(start.elapsed() < Duration::from_secs(30), "the Unix listener never came up");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Scalars { child, dir, http: format!("http://{BIND_HOST}:{port}"), unix: format!("unix:{}", sock.display()) }
+    }
+}
+
+impl Drop for Scalars {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn a_one_value_request_is_called_by_its_parameter_over_both_transports() {
+    let s = Scalars::start();
+    let d = run(&["api", "describe", &s.http, "--json", "--bearer", "t"]);
+    assert_eq!(d.code, 0, "{}", d.stderr);
+    let doc = json_of(&d.stdout);
+    let member = |n: &str| doc["members"].as_array().unwrap().iter().find(|m| m["name"] == n).unwrap().clone();
+    assert_eq!(member("Svc::submit")["param"], "id", "a one-value request names its parameter");
+    assert_eq!(member("Svc::paint")["param"], "c");
+    assert!(member("Svc::pair").get("param").is_none(), "a record's fields name themselves");
+    let r = run(&["api", "describe", &s.http, "--bearer", "t"]);
+    assert!(r.stdout.contains("  Svc::submit(id: Int) -> Int  requires: -"), "{}", r.stdout);
+    assert!(r.stdout.contains("  Svc::wait(d: Int (Duration, q(ns))) -> Int (Duration, q(ns))"), "{}", r.stdout);
+    assert!(r.stdout.contains("  Svc::pair(id: Int, n: Int) -> Int"), "{}", r.stdout);
+    let cases: &[(&str, &[&str], &str)] = &[
+        ("Svc::submit", &["--id", "7"], "8"),
+        ("Svc::submit", &["--id=-3"], "-2"),
+        ("Svc::ratio", &["--x", "1.25"], "2.5"),
+        ("Svc::flag", &["--on", "false"], "true"),
+        ("Svc::flag", &["--on"], "false"),
+        ("Svc::echo", &["--text", "hi there"], "\"<hi there>\""),
+        ("Svc::stamp", &["--at", "2026-10-12T03:04:05.25Z"], "\"2026-10-12T03:04:05.25Z\""),
+        ("Svc::wait", &["--d", "1500000000"], "1500000001"),
+        ("Svc::charge", &["--m", "125"], "126"),
+        ("Svc::order", &["--o", "42"], "42"),
+        ("Svc::paint", &["--c", "Green"], "\"Green\""),
+        // records as before, `id` a field of one
+        ("Svc::pair", &["--id", "3", "--n", "4"], "304"),
+        ("Svc::quote", &["--price", "12.50"], "\"12.5\""),
+    ];
+    for ep in [&s.http, &s.unix] {
+        for (member, flags, want) in cases {
+            let mut args = vec!["api", "call", ep.as_str(), member];
+            args.extend_from_slice(flags);
+            args.extend_from_slice(&["--bearer", "t"]);
+            if ep.starts_with("unix:") {
+                args.truncate(args.len() - 2);
+            }
+            let o = run(&args);
+            assert_eq!((o.code, o.stdout.trim()), (0, *want), "{ep} {member} {flags:?}: {}", o.stderr);
+        }
+        // `--json` of the value is the same call
+        let o = run(&["api", "call", ep, "Svc::submit", "--json", "7", "--bearer", "t"]);
+        assert_eq!((o.code, o.stdout.trim()), (0, "8"), "{}", o.stderr);
+    }
+    // the short form's bare payload is `--json`
+    let o = run(&["call", &s.unix, "Svc::submit", "9"]);
+    assert_eq!((o.code, o.stdout.trim()), (0, "10"), "{}", o.stderr);
+}
+
+#[test]
+fn a_one_value_request_given_wrong_says_how_to_give_it_and_sends_nothing() {
+    let s = Scalars::start();
+    let usage = "Svc::submit takes one Int, `id`: pass `--id <int>`, or its JSON with --json";
+    for (flags, want) in [
+        (&[][..], format!("hale api call: {usage}")),
+        (&["--n", "7"][..], format!("hale api call: `--n` is not a parameter of Svc::submit; {usage}")),
+        (&["--id", "1", "--id", "2"][..], format!("hale api call: `--id` is given twice; {usage}")),
+        (&["--id", "x"][..], "hale api call: `--id`: `x` is not an integer; the parameter is Int {\"type\":\"integer\"}".to_string()),
+    ] {
+        let mut args = vec!["api", "call", s.unix.as_str(), "Svc::submit"];
+        args.extend_from_slice(flags);
+        let o = run(&args);
+        assert_eq!((o.code, o.stderr.trim()), (5, want.as_str()), "{flags:?}");
+    }
+    for (member, flags, why) in [
+        ("Svc::paint", ["--c", "Pink"], "`Pink` is not one of Red, Green, Blue; the parameter is Color"),
+        ("Svc::stamp", ["--at", "2026-10-12T03:04:05"], "is not an RFC 3339 instant in UTC"),
+        ("Svc::wait", ["--d", "1.5s"], "`1.5s` is not an integer; the parameter is Int (Duration, q(ns))"),
+    ] {
+        let o = run(&["api", "call", &s.unix, member, flags[0], flags[1]]);
+        assert_eq!(o.code, 5, "{member}: {}", o.stderr);
+        assert!(o.stderr.contains(why), "{member}: {}", o.stderr);
+    }
+    let o = run(&["api", "call", &s.unix, "Svc::paint"]);
+    assert_eq!(o.stderr.trim(), "hale api call: Svc::paint takes one Color, `c`: pass `--c <Red|Green|Blue>`, or its JSON with --json");
+}

@@ -7,6 +7,7 @@ crates/hale-cli/tests/api_contract_fixtures.rs#5 94a9570cf8d1b758
 crates/hale-cli/tests/api_contract_fixtures.rs#6 af01dd6f540c9d06
 crates/hale-cli/tests/api_drain_asan.rs#0 12b78a9023a3815d
 crates/hale-cli/tests/api_drive.rs#13 fdec8983430f1ad9
+crates/hale-cli/tests/api_drive.rs#14 a56d2295045e6b27
 crates/hale-cli/tests/check_arg_parsing.rs#0 f428caff9d863411
 crates/hale-cli/tests/check_subscriber_torn_down.rs#0 96987c574cdc8df7
 crates/hale-cli/tests/check_tcp_substrate.rs#0 8cae84a96bf299fd
