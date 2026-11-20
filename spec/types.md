@@ -653,8 +653,12 @@ h.arr = r.arr; }`) is stored as a copy, so the caller's two arguments
 never share a block. A cell's read handed back through a call keeps
 its kind: passed straight to a callee that writes through it, it is
 copied where it is evaluated. A write into it is an assignment
-at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`) or a call that
-may write through its parameter.
+at any depth (`a[0] = x`, `x.k = 1`, `b[i].inner.s = s`), a `push`,
+`set`, `clear` or `truncate` of a `bounded` list in it at any depth
+(`push(t.notes, n)`, `push(t.meta.notes, n)`, as `t.notes = …` is), or
+a call that may write through its parameter. Until GH #2099 an
+intrinsic on a list below the local wrote in place, so `let mut t =
+at(r.tags, 0) or …; push(t.notes, n)` changed `r`'s element.
 
 ```hale,fragment
 let mut a = self.r.names;
@@ -1713,11 +1717,19 @@ Semantics:
   anchored in the place's owner's arena, as `push` anchors the one it
   adds (the holding locus's arena, else the current one). It is a
   copy: a later intrinsic on either side does not reach the other.
-  A place no locus holds (a record local's field) keeps an element
-  already in that arena rather than copying it, so until a write the
-  two lists share their elements' blocks; a write into either copies
-  first (§ A local bound from a place is yours), and a value holding
-  such a field is not fresh for a `push` (below).
+  A value read from a place (a field, a local, a parameter, an
+  element) gives the place its own copy of every element, all the
+  way down (a record element a fresh block with fresh blocks below
+  it, a String or Bytes copied), as a record literal's field
+  (`Row { tags: r.tags }`), `push` and `set` do; a fresh value's
+  elements (an array literal's, a call's result's) are kept as they
+  are. So no write below an element of one list, through a local or
+  through a parameter it is handed to, shows in the other, and a
+  record built that way holds nothing of the place's. Until GH #2099
+  a place no locus holds (a record local's field) kept an element
+  already in that arena, so the two lists shared their elements'
+  blocks, and a callee writing below an element of one changed the
+  other.
   An array literal builds the value it copies (above); any other value
   (another element type or capacity) is refused at the assignment ("a
   \`bounded[String; 4]\` is assigned whole only from another
@@ -1784,15 +1796,18 @@ Semantics:
   survey reports as a store's copy (`copy: a value another name
   reaches stored into a bounded list`). A call's result fresh at its
   top level that holds another name's block in a part is copied too:
-  `fn summary_of(r: Row) -> Sum { let mut v = Sum { }; v.tags =
-  r.tags; return v; }` hands back `r`'s own elements in `v.tags`
-  (above: the whole assignment keeps them), and the list takes its
-  own copy of them. The survey reports it as `copy: a call's result
-  holding another name's block stored into a bounded list`; until GH
-  #2067 it carried the first reason, whose advice named a call's
-  result as a value nothing else names. A part is a block by its
-  layout: a record, a `bounded` list's elements, an enum with
-  payloads. A field that is
+  `fn wrap_of(r: Row) -> Wrap { return Wrap { t: r.t }; }` hands back
+  `r`'s own `Tag` block in `t`, and the list takes its own copy of
+  it. The survey reports it as `copy: a call's result holding another
+  name's block stored into a bounded list`; until GH #2067 it carried
+  the first reason, whose advice named a call's result as a value
+  nothing else names. A part is a block by its layout: a record, a
+  `bounded` list's elements, an enum with payloads. A `bounded` field
+  given a place's list whole (`v.tags = r.tags; return v;`, `return
+  Sum { tags: r.tags };`) holds copies of its elements (above), so
+  such a result is fresh and stored as it is; until GH #2099 the
+  whole assignment kept `r`'s elements and the list copied the
+  result. A field that is
   an inline scalar slot (a number, a `Bool`, a `Time`, a unit or
   scalar declaration, a payload-free enum, which is its tag) is
   copied with the record and holds nothing of the argument's, so

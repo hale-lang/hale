@@ -36236,11 +36236,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `place = value` where the place is a `bounded[T; N]`: the
     /// value's storage (`{ i64 len, [N x T] }`, inline in its
     /// container) is copied over the place's, then each live slot of
-    /// a pointer-shaped element is anchored in the place's arena, as
-    /// a `push` anchors the one it adds: the holding locus's when a
-    /// locus holds the place (`self.r.names`, `h.names`), the current
-    /// one otherwise (a record local's field). A place a locus holds
-    /// takes its own copy of each element and retires the ones it held.
+    /// a pointer-shaped element is made the place's own in its arena
+    /// (`copy_bounded_elems_in`: a place's elements copied deeply, a
+    /// fresh value's kept), as a record literal's field is: the holding
+    /// locus's arena when a locus holds the place (`self.r.names`,
+    /// `h.names`), the current one otherwise (a record local's field). A
+    /// place a locus holds takes its own copy of each element and retires
+    /// the ones it held.
     /// A program that writes no such assignment emits none of this.
     fn lower_bounded_whole_assign(
         &mut self,
@@ -36305,13 +36307,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(snap)
         };
         self.builder.build_memmove(dest, 8, src.into_pointer_value(), 8, size).map_err(e)?;
-        let prev_owned = self.cell_owned_clone;
-        if old_snap.is_some() {
-            self.cell_owned_clone = true;
-        }
-        let anchored = self.anchor_bounded_elems_in_place(dest, elem, cap, arena, "bounded.assign");
-        self.cell_owned_clone = prev_owned;
-        anchored?;
+        self.copy_bounded_elems_in(dest, elem, cap, arena, value, old_snap.is_some(), "bounded.assign")?;
         if let Some(snap) = old_snap {
             let g = self.self_field_retire_desc_global(&desc);
             let ptr_t = self.context.ptr_type(AddressSpace::default());

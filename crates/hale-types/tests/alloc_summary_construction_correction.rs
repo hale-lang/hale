@@ -723,8 +723,9 @@ fn own_entries_run_to_exit_programs() {
     // `tests/hale/str_chain_sources_test.hl`, whose chains over text
     // sources push the parts into a vec the same way (GH #1995 S2, chain
     // sources); 30: `tests/hale/bounded_part_result_push_test.hl`, whose
-    // `summaries` stores its own copy of each row's summary and whose
-    // `summary_of` builds the record it returns (GH #2067); 31:
+    // `summary_of` builds the record it returns and whose `summaries`
+    // stores each summary as it is (GH #2067; until GH #2099 the whole
+    // assignment kept the row's elements and the push copied the summary); 31:
     // `tests/hale/bounded_inline_enum_result_push_test.hl`, whose `s_of`
     // builds the record `build` pushes as it is (GH #2088).
     assert_eq!(moved, 31, "the run-to-exit programs among the targets that lose a site");
@@ -1002,7 +1003,6 @@ fn own_entries_run_to_exit_programs() {
             // `s_of` builds and `build` pushes as it is, no `CellCopy` beside
             // it, since its payload-free enum field is an inline tag (GH #2088)
             "tests/hale/bounded_inline_enum_result_push_test.hl: s_of StructLit(\"S\") #1 InvokedUnboundedly",
-            "tests/hale/bounded_part_result_push_test.hl: summaries CellCopy(\"copy: a call's result holding another name's block stored into a bounded list\") #1 InUnboundedLoop",
             "tests/hale/bounded_part_result_push_test.hl: summary_of StructLit(\"Sum\") #1 InvokedUnboundedly",
             // `tests/hale/bounded_payload_enum_test.hl`: the text its `show` and
             // `tags` build for every element they are handed (GH #1951)

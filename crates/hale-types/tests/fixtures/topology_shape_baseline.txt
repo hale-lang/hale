@@ -296,6 +296,7 @@ crates/hale-codegen/tests/bounded_collections.rs#11 3e3a392307f1a4fd
 crates/hale-codegen/tests/bounded_collections.rs#12 7110f5693585e628
 crates/hale-codegen/tests/bounded_collections.rs#14 65f902faee09771b
 crates/hale-codegen/tests/bounded_collections.rs#15 6fb50201288959c0
+crates/hale-codegen/tests/bounded_collections.rs#16 74013339042e5dcb
 crates/hale-codegen/tests/bounded_collections.rs#2 d4275fdcef4d5b13
 crates/hale-codegen/tests/bounded_collections.rs#3 d4275fdcef4d5b13
 crates/hale-codegen/tests/bounded_collections.rs#4 095fe9d5dae003a9
@@ -1993,7 +1994,7 @@ crates/hale-types/tests/hot_path_alloc.rs#26 a56da0a01507b6ad
 crates/hale-types/tests/hot_path_alloc.rs#3 8b5c9b6ca27eb054
 crates/hale-types/tests/hot_path_alloc.rs#30 467294c7f962ad81
 crates/hale-types/tests/hot_path_alloc.rs#31 442397df5cae1572
-crates/hale-types/tests/hot_path_alloc.rs#34 ebe18b638f70f868
+crates/hale-types/tests/hot_path_alloc.rs#34 8c2edd305cde76ba
 crates/hale-types/tests/hot_path_alloc.rs#35 4c9b985e7ac1ff0c
 crates/hale-types/tests/hot_path_alloc.rs#6 234c5f1f87e43729
 crates/hale-types/tests/hot_path_alloc.rs#8 234c5f1f87e43729

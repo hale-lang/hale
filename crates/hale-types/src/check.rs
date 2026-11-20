@@ -2831,12 +2831,12 @@ fn hot_cell_copy_message(reason: &str, in_loop: bool) -> String {
             "hot-path copy: a call's result stored into a bounded list is \
              copied here{in_loop_text} ({reason}): the list owns its \
              elements, and the value the callee hands back is fresh at its top \
-             level but holds a block of what it was handed. A field assigned \
-             from a part of a parameter (`v.tags = r.tags`) takes that part's \
-             count and slots and keeps its elements, which are still the \
-             argument's. The copy is the list's own of them; to store the \
-             result as it is, build that part in the callee from values of \
-             its own."
+             level but holds a block of what it was handed. A record field \
+             given a part of a parameter (`Wrap {{ t: r.t }}`) holds that block \
+             itself, which is still the argument's. The copy is the list's \
+             own of it; to store the result as it is, build that part in the \
+             callee from values of its own (a `bounded` field assigned from a \
+             parameter's, `v.tags = r.tags`, is one: it copies the elements)."
         );
     }
     if reason == crate::view_bindings::reasons::PLACE_PARAM_STORED {

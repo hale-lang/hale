@@ -456,8 +456,14 @@ fn main() {
         let (stdout, stderr, ok) = run(&bin);
         assert!(!stderr.contains("AddressSanitizer"), "{name}: {stderr}");
         assert!(ok, "{name}: stdout={stdout:?} stderr={stderr:?}");
-        if name != "element_read_from_a_params_list" {
-            assert_eq!(stdout, "tag-1\ntag-2\n", "{name}");
+        // GH #2099: a push below a literal's field that holds the
+        // parameter is a write into the local, which copies that field
+        // first (as `w.inner.k = 1` does), so the caller's `r` keeps no
+        // tag; until then it wrote the caller's list in place.
+        match name {
+            "element_read_from_a_params_list" => {}
+            "literal_holding_a_param" => assert_eq!(stdout, "", "{name}"),
+            _ => assert_eq!(stdout, "tag-1\ntag-2\n", "{name}"),
         }
     }
 }

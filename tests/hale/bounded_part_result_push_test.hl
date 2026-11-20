@@ -1,10 +1,9 @@
 // A call's result whose record took a parameter's bounded field
 // (`v.tags = r.tags`), pushed into a frame's bounded list (GH #2067).
-// The whole assignment copies the count and the slots and keeps the
-// elements, so the result holds the argument's own elements; the push
-// stores the list's own copy of it (`hale verify` reports that copy as
-// "a call's result holding another name's block"), and neither side's
-// later writes reach the other.
+// The whole assignment copies the elements deeply (GH #2099), so the
+// result is fresh and the push stores it as it is; neither side's later
+// writes reach the other. (Until GH #2099 the assignment kept the
+// argument's elements and the push copied the result.)
 
 type Tag { name: String = ""; n: Int = 0; }
 type Row { id: String = ""; tags: bounded[Tag; 4]; }
