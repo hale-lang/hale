@@ -2167,6 +2167,7 @@ fn build_resolved_lowered(
         current_method_scratch: None,
         iter_arenas: Vec::new(),
         iter_arena_suspended: 0,
+        or_error_leaves_frame: false,
         iter_arena_leaves: Vec::new(),
         current_method_caller_arena: None,
         current_user_fn_exit_bb: None,
@@ -4802,8 +4803,8 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// epilogue deep-copies the value into caller_arena, destroys
     /// the subregion, and emits `build_return`. Refactor avoids
     /// duplicating destroy/copy at every return site.
-    current_user_fn_caller_arena: Option<PointerValue<'ctx>>,
-    current_user_fn_arena: Option<PointerValue<'ctx>>,
+    pub(crate) current_user_fn_caller_arena: Option<PointerValue<'ctx>>,
+    pub(crate) current_user_fn_arena: Option<PointerValue<'ctx>>,
     pub(crate) current_user_fn_exit_bb: Option<inkwell::basic_block::BasicBlock<'ctx>>,
     pub(crate) current_user_fn_ret_alloca: Option<PointerValue<'ctx>>,
     /// Bus-arena reclaim (2026-05-21): locus method bodies open a
@@ -4840,6 +4841,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// leaves the frame is made in the frame's own arena, where the
     /// epilogue copies it from, never in an iteration's.
     pub(crate) iter_arena_suspended: u32,
+    /// Set while the operand of an `or raise` / `or fail` is lowered: the
+    /// error a fallible primitive in it builds leaves the frame, so its
+    /// payload is built outside the iteration arenas ([`Cx::error_payload`]).
+    pub(crate) or_error_leaves_frame: bool,
     /// The slots of the iteration arenas a loop being lowered opened,
     /// whose last iteration the loop's exit frees (`lower_loop_stmt`).
     pub(crate) iter_arena_leaves: Vec<PointerValue<'ctx>>,
@@ -16677,7 +16682,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             .get(&mangled)
             .cloned()
             .expect("specialized fn was just declared");
-        let caller_arena = self.call_site_arena(args, scope)?;
+        let caller_arena = self.callee_arena(&sig, args, scope)?;
         let mut llvm_args: Vec<BasicMetadataValueEnum> =
             Vec::with_capacity(sig.params.len() + 1);
         llvm_args.push(caller_arena.into());
@@ -17231,7 +17236,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // intermediate state the arg-lowering walks into.
         let caller_arena_at_call = match caller_arena {
             Some(arena) => arena,
-            None => self.call_site_arena(args, scope)?,
+            None => self.callee_arena(&sig, args, scope)?,
         };
         let mut llvm_args: Vec<BasicMetadataValueEnum> =
             Vec::with_capacity(sig.params.len() + 1);
@@ -17607,7 +17612,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Matches the shape `inject_builtin_types` synthesizes
     /// (`kind: String`, `index: Int`, `len: Int`) and the
     /// interpreter's `index_error_value` helper.
-    pub(crate) fn emit_index_error_alloc(
+    ///
+    /// Built outside the iteration arena when the `or` handling the error
+    /// takes it out of the frame ([`Cx::error_payload`]).
+    pub(crate) fn emit_index_error_alloc(&mut self, kind: &str, index_ssa: IntValue<'ctx>, len_ssa: IntValue<'ctx>) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.error_payload(|cx| cx.emit_index_error_alloc_in(kind, index_ssa, len_ssa))
+    }
+
+    fn emit_index_error_alloc_in(
         &mut self,
         kind: &str,
         index_ssa: IntValue<'ctx>,
@@ -17686,7 +17698,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// arena and populate its single field `kind: String`. Matches
     /// the shape `inject_builtin_types` synthesizes and the
     /// interpreter's `key_error_value` helper.
-    pub(crate) fn emit_key_error_alloc(
+    ///
+    /// Built outside the iteration arena when the `or` handling the error
+    /// takes it out of the frame ([`Cx::error_payload`]).
+    pub(crate) fn emit_key_error_alloc(&mut self, kind: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.error_payload(|cx| cx.emit_key_error_alloc_in(kind))
+    }
+
+    fn emit_key_error_alloc_in(
         &mut self,
         kind: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
@@ -17804,7 +17823,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// v1.x-FORM-5: lazily allocate an `EmptyError { kind: String }`
     /// in the current arena for the `@form(ring_buffer).pop` err
     /// path. Same shape as `emit_key_error_alloc`.
-    pub(crate) fn emit_empty_error_alloc(
+    ///
+    /// Built outside the iteration arena when the `or` handling the error
+    /// takes it out of the frame ([`Cx::error_payload`]).
+    pub(crate) fn emit_empty_error_alloc(&mut self, kind: &str) -> Result<PointerValue<'ctx>, CodegenError> {
+        self.error_payload(|cx| cx.emit_empty_error_alloc_in(kind))
+    }
+
+    fn emit_empty_error_alloc_in(
         &mut self,
         kind: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
@@ -32907,7 +32933,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // Reading our `current_arena_ptr()` AFTER arg lowering
         // (which may itself nest method calls and clobber TLS)
         // gives the callee the freshest caller view.
-        self.emit_set_caller_arena_for(args, scope)?;
+        self.emit_set_caller_arena_for_method(&sig.params, sig.ret.as_ref(), args, scope)?;
         // GH #1530: as an external call, a seam splitting the result
         let ret_ty = sig.ret.as_ref().map(|t| self.type_expr_to_codegen_ty(t)).transpose()?;
         let self_locus = self.current_self.as_ref().map(|s| s.locus_name.clone()).unwrap_or_default();
@@ -32971,7 +32997,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 args.len()
             )));
         }
-        let caller_arena = self.call_site_arena(args, scope)?;
+        let caller_arena = if self.fn_type_never_allocates(arg_tys, ret_ty) {
+            self.outside_iteration_arenas(|cx| cx.call_site_arena(args, scope))?
+        } else {
+            self.call_site_arena(args, scope)?
+        };
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let mut call_args: Vec<inkwell::values::BasicMetadataValueEnum<'ctx>> =
             Vec::with_capacity(args.len() + 1);
@@ -33433,7 +33463,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // epilogue lands its heap-return deep-copy in the
         // caller's arena. Same shape as the self-method-call
         // counterpart above.
-        self.emit_set_caller_arena_for(args, scope)?;
+        self.emit_set_caller_arena_for_method(&sig.params, sig.ret.as_ref(), args, scope)?;
         // GH #1530: a seam splitting the set this returns calls the
         // method's fused clone, handing it the set's storage
         let ret_ty = sig.ret.as_ref().map(|t| self.type_expr_to_codegen_ty(t)).transpose()?;
@@ -34208,7 +34238,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // sites — the locus method behind this vtable slot now
         // opens a per-call scratch and deep-copies any heap
         // return into TLS.
-        self.emit_set_caller_arena_for(args, scope)?;
+        self.emit_set_caller_arena_for_method(&method_sig.params, method_sig.ret.as_ref(), args, scope)?;
         let call = self
             .builder
             .build_indirect_call(
@@ -39673,6 +39703,72 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(slot) => self.caller_storage_arena(slot),
             None => self.current_arena_ptr(),
         }
+    }
+
+    /// The `__caller_arena` a call of the user fn `sig` is handed: the
+    /// call site's ([`Cx::call_site_arena`]), except for a callee that
+    /// allocates nothing (`non_allocating`), which never reads it, unless
+    /// it returns a `bounded` list (copied into it at the return). That
+    /// one is handed the frame's arena, outside any iteration arena, so a
+    /// loop whose body only calls such fns opens none: a
+    /// `@budget(alloc_per_call = 0)` fn called in it allocates nothing.
+    fn callee_arena(&mut self, sig: &FnSig<'ctx>, args: &[Expr], scope: &Scope<'ctx>) -> Result<PointerValue<'ctx>, CodegenError> {
+        let reads_none = sig.non_allocating && !matches!(sig.ret, Some(CodegenTy::Bounded(..)));
+        if reads_none {
+            return self.outside_iteration_arenas(|cx| cx.call_site_arena(args, scope));
+        }
+        self.call_site_arena(args, scope)
+    }
+
+    /// Does every fn a value of type `fn(arg_tys) -> ret` can name
+    /// allocate nothing: is each user fn of that signature whose address
+    /// the module takes so far (anything but calling it directly) a
+    /// `non_allocating` one, returning no `bounded` list? Then a call
+    /// through such a value is handed the frame's arena as
+    /// [`Cx::callee_arena`] hands a direct call of one, and a loop that
+    /// only makes it opens no iteration arena. Handing the frame's arena is
+    /// safe whatever the callee does (it outlives the iteration): a fn this
+    /// answer misses, its address taken in code lowered later, only keeps
+    /// what it makes until the frame's arena goes.
+    fn fn_type_never_allocates(&self, arg_tys: &[CodegenTy], ret_ty: Option<&CodegenTy>) -> bool {
+        if matches!(ret_ty, Some(CodegenTy::Bounded(..))) {
+            return false;
+        }
+        let mut named = self
+            .user_fns
+            .values()
+            .filter(|sig| !sig.is_ffi && sig.fallible.is_none() && sig.params == arg_tys && sig.ret.as_ref() == ret_ty)
+            .filter(|sig| Self::address_taken(sig.func))
+            .peekable();
+        named.peek().is_some() && named.all(|sig| sig.non_allocating)
+    }
+
+    /// Is `func` used other than as the callee of a direct call: stored,
+    /// selected, handed on as a value?
+    fn address_taken(func: FunctionValue<'ctx>) -> bool {
+        use inkwell::values::BasicValue;
+        let ptr = func.as_global_value().as_pointer_value();
+        let mut next = ptr.get_first_use();
+        while let Some(u) = next {
+            next = u.get_next_use();
+            let user = u.get_user();
+            let instr = if user.is_instruction_value() {
+                Some(user.into_instruction_value())
+            } else {
+                BasicValueEnum::try_from(user).ok().and_then(|v| v.as_instruction_value())
+            };
+            let Some(instr) = instr.filter(|i| i.get_opcode() == inkwell::values::InstructionOpcode::Call) else {
+                return true;
+            };
+            let n = instr.get_num_operands();
+            let is_ptr = |i: u32| {
+                matches!(instr.get_operand(i).and_then(|o| o.left()), Some(BasicValueEnum::PointerValue(p)) if p == ptr)
+            };
+            if n == 0 || !is_ptr(n - 1) || (0..n - 1).any(is_ptr) {
+                return true;
+            }
+        }
+        false
     }
 
     fn emit_set_caller_arena_to(&mut self, arena: PointerValue<'ctx>) -> Result<(), CodegenError> {

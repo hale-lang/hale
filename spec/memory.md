@@ -1301,7 +1301,8 @@ fast-path optimization can follow.
 
 **Per-iteration reclaim.** A loop body in a frame with a
 method scratch (a locus method, a lifecycle hook, a mode, a bus
-handler) allocates into a region of its own for each iteration:
+handler), in a free fn or in `fn main` allocates into a region of its
+own for each iteration:
 the iteration's region is a subregion owned by the arena the loop
 runs in, made at the body's entry
 (`lotus_arena_iteration_enter`, which first frees the previous
@@ -1319,6 +1320,39 @@ kept every iteration's values until the locus dissolved
 (`buf.snapshot()` per iteration over a 1 GiB file held 1 GB; a
 `BodyReader` drained by `chunk()` held the whole 5 GB body), while
 the same body moved into a method was flat.
+
+Free fns and `fn main` take the same rule (GH #2094); only the owner
+of their iteration regions differs. A free fn's are owned by the
+per-call subregion every allocating fn opens at entry (even one whose
+body allocates into its caller's arena), which its epilogue destroys
+after copying the returned value or the failure out, as a method's
+scratch is. `main` allocates into the program's arena, which lives
+until the process exits, so it owns main's: a loop left by `break` or
+its condition frees its last region at its exit, and one left any
+other way (a `return` from `main`, a failed assertion, the drain, a
+signal) leaves that one region to the program's arena, which goes with
+the process. Without this a main loop kept every iteration's values
+until `main` returned: 20,000 rounds of a helper building records held
+306 MB, 200,000 `to_json` encodes 36 MB, 500,000 `@display` renders
+67 MB; each is flat at under 5 MB with it.
+
+A call hands its callee the iteration's region as the caller arena,
+which keeps the region open for that iteration, except a call of a fn
+that allocates nothing (`non_allocating`, returning no `bounded` list),
+which never reads it; a call through a fn value whose type only
+such fns are named as values for; and a call of a locus method that
+returns nothing or a scalar and takes only scalars, Strings, Bytes,
+views and locus references (its allocations are its scratch's, carved
+from its own locus's arena, and its caller's arena takes only the
+heap value it returns and what it anchors through a record
+parameter). Those are handed the frame's arena, which outlives the
+iteration whatever the callee does. The error
+payload a fallible primitive builds for an `or raise` or `or fail` is
+made outside the region too, as a `fail`'s value is, since the error
+leaves the frame; an `or` that handles the error in place keeps it in
+the iteration. So a loop that keeps nothing in its iteration (only
+scalar work, such calls, `v.get(j) or raise`) opens no region, and its
+body holds no call LLVM must keep.
 
 The rule is `hale_types::iteration_reclaim`, read by lowering and
 by the allocation summary alike. A body reclaims per iteration
@@ -1369,8 +1403,7 @@ locus's arena (invariant 1 above), a send into the payload arena, a
 return into the caller's (invariant 2). Names resolve lexically: a
 `let` or `for` binder in the body shadows the outside binding. A
 body whose allocations never reach the region keeps no trace of it
-(the enter call is removed after the body is lowered). Free fns and
-`main` keep their loops on the frame's region. The allocation
+(the enter call is removed after the body is lowered). The allocation
 summary marks a site of such a body `per-iteration-reclaim`, and
 surveys the fresh String or Bytes a call in a locus member's loop
 returns (`AllocKind::CallResult`): a loop that still keeps one per

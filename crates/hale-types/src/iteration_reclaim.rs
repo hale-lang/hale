@@ -6,6 +6,8 @@
 //! it used to keep every iteration's values until the frame returned: a
 //! `run()` that loops for its locus's whole life kept them until the
 //! locus dissolved, while the same body moved into a method stayed flat.
+//! Free fns and `fn main` take the rule too (GH #2094): a main loop kept
+//! its iterations in the program's arena until `main` returned.
 //! Lowering now gives such a loop body an arena of its own for each
 //! iteration (`lotus_arena_iteration_enter`), freed when the next
 //! iteration starts or the loop is left. This module is the one rule

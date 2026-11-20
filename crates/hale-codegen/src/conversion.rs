@@ -407,7 +407,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A `RangeError` in the current arena, its fields as the builtin
     /// table's row lays them out.
-    fn emit_range_error_alloc(
+    ///
+    /// Built outside the iteration arena when the `or` handling the error
+    /// takes it out of the frame ([`Cx::error_payload`]).
+    fn emit_range_error_alloc(&mut self, kind: &str, value: IntValue<'ctx>, low: IntValue<'ctx>, high: IntValue<'ctx>, at: Span) -> Result<inkwell::values::PointerValue<'ctx>, CodegenError> {
+        self.error_payload(|cx| cx.emit_range_error_alloc_in(kind, value, low, high, at))
+    }
+
+    fn emit_range_error_alloc_in(
         &mut self,
         kind: &str,
         value: IntValue<'ctx>,

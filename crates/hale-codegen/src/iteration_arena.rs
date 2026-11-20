@@ -26,6 +26,12 @@
 //!   owns, the open iteration arenas included. A `return`'s value is
 //!   lowered outside the iteration arena (`iter_arena_suspended`), into
 //!   the scratch the epilogue copies it out of.
+//! - a free fn's iteration arenas (GH #2094) are owned by its per-call
+//!   subregion, which its epilogue destroys after the copy-out, as a
+//!   method's scratch; `fn main`'s by the program's arena, which lives
+//!   until the process exits: a main loop left by anything but its exit
+//!   (a `return`, a failed assertion, the drain, a signal) leaves its
+//!   last iteration's arena to it.
 //!
 //! A body whose allocations never reach `current_arena_ptr` keeps no
 //! trace: its enter call and store are erased once the body is lowered,
@@ -105,14 +111,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// Does `body`, about to be lowered at the builder's position, get an
-    /// iteration arena? Only in a frame with a per-call scratch (whose
-    /// self-field stores copy into the locus, and whose epilogue frees
-    /// what the scratch owns), outside an arena override, and when
-    /// `hale_types::iteration_reclaim` admits the body over the bindings
-    /// `scope` holds at the loop.
+    /// iteration arena? Only in a frame whose arena outlives the loop and
+    /// frees what it owns when the frame is done with it
+    /// ([`Self::frame_owns_iteration_arenas`]), outside an arena override,
+    /// and when `hale_types::iteration_reclaim` admits the body over the
+    /// bindings `scope` holds at the loop.
     fn loop_body_reclaims(&self, body: &Block, scope: &Scope<'ctx>) -> bool {
-        if self.current_method_scratch.is_none()
-            || self.current_self.is_none()
+        if !self.frame_owns_iteration_arenas()
             || self.current_arena_override.is_some()
             || self.current_fn.is_none()
         {
@@ -123,6 +128,62 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let produces_locus = |e: &Expr| table.entry_of(e).is_some();
         let decl_of = hale_types::iteration_reclaim::decl_of(self.uses);
         reclaims_per_iteration(body, &outer, &produces_locus, &decl_of)
+    }
+
+    /// Is the frame being lowered one whose loops may take iteration
+    /// arenas: one whose arena is the iteration arenas' owner, outliving
+    /// every loop in it and freeing the arenas still open when it goes.
+    ///
+    /// - A locus member with a per-call scratch: its epilogue destroys
+    ///   the scratch, and with it the open iteration arenas, on every way
+    ///   out (a `return`, a `fail`, a violation).
+    /// - `fn main`'s own frame (GH #2094): its arena is the program's,
+    ///   which lives until the process exits, so an iteration arena left
+    ///   open by a `return`, a failed assertion, the drain or a signal
+    ///   goes with the process, as everything main made does.
+    /// - A free fn (GH #2094): the per-call subregion every allocating fn
+    ///   opens at entry ([`Self::iteration_owner`]), which its epilogue
+    ///   destroys after copying the returned value (or the failure) into
+    ///   the caller's arena, as a method's scratch is.
+    fn frame_owns_iteration_arenas(&self) -> bool {
+        let method = self.current_method_scratch.is_some() && self.current_self.is_some();
+        let main = self.in_main
+            && self.current_self.is_none()
+            && self.current_method_scratch.is_none()
+            && self.current_user_fn_caller_arena.is_none();
+        method || main || self.free_fn_frame()
+    }
+
+    /// Lowering a free fn's body: its caller arena and its own subregion
+    /// are set, and no locus member's frame is.
+    fn free_fn_frame(&self) -> bool {
+        !self.in_main
+            && self.current_self.is_none()
+            && self.current_method_scratch.is_none()
+            && self.current_user_fn_caller_arena.is_some()
+            && self.current_user_fn_arena.is_some()
+    }
+
+    /// The arena a loop's iteration arenas are carved from and owned by:
+    /// the enclosing loop's iteration arena when there is one, a free fn's
+    /// own subregion (even where its body allocates into its caller's
+    /// arena, so its epilogue frees what a `return` leaves open), else the
+    /// arena the loop runs in (a method's scratch, the program's).
+    fn iteration_owner(&mut self) -> Result<PointerValue<'ctx>, CodegenError> {
+        if let Some(enclosing) = self.iteration_arena_ptr()? {
+            return Ok(enclosing);
+        }
+        match self.current_user_fn_arena.filter(|_| self.free_fn_frame()) {
+            Some(slot) => {
+                let ptr_t = self.context.ptr_type(AddressSpace::default());
+                Ok(self
+                    .builder
+                    .build_load(ptr_t, slot, "iter.arena.owner")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                    .into_pointer_value())
+            }
+            None => self.current_arena_ptr(),
+        }
     }
 
     /// Lower a loop's body, the builder at the body's entry: with an
@@ -138,7 +199,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let ptr_t = self.context.ptr_type(AddressSpace::default());
         let slot = self.deferred_dissolve_slot_alloca("iter.arena")?;
         let outer_uses = self.iter_arenas.last().map(|c| c.uses);
-        let outer = self.current_arena_ptr()?;
+        let outer = self.iteration_owner()?;
         let cur = self.builder.build_load(ptr_t, slot, "iter.arena.prev").map_err(e)?;
         let enter = self.module.get_function("lotus_arena_iteration_enter").expect("lotus_arena_iteration_enter declared");
         let call = self.builder.build_call(enter, &[cur.into(), outer.into()], "iter.arena.enter").map_err(e)?;
@@ -187,6 +248,67 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
         Ok(end)
+    }
+
+    /// Build a fallible primitive's error payload (`build`): outside every
+    /// iteration arena when the `or` handling it takes the error out of
+    /// the frame (`or raise`, `or fail`: [`Cx::or_error_leaves_frame`]), as
+    /// a `fail`'s value is, so a loop whose only allocation is the error
+    /// it raises opens no iteration arena (`v.get(j) or raise`, whose
+    /// error branch a proven bound leaves dead). An error an `or` handles
+    /// in place stays in the iteration it is handled in.
+    pub(crate) fn error_payload<T>(&mut self, build: impl FnOnce(&mut Self) -> T) -> T {
+        if self.or_error_leaves_frame {
+            self.outside_iteration_arenas(build)
+        } else {
+            build(self)
+        }
+    }
+
+    /// Publish the caller arena for a call of a locus method declared
+    /// with `params` returning `ret` (`Cx::emit_set_caller_arena_for`):
+    /// the frame's, outside every iteration arena, when the method leaves
+    /// nothing in it. A method allocates into its scratch, carved from its
+    /// own locus's arena; its caller's arena takes only the heap value its
+    /// epilogue copies out and what it anchors writing through a record
+    /// parameter. So one returning nothing or a scalar, and taking only
+    /// scalars, Strings, Bytes, views and locus references, lets a loop
+    /// that just calls it (`h.a(); h.b();`) open no iteration arena.
+    /// Handing the frame's arena is safe whatever the method does: it
+    /// outlives the iteration.
+    pub(crate) fn emit_set_caller_arena_for_method(
+        &mut self,
+        params: &[hale_syntax::ast::Param],
+        ret: Option<&hale_syntax::ast::TypeExpr>,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<(), CodegenError> {
+        if self.method_leaves_caller_arena_alone(params, ret) {
+            return self.outside_iteration_arenas(|cx| cx.emit_set_caller_arena_for(args, scope));
+        }
+        self.emit_set_caller_arena_for(args, scope)
+    }
+
+    fn method_leaves_caller_arena_alone(
+        &self,
+        params: &[hale_syntax::ast::Param],
+        ret: Option<&hale_syntax::ast::TypeExpr>,
+    ) -> bool {
+        use hale_syntax::ast::TypeExpr;
+        let ret_ok = match ret {
+            None => true,
+            Some(TypeExpr::Tuple(parts, _)) if parts.is_empty() => true,
+            Some(t) => self.type_expr_to_codegen_ty(t).is_ok_and(|t| outer_local(&t) == OuterLocal::Scalar),
+        };
+        ret_ok
+            && params.iter().all(|p| {
+                self.type_expr_to_codegen_ty(&p.ty).is_ok_and(|t| {
+                    matches!(
+                        t,
+                        CodegenTy::String | CodegenTy::Bytes | CodegenTy::StringView | CodegenTy::BytesView
+                    ) || matches!(outer_local(&t), OuterLocal::Scalar | OuterLocal::Locus)
+                })
+            })
     }
 
     /// Lower a value that leaves the frame (`return`, `fail`) outside

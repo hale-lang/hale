@@ -3665,19 +3665,20 @@ void lotus_arena_destroy(lotus_arena_t *a) {
 
 /* ---- iteration arenas -------------------------------------------------
  *
- * A loop body in a frame with a per-call scratch (a locus method, a
- * lifecycle hook, a handler) allocates into an arena of its own, made
- * fresh for every iteration: the values an iteration makes and does not
- * hand on are freed when the next iteration starts, or when the loop is
- * left, instead of piling up in the frame's scratch until the frame
- * returns. A `run()` that loops for the life of its locus is the frame
- * that never returns.
+ * A loop body in a locus member, a free fn or `fn main` allocates into
+ * an arena of its own, made fresh for every iteration: the values an
+ * iteration makes and does not hand on are freed when the next iteration
+ * starts, or when the loop is left, instead of piling up in the frame's
+ * arena until the frame returns. A `run()` that loops for the life of
+ * its locus, and `main`, are frames that never return.
  *
  * `cur` is the slot's arena (NULL before the loop's first iteration),
- * `parent` the arena the loop runs in. The arena returned is a
- * subregion of `parent` OWNED by it (`owner`), so a frame that leaves
- * the loop by `return` frees the last iteration's arena with its own
- * scratch (`lotus_arena_destroy` destroys what an arena owns). */
+ * `parent` its owner: a method's scratch, a free fn's own subregion, the
+ * program's arena in `main`, or the enclosing loop's iteration arena.
+ * The arena returned is a subregion of `parent` OWNED by it (`owner`),
+ * so a frame that leaves the loop by `return` frees the last iteration's
+ * arena with its own scratch or subregion (`lotus_arena_destroy`
+ * destroys what an arena owns); in `main` it goes with the process. */
 LOTUS_HOT_ALIGN
 lotus_arena_t *lotus_arena_iteration_enter(lotus_arena_t *cur,
                                            lotus_arena_t *parent) {
