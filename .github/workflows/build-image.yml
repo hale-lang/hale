@@ -67,6 +67,14 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: scripts/nightly.sh set-version "$VERSION"
 
+      # The image builds `hale` without `.git` (.dockerignore), so build.rs
+      # takes the habitat pin, the commit the toolchain is, from hale.pin,
+      # which is committed and stale: a nightly's is this checkout's commit,
+      # as its tarballs' is (they build in the checkout and read HEAD).
+      - name: Pin the commit
+        if: inputs.version != ''
+        run: git rev-parse HEAD | tee hale.pin
+
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -108,6 +116,17 @@ jobs:
           outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=image-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+
+      # the image's `hale` carries the commit it was built from (above)
+      - name: The image's toolchain names the commit
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -eux
+          [ "$(docker run --rm --entrypoint hale "$IMAGE" --version | head -n 1)" = "hale $VERSION" ]
+          docker run --rm --entrypoint grep "$IMAGE" -a -q "$(git rev-parse HEAD)" /usr/local/bin/hale
 
       - name: Keep the digest
         run: |
