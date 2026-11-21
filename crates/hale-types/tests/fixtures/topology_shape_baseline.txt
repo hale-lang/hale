@@ -1508,6 +1508,11 @@ crates/hale-codegen/tests/stdlib_stdin.rs#1 90a46b25eba2caaf
 crates/hale-codegen/tests/stdlib_stdin.rs#2 90a46b25eba2caaf
 crates/hale-codegen/tests/stdlib_stdin.rs#4 90a46b25eba2caaf
 crates/hale-codegen/tests/stdlib_str.rs#0 a880bd5d068dbc80
+crates/hale-codegen/tests/stdlib_str.rs#3 3af25281333d089a
+crates/hale-codegen/tests/stdlib_str.rs#4 4802537e0e360daf
+crates/hale-codegen/tests/stdlib_str.rs#5 1955d3ceec3e7121
+crates/hale-codegen/tests/stdlib_str.rs#6 7568de0ae6c07dd8
+crates/hale-codegen/tests/stdlib_str.rs#7 bbd133dd4e530594
 crates/hale-codegen/tests/stdlib_str.rs#8 d4275fdcef4d5b13
 crates/hale-codegen/tests/stdlib_stream.rs#0 40e49049d6e84ede
 crates/hale-codegen/tests/stdlib_stream.rs#1 cf1765cd492768c7

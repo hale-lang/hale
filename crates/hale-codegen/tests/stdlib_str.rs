@@ -123,6 +123,12 @@ fn std_str_parse_user_parse_error_collision_diagnoses_cleanly() {
 /// passes three the rounds, so a regression costs seconds, not minutes.
 /// Each sample prints `<label> got=<answer> ns=<total> reps=<calls>`;
 /// `work(kind, s, n)` is the test's own dispatch.
+///
+/// Each test's program carries its own copy of this sampler, so that
+/// every program is whole in one literal: the embedded corpus
+/// (`hale_corpus::embedded`) reads each literal on its own, and the
+/// topology identity gate keeps a shape hash only for a program that
+/// checks. [`Samples::run`] holds every copy to this text.
 const SAMPLE_HL: &str = r#"
     @ffi("c") fn clock() -> Int;
     fn sample(kind: Int, s: String, n: Int, reps: Int, label: String) -> Int {
@@ -146,8 +152,15 @@ struct Samples {
 }
 
 impl Samples {
+    /// Build and run `program`, which carries [`SAMPLE_HL`] word for word
+    /// (indentation aside).
     fn run(name: &str, program: &str) -> Samples {
-        let (stdout, status) = build_and_run(name, &format!("{SAMPLE_HL}\n{program}"));
+        let words = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(
+            words(program).contains(&words(SAMPLE_HL)),
+            "{name}: the program's sampler is not SAMPLE_HL's"
+        );
+        let (stdout, status) = build_and_run(name, program);
         assert!(status.success(), "build/run failed: {:?}", stdout);
         Samples { stdout }
     }
@@ -227,6 +240,20 @@ fn byte_view_scan_scales_linearly() {
     let s = Samples::run(
         "byte_view_scaling",
         r#"
+        @ffi("c") fn clock() -> Int;
+        fn sample(kind: Int, s: String, n: Int, reps: Int, label: String) -> Int {
+            let mut got = 0;
+            let mut done = 0;
+            let mut ns = 0;
+            let t0 = clock();
+            while done < reps && ns < 1000000000 {
+                got = work(kind, s, n);
+                done = done + 1;
+                ns = (clock() - t0) * 1000;
+            }
+            println(label, " got=", got, " ns=", ns, " reps=", done);
+            return ns;
+        }
         fn scan(s: String) -> Int {
             let v = std::str::bytes_view(s);
             let mut count = 0;
@@ -293,6 +320,20 @@ fn a_find_line_scan_scales_linearly() {
     let s = Samples::run(
         "find_line_scan_scaling",
         r#"
+        @ffi("c") fn clock() -> Int;
+        fn sample(kind: Int, s: String, n: Int, reps: Int, label: String) -> Int {
+            let mut got = 0;
+            let mut done = 0;
+            let mut ns = 0;
+            let t0 = clock();
+            while done < reps && ns < 1000000000 {
+                got = work(kind, s, n);
+                done = done + 1;
+                ns = (clock() - t0) * 1000;
+            }
+            println(label, " got=", got, " ns=", ns, " reps=", done);
+            return ns;
+        }
         fn lines(s: String) -> Int {
             let v = std::str::bytes_view(s);
             let mut k = 0;
@@ -345,6 +386,20 @@ fn words_source_scales_linearly_where_the_hand_loop_does_not() {
     let s = Samples::run(
         "words_source_scaling",
         r#"
+        @ffi("c") fn clock() -> Int;
+        fn sample(kind: Int, s: String, n: Int, reps: Int, label: String) -> Int {
+            let mut got = 0;
+            let mut done = 0;
+            let mut ns = 0;
+            let t0 = clock();
+            while done < reps && ns < 1000000000 {
+                got = work(kind, s, n);
+                done = done + 1;
+                ns = (clock() - t0) * 1000;
+            }
+            println(label, " got=", got, " ns=", ns, " reps=", done);
+            return ns;
+        }
         fn hand(s: String) -> Int {
             let mut rest = s;
             let mut n = 0;
@@ -443,6 +498,20 @@ fn min_max_over_a_text_source_never_recopy_the_best_part() {
     let s = Samples::run(
         "text_min_max_scaling",
         r#"
+        @ffi("c") fn clock() -> Int;
+        fn sample(kind: Int, s: String, n: Int, reps: Int, label: String) -> Int {
+            let mut got = 0;
+            let mut done = 0;
+            let mut ns = 0;
+            let t0 = clock();
+            while done < reps && ns < 1000000000 {
+                got = work(kind, s, n);
+                done = done + 1;
+                ns = (clock() - t0) * 1000;
+            }
+            println(label, " got=", got, " ns=", ns, " reps=", done);
+            return ns;
+        }
         fn keyed(s: String) -> Int {
             let w = std::str::words(s).max(len(it)) or "";
             return len(w);
@@ -502,6 +571,20 @@ fn len_and_slice_of_a_local_scale_linearly() {
     let s = Samples::run(
         "len_slice_scaling",
         r#"
+        @ffi("c") fn clock() -> Int;
+        fn sample(kind: Int, s: String, n: Int, reps: Int, label: String) -> Int {
+            let mut got = 0;
+            let mut done = 0;
+            let mut ns = 0;
+            let t0 = clock();
+            while done < reps && ns < 1000000000 {
+                got = work(kind, s, n);
+                done = done + 1;
+                ns = (clock() - t0) * 1000;
+            }
+            println(label, " got=", got, " ns=", ns, " reps=", done);
+            return ns;
+        }
         type Held { text: String; }
         fn scan(s: String) -> Int {
             let mut count = 0;
