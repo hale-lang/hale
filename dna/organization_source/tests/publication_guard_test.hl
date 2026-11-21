@@ -3,9 +3,9 @@
 import ".." as orgsource;
 import "../../core" as dna;
 
-const BASE: String = "import \"vendor/support\" as support; main locus Org { params { worker: support::Worker = support::Worker { }; } }\n";
+const BASE: String = "import \"vendor/support\" as support; main locus Org { params { worker: support::Worker = support::Worker { }; } }\nfn main() { Org { }; }\n";
 const SUPPORT: String = "locus Worker { params { count: Int = 0; } }\n";
-const CANDIDATE: String = "// exact é 🧭\r\nimport \"vendor/support\" as support; main locus Org { params { worker: support::Worker = support::Worker { count: 2 }; } }\n";
+const CANDIDATE: String = "// exact é 🧭\r\nimport \"vendor/support\" as support; main locus Org { params { worker: support::Worker = support::Worker { count: 2 }; } }\nfn main() { Org { }; }\n";
 
 locus PublicationGuardCases {
     params { root: String = ""; repo: String = ""; compiler: String = ""; }

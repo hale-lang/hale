@@ -2014,7 +2014,7 @@ impl Snapshot {
                 let bundle = self.bundle();
                 if self.config.build_rules {
                     let ownership = self.demand_ownership_graph().map_err(Clone::clone)?;
-                    diags.extend(hale_types::build_rule_diags(&bundle, &ownership.rows));
+                    diags.extend(hale_types::build_rule_diags(&bundle, &ownership.rows, entry));
                 }
                 if self.config.alloc_advisory {
                     let summary = self.demand_alloc_summary().map_err(Clone::clone)?;

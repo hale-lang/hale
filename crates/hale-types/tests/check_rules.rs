@@ -3143,3 +3143,128 @@ mod default_scope_tests {
         assert_eq!(errors(&format!("{decls}fn main() {{ let r = R {{ }}; f(); }}\n")), Vec::<String>::new());
     }
 }
+
+mod unstarted_main_locus_tests {
+    //! GH #2108: a seed's own `main locus` is started by its `fn main`. A
+    //! seed with the locus and no `fn main` checked clean and failed `hale
+    //! build`; `hale check` refuses it now, at the locus's name, in the
+    //! build's words (`spec/semantics.md` § "The entry locus"). It is a
+    //! build rule (`hale_types::build_rule_diags`), which `hale check`, the
+    //! editor and every build path run beside the check, so the seed's
+    //! model stands and its laws are still judged.
+
+    use super::*;
+    use hale_frontend::snapshot::Config;
+    use hale_syntax::parse_source;
+
+    const STARTS: &str = "a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }`";
+
+    const APP: &str = "main locus App {\n    run() {\n        println(\"hi\");\n    }\n}\n";
+
+    fn refusals(diags: &[Diag]) -> Vec<&Diag> {
+        diags.iter().filter(|d| d.message.contains("is started by `fn main`")).collect()
+    }
+
+    /// The check and the build rules, as `hale check` reports them.
+    fn check(src: &str) -> Vec<Diag> {
+        let program = parse_source(src).expect("parses");
+        let programs: BTreeMap<String, &Program> = std::iter::once(("main.hl".to_string(), &program)).collect();
+        entries::check_bundle_for_build(&Bundle::new(programs), false)
+    }
+
+    /// A seed of files, loaded as the editor loads it: the check with the
+    /// build rules.
+    fn check_seed(files: &[(&str, &str)]) -> Vec<Diag> {
+        entries::checked(&entries::load_files(files, Config::editor()))
+    }
+
+    #[test]
+    fn a_main_locus_with_no_fn_main_is_refused_at_its_name() {
+        let diags = check(APP);
+        let found = refusals(&diags);
+        assert_eq!(found.len(), 1, "{diags:?}");
+        assert!(found[0].is_error(), "{:?}", found[0]);
+        assert_eq!(found[0].message, STARTS);
+        // the name, `App`: line 1, column 12, as the build places it
+        let at = APP.find("App").expect("the name");
+        assert_eq!((found[0].span.start.as_usize(), found[0].span.end.as_usize()), (at, at + 3));
+    }
+
+    #[test]
+    fn the_message_names_the_locus_the_seed_declares() {
+        let diags = check("main locus Svc {\n    params { }\n}\n");
+        let found = refusals(&diags);
+        assert_eq!(found.len(), 1, "{diags:?}");
+        assert!(found[0].message.ends_with("add `fn main() { Svc { }; }`"), "{}", found[0].message);
+    }
+
+    #[test]
+    fn a_fn_main_starts_it_or_declares_it_unstarted_and_both_check() {
+        // the line the message names
+        assert!(refusals(&check(&format!("{APP}\nfn main() {{ App {{ }}; }}\n"))).is_empty());
+        // a `fn main` that never builds the locus: it builds, so it checks
+        assert!(refusals(&check(&format!("{APP}\nfn main() {{ println(\"no app\"); }}\n"))).is_empty());
+        // a `fn main` that starts it through a helper
+        assert!(refusals(&check(&format!("{APP}\nfn start() {{ App {{ }}; }}\nfn main() {{ start(); }}\n"))).is_empty());
+    }
+
+    #[test]
+    fn a_fn_main_in_another_file_of_the_seed_starts_it() {
+        let started = check_seed(&[("app.hl", APP), ("main.hl", "fn main() {\n    App { };\n}\n")]);
+        assert!(refusals(&started).is_empty(), "{started:?}");
+        let unstarted = check_seed(&[("app.hl", APP), ("util.hl", "fn helper() -> Int {\n    return 1;\n}\n")]);
+        assert_eq!(refusals(&unstarted).len(), 1, "{unstarted:?}");
+    }
+
+    #[test]
+    fn a_library_seed_with_no_main_locus_is_not_refused() {
+        assert!(refusals(&check("locus Worker {\n    run() { }\n}\nfn helper() -> Int {\n    return 1;\n}\n")).is_empty());
+    }
+
+    #[test]
+    fn a_test_file_is_held_to_it_and_a_bench_file_is_not() {
+        // `hale test` builds a test file as it stands
+        let test = check_seed(&[("app_test.hl", APP)]);
+        assert_eq!(refusals(&test).len(), 1, "{test:?}");
+        // `hale bench` appends the driver's `fn main` to a bench file,
+        // which declares none of its own
+        let bench = check_seed(&[("app_bench.hl", &format!("{APP}\nfn bench_one() {{ let x = 1 + 1; }}\n"))]);
+        assert!(refusals(&bench).is_empty(), "{bench:?}");
+    }
+
+    #[test]
+    fn an_imported_main_locus_is_its_importers_to_start() {
+        let lib = parse_source(APP).expect("parses");
+        let mut lib = lib;
+        for item in lib.items.iter_mut() {
+            if let hale_syntax::ast::TopDecl::Locus(l) = item {
+                l.imported = true;
+            }
+        }
+        let app = parse_source("fn helper() -> Int {\n    return 1;\n}\n").expect("parses");
+        let programs: BTreeMap<String, &Program> =
+            [("lib.hl".to_string(), &lib), ("main.hl".to_string(), &app)].into_iter().collect();
+        let diags = entries::check_bundle_for_build(&Bundle::new(programs), false);
+        assert!(refusals(&diags).is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn the_refusal_leaves_the_seeds_laws_judged() {
+        // A law the seed breaks is still reported beside the refusal:
+        // the refusal is a build rule, not an error that takes the model.
+        let src = format!(
+            "fn report() {{\n    println(\"x\");\n}}\n\nmain locus App {{\n    claims {{\n        quiet: forbid reaches(program, effects(stdio));\n    }}\n    run() {{\n        report();\n    }}\n}}\n"
+        );
+        let diags = check(&src);
+        assert_eq!(refusals(&diags).len(), 1, "{diags:?}");
+        assert!(diags.iter().any(|d| d.message.contains("claim `quiet` violated")), "{diags:?}");
+        // and the check proper, without the build rules, does not report it
+        assert!(refusals(&check_program(&parse_source(&src).expect("parses"))).is_empty());
+    }
+
+    #[test]
+    fn an_export_module_needs_no_fn_main() {
+        let src = format!("{APP}\n@export\nfn add(a: Int, b: Int) -> Int {{\n    return a + b;\n}}\n");
+        assert!(refusals(&check(&src)).is_empty());
+    }
+}

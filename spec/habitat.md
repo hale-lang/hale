@@ -1,9 +1,15 @@
 # The habitat
 
-This document specifies the habitat as shipped (GH #1653). It describes
-the `local` profile, the only one built; the hosted profile is not. The
-organism it serves is specified in `spec/dna.md`; the design it came from
-is `docs/src/habitat.md`.
+This document specifies the habitat as shipped (GH #1653). The habitat
+runs under the `local` profile: its services are a docker compose project
+on the machine it is born on, which is this machine or another one reached
+over SSH (`up --host`, § A habitat on another machine). Hosts can join
+it to take allocations, and one admin machine can keep several habitats
+(below). An organism grafted from it is placed with the
+`local` or `remote-body` profile (§ Graft and `[dna] needs`). The `hosted` profile, a
+habitat whose backends are a platform's managed services, is not built.
+The organism it serves is specified in `spec/dna.md`; the design it came
+from is `docs/src/habitat.md`.
 
 ## What the habitat is
 

@@ -87,7 +87,7 @@ const SHELF: &str = r##"{
   }
 }"##;
 
-const MAIN: &str = "main locus App {\n    run { }\n}\n";
+const MAIN: &str = "main locus App {\n    run { }\n}\n\nfn main() { App { }; }\n";
 
 /// A seed holding the import of `doc` as `Shelf`, the document beside it.
 fn imported_seed(tag: &str) -> PathBuf {

@@ -34,7 +34,10 @@
 //!   forwarding wrapper, interface dispatch;
 //! - fallible plumbing: an `or` clause given another disposition (`or
 //!   raise`, `or fail err`, `or discard`, a default), a call routed through
-//!   a fallible wrapper and addressed each of those ways.
+//!   a fallible wrapper and addressed each of those ways;
+//! - the entry point: `fn main` dropped from a seed with a `main locus`
+//!   of its own, which nothing then starts (GH #2108), or its body moved
+//!   to a helper the new `fn main` calls.
 //!
 //! A candidate is a seed program with a chain of one or two mutations.
 //! Which ones is a draw over the cross product: every (seed, mutator)
@@ -736,6 +739,29 @@ fn mutators_reach_check_clean_programs() {
     });
     let dead: Vec<&&str> = names.iter().zip(&reached).filter(|(_, r)| r.is_none()).map(|(n, _)| n).collect();
     assert!(dead.is_empty(), "mutators that produced no check-clean program over {} seeds: {dead:?}", seeds.len());
+}
+
+/// GH #2108: `entry_shape`'s two shapes over a seed whose `main locus` its
+/// `fn main` starts. Dropping `fn main` leaves a `main locus` nothing
+/// starts, which the build refuses at the locus's name: the check refuses
+/// it too, so the candidate is the check's to reject and never a
+/// divergence. Moving the body into a helper keeps a program that builds.
+#[test]
+fn entry_shape_drops_main_into_a_check_refusal_and_keeps_the_helper_built() {
+    let src = "main locus App {\n    run() {\n        println(\"hi\");\n    }\n}\n\nfn main() {\n    App { };\n}\n";
+    let start: Files = std::iter::once((mutators::MAIN.to_string(), src.to_string())).collect();
+    let m = MUTATORS.iter().find(|m| m.name == "entry_shape").expect("the mutator is listed");
+    let mut seen = BTreeMap::new();
+    for k in 0..64u64 {
+        if let Some((files, desc)) = (m.apply)(&start, &mut Rng::new(k)) {
+            seen.entry(desc).or_insert(files);
+        }
+    }
+    let dropped = seen.get("entry_shape(drop)").expect("a draw drops `fn main`");
+    assert!(!dropped[mutators::MAIN].contains("fn main"), "{}", dropped[mutators::MAIN]);
+    assert_eq!(gate::verdict(dropped, "pg_entry_drop"), Verdict::CheckRejects);
+    let helper = seen.get("entry_shape(helper)").expect("a draw moves the body to a helper");
+    assert_eq!(gate::verdict(helper, "pg_entry_helper"), Verdict::Built);
 }
 
 /// The minimizer keeps what the predicate needs and drops the rest.

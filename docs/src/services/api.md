@@ -25,10 +25,11 @@ locus Orders {
         next: Int = 41;
         open: Int = 0;
     }
-    closure position_limit { captures: open; epoch inline; }
 
-    fn place(req: OrderRequest) -> OrderResponse fallible(ClosureViolation) {
-        if req.qty > 10000 { violate position_limit; }
+    fn place(req: OrderRequest) -> OrderResponse fallible(OrderError) {
+        if req.qty > 10000 {
+            fail OrderError { code: "over_limit", reason: "qty is over 10000" };
+        }
         let id = OrderId(self.next);
         self.next = self.next + 1;
         self.open = self.open + 1;
@@ -75,13 +76,14 @@ An `api` block names a surface and lists its operations as `rpc` rows. Each row 
 - **Return Value & Errors**: The return type is the wire response. If the handler is `fallible(E)`:
   - When `E` is a user record or enum (like `OrderError` above), failures are returned to the caller as a structured `HandlerError` matching `E`'s schema.
   - When the handler may `violate` an inline closure, it must declare `fallible(ClosureViolation)`. If a violation occurs, the owner's `on_failure` policy runs first and the caller receives an opaque `ServerError` containing no internal violation state.
+  - A bad request is the caller's error, so refuse it with `fail`, as `place` does above. `violate` is for the locus's own invariant breaking: it stops the locus, hands it to its owner's `on_failure`, and fails every call still queued for it. Never use it to reject input.
 
 Instead of writing a separate `api` block, you can annotate locus methods with `@rpc` to add them to the seed's **default surface** (named after the seed):
 
 ```hale,fragment
 locus Orders {
     @rpc
-    fn place(req: OrderRequest) -> OrderResponse fallible(ClosureViolation) { … }
+    fn place(req: OrderRequest) -> OrderResponse fallible(OrderError) { … }
     @rpc(requires: [trader])
     fn cancel(req: CancelRequest) -> CancelResponse fallible(OrderError) { … }
 }
@@ -907,6 +909,7 @@ claude mcp add desk -- hale mcp --app http://127.0.0.1:8080 --token t-alice
 ```
 
 - **Typed Flags vs. `--json`**: `hale call` validates `--<field>` flags against the exposure's JSON Schema before sending (exiting with code `5` on client-side schema mismatch). Passing `--json '{...}'` (or `--json -` for stdin) sends raw JSON directly to the server.
+- **One-Value Requests**: a member whose handler takes one value rather than a record (`fn submit(id: Int)`) is called by its parameter's name, which the description gives as `"param"`: `hale api call http://127.0.0.1:8080 Svc::submit --id 7` sends the bare `7`, exactly as `--json 7` does, and `hale describe` shows the row as `Svc::submit(id: Int) -> Int`. Its value is checked before sending: an enum takes one of its wire names (`--color Green`), a `Time` RFC 3339 text in UTC (`--at 2026-10-12T03:04:05Z`), a `Duration` or other quantity its count (`--wait 1500000000` nanoseconds), and a `Decimal` its digits, none lost. A missing, misspelled or repeated flag exits `5` with the way to give it ("Svc::submit takes one Int, `id`: pass `--id <int>`, or its JSON with --json"). With the short form, a bare value after the member is `--json`: `hale call /run/svc.sock Svc::submit 7`.
 - **Reserved Flags**: `hale call` reserves `--json`, `--bearer`, `--digest`, `--raw`, and `--request-id` (defaults to `hale-<pid>`). If a request payload has a field matching one of those five names, pass it via `--json` (a field named `id` can be passed normally as `--id 5`).
 - **Exit Codes**: `0` (`Result` on stdout), `1` (`HandlerError` on stderr), `2` (`Refusal` on stderr), `3` (`ServerError` on stderr), `4` (`Lost` / connection failure), `5` (client-side refusal before sending). Passing `--raw` prints the full wire envelope to stdout while preserving the exit code.
 

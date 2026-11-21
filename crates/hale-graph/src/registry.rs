@@ -814,7 +814,7 @@ pub const FAMILIES: &[Family] = &[
         producer: Some(site(ENTRY, "entry_row")),
         legacy: &[],
         consumers: &[
-            consumer_at("check (rule 1's count reads the witness: the seed's own mains)", CHECK, "check_main_and_bindings"),
+            consumer_at("check (rule 1's count reads the witness: the seed's own mains; and GH #2108's refusal of a seed whose own `main locus` nothing starts, read from the witness and the `fn main` column, `entry::unstarted_main_locus`, in lowering's words)", CHECK, "check_main_and_bindings"),
             consumer_at("placement (the table is seeded from the row's entry, `EntryRow::entry`; the F.31 rule, the form rows' sync inference, the blocking check, the pinned-in-a-loop rule, instance aliasing and the model's arrangement read it)", PLACEMENT, "derive_placement"),
             consumer_at("check (rule 9's closed world is a program with an entry, and its api exemption is the entry's `api:` binding, never an imported `main`'s, which is inert)", CHECK, "check_bus_graph"),
             consumer_at("check (each `main locus`'s own `placement { }` block is validated over the witness, deployed or not: an affinity on no named pool, two for one pool)", CHECK, "check_pool_affinity"),

@@ -177,7 +177,7 @@ pub fn check_bundle_for_build(bundle: &Bundle<'_>, allow_unowned_subscriber: boo
         Ok(graph) => &graph.rows,
         Err(blocked) => panic!("the ownership graph is blocked: {}", render_blocked(blocked)),
     };
-    diags.extend(hale_types::build_rule_diags(&snap.bundle(), ownership));
+    diags.extend(hale_types::build_rule_diags(&snap.bundle(), ownership, snap.demand_entry().expect("the entry row")));
     diags
 }
 

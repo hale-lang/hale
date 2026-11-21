@@ -220,6 +220,50 @@ fn payload_fields<'a>(doc: &'a Value, member: &'a Value) -> Vec<(&'a str, &'a Va
     out
 }
 
+/// A member whose request is one value and no record (`fn submit(id: Int)`):
+/// the parameter's name, as the description gives it (`"param"`, GH #2109;
+/// a description served before it gives none), and the request's schema.
+/// `None` for a record request and for a member that takes nothing.
+fn scalar_request<'a>(doc: &'a Value, member: &'a Value) -> Option<(Option<&'a str>, &'a Value)> {
+    let req = member.get("request").filter(|r| !r.is_null())?;
+    if resolve(doc, req).get("properties").is_some() {
+        return None;
+    }
+    Some((member.get("param").and_then(Value::as_str), req))
+}
+
+/// What a flag's value is written as, for a usage line: `<int>`, `<Red|Green>`.
+fn value_hint(doc: &Value, schema: &Value) -> String {
+    let r = resolve(doc, schema);
+    if let Some(names) = r.get("enum").and_then(Value::as_array) {
+        return names.iter().filter_map(Value::as_str).collect::<Vec<_>>().join("|");
+    }
+    if is_decimal(r) {
+        return "decimal".to_string();
+    }
+    match (r.get("type").and_then(Value::as_str), r.get("format").and_then(Value::as_str)) {
+        (Some("string"), Some("date-time")) => "time, e.g. 2026-10-12T03:04:05Z".to_string(),
+        (Some("integer"), _) => match r.get("x-hale-unit").and_then(Value::as_str).and_then(|u| u.strip_prefix("q(")).and_then(|u| u.strip_suffix(')')) {
+            Some(u) => format!("int, a count of {u}"),
+            None => "int".to_string(),
+        },
+        (Some("number"), _) => "number".to_string(),
+        (Some("boolean"), _) => "true|false".to_string(),
+        (Some("string"), _) => "text".to_string(),
+        _ => "json".to_string(),
+    }
+}
+
+/// How a scalar request is given: `Svc::submit takes one Int, `id`: pass
+/// `--id <int>``.
+fn scalar_usage(doc: &Value, name: &str, param: Option<&str>, schema: &Value) -> String {
+    let ty = type_label(doc, schema);
+    match param {
+        Some(p) => format!("{name} takes one {ty}, `{p}`: pass `--{} <{}>`, or its JSON with --json", p.replace('_', "-"), value_hint(doc, schema)),
+        None => format!("{name} takes one {ty}, and its description names no parameter: pass its JSON with --json"),
+    }
+}
+
 fn requires_of(member: &Value) -> Vec<&str> {
     member.get("requires").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default()
 }
@@ -244,10 +288,10 @@ fn render(doc: &Value) -> String {
     }
     for m in &members {
         let name = m.get("name").and_then(Value::as_str).unwrap_or("?");
-        let fields: Vec<String> = payload_fields(doc, m)
-            .iter()
-            .map(|(n, sc, req)| format!("{n}{}: {}", if *req { "" } else { "?" }, type_label(doc, sc)))
-            .collect();
+        let fields: Vec<String> = match scalar_request(doc, m) {
+            Some((p, sc)) => vec![format!("{}: {}", p.unwrap_or("request"), type_label(doc, sc))],
+            None => payload_fields(doc, m).iter().map(|(n, sc, req)| format!("{n}{}: {}", if *req { "" } else { "?" }, type_label(doc, sc))).collect(),
+        };
         let result = m.get("response").map_or("?".to_string(), |r| type_label(doc, r));
         let error = match m.get("error") {
             Some(Value::String(e)) => format!(", error {e}"),
@@ -402,10 +446,22 @@ fn schema_text(schema: &Value) -> String {
 /// their text, a quantity by its count, anything else (a record, a list) as
 /// JSON that `check_value` holds to the description's schemas, nested records
 /// and lists included.
-fn typed_value(doc: &Value, field: &str, schema: &Value, text: Option<&str>) -> Result<Value, String> {
+///
+/// `param` is a scalar request's parameter (GH #2109), whose value is also
+/// held to what the codec reads before it is sent: a payload-free enum's wire
+/// names, an instant's RFC 3339 text in UTC, a `Decimal`'s digits, each kept.
+/// A record's field is not: its text goes as before, and the server refuses
+/// what it cannot read.
+fn typed_value(doc: &Value, field: &str, param: bool, schema: &Value, text: Option<&str>) -> Result<Value, String> {
     let resolved = resolve(doc, schema);
     let kind = resolved.get("type").and_then(Value::as_str).unwrap_or("");
-    let refuse = |why: &str| format!("`--{field}`: {why}; the field is {} {}", type_label(doc, schema), schema_text(resolved));
+    let noun = if param { "parameter" } else { "field" };
+    let refuse = |why: &str| format!("`--{field}`: {why}; the {noun} is {} {}", type_label(doc, schema), schema_text(resolved));
+    if param {
+        if let Some(v) = param_value(resolved, text).map(|r| r.map_err(|why| refuse(&why))) {
+            return v;
+        }
+    }
     match (kind, text) {
         ("boolean", None) => Ok(json!(true)),
         (_, None) => Err(refuse("needs a value")),
@@ -434,6 +490,121 @@ fn typed_value(doc: &Value, field: &str, schema: &Value, text: Option<&str>) -> 
             Ok(v)
         }
     }
+}
+
+/// The checks a scalar parameter's text gets beyond its JSON kind's
+/// ([`typed_value`]): `None` where there are none and the kind's own apply.
+fn param_value(schema: &Value, text: Option<&str>) -> Option<Result<Value, String>> {
+    let t = text?;
+    // a payload-free enum by a wire name its description lists
+    if let Some(names) = schema.get("enum").and_then(Value::as_array) {
+        let listed: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
+        return Some(if listed.contains(&t) { Ok(json!(t)) } else { Err(format!("`{t}` is not one of {}", listed.join(", "))) });
+    }
+    // a Decimal by its digits, every one kept (spec/api.md § Codecs)
+    if is_decimal(schema) {
+        return Some(decimal_value(t.trim(), schema));
+    }
+    if schema.get("format").and_then(Value::as_str) == Some("date-time") {
+        return Some(if is_utc_instant(t) {
+            Ok(json!(t))
+        } else {
+            Err(format!("`{t}` is not an RFC 3339 instant in UTC (`2026-10-12T03:04:05Z`, `2026-10-12T03:04:05.25Z`)"))
+        });
+    }
+    None
+}
+
+/// A schema of a `Decimal<S>` (`"x-hale-type": "Decimal<2>"`, a number or, for
+/// a field tagged `string`, a string).
+fn is_decimal(schema: &Value) -> bool {
+    schema.get("x-hale-type").and_then(Value::as_str).is_some_and(|t| t.starts_with("Decimal<"))
+}
+
+/// A JSON number's text (RFC 8259 § 6) as its sign, its digits with no
+/// leading or trailing zero, and the power of ten of the last of them; `None`
+/// for a text that is no JSON number. `0` is `(false, "", 0)`.
+fn decimal_parts(t: &str) -> Option<(bool, String, i64)> {
+    let (neg, rest) = match t.strip_prefix('-') {
+        Some(r) => (true, r),
+        None => (false, t),
+    };
+    let (mantissa, exp) = match rest.find(['e', 'E']) {
+        Some(i) => {
+            let e = &rest[i + 1..];
+            let digits = e.strip_prefix(['+', '-']).unwrap_or(e);
+            if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            (&rest[..i], e.parse::<i64>().ok()?)
+        }
+        None => (rest, 0),
+    };
+    let (int, frac) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let int_ok = int == "0" || (!int.is_empty() && !int.starts_with('0'));
+    let frac_ok = !mantissa.contains('.') || !frac.is_empty();
+    if !int_ok || !frac_ok || !int.bytes().chain(frac.bytes()).all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let all = format!("{int}{frac}");
+    let trimmed = all.trim_end_matches('0');
+    let power = exp.saturating_sub(frac.len() as i64).saturating_add((all.len() - trimmed.len()) as i64);
+    let digits = trimmed.trim_start_matches('0').to_string();
+    if digits.is_empty() {
+        return Some((false, String::new(), 0));
+    }
+    Some((neg, digits, power))
+}
+
+/// A `Decimal<S>`'s flag: a JSON number (an exponent applied) with no nonzero
+/// digit past the scale. It is sent as the JSON number it reads as when a double
+/// carries it exactly (the wire `--json` of the same text writes), else as a
+/// JSON string of its digits, which the decoder reads to the digit (spec/api.md
+/// § Codecs), so no digit is lost on the way.
+fn decimal_value(t: &str, schema: &Value) -> Result<Value, String> {
+    let Some((neg, digits, power)) = decimal_parts(t) else {
+        return Err(format!("`{t}` is not a decimal number"));
+    };
+    let scale = schema.get("x-hale-type").and_then(Value::as_str).and_then(|n| n.strip_prefix("Decimal<")).and_then(|n| n.strip_suffix('>')).and_then(|n| n.parse::<i64>().ok());
+    if let Some(sc) = scale.filter(|sc| !digits.is_empty() && power < -sc) {
+        return Err(format!("`{t}` has a digit past the scale of {sc}"));
+    }
+    let quoted = schema.get("type").and_then(Value::as_str) == Some("string");
+    if !quoted {
+        if let Ok(v) = serde_json::from_str::<Value>(t) {
+            if let Some(f) = v.as_f64().filter(|f| f.is_finite()) {
+                if decimal_parts(&format!("{f}")) == Some((neg, digits.clone(), power)) {
+                    return Ok(v);
+                }
+            }
+        }
+    }
+    Ok(json!(t))
+}
+
+/// `t` is an instant as the codec reads one: `YYYY-MM-DDTHH:MM:SS`, a fraction
+/// of one to nine digits, and `Z` (spec/api.md § An instant and a duration).
+/// Whether the date exists and lies in `Time`'s range is the server's to say.
+fn is_utc_instant(t: &str) -> bool {
+    let b = t.as_bytes();
+    let digit = |i: usize| b.get(i).is_some_and(u8::is_ascii_digit);
+    let at = |i: usize, c: u8| b.get(i) == Some(&c);
+    let head = (0..4).all(digit) && at(4, b'-') && digit(5) && digit(6) && at(7, b'-') && digit(8) && digit(9) && at(10, b'T') && digit(11) && digit(12) && at(13, b':') && digit(14) && digit(15) && at(16, b':') && digit(17) && digit(18);
+    if !head {
+        return false;
+    }
+    let tail = &t[19..];
+    let tail = match tail.strip_prefix('.') {
+        Some(f) => {
+            let n = f.bytes().take_while(u8::is_ascii_digit).count();
+            if n == 0 || n > 9 {
+                return false;
+            }
+            &f[n..]
+        }
+        None => tail,
+    };
+    tail == "Z"
 }
 
 /// `v` against `schema` (references followed through the description's `schemas`), or
@@ -517,8 +688,20 @@ fn check_value(doc: &Value, path: &str, schema: &Value, v: &Value) -> Result<(),
 /// The payload a member's typed flags build, in the schema's field order; or
 /// why not, before anything is sent.
 fn build_payload(doc: &Value, member: &Value, flags: &[(String, Option<String>)]) -> Result<Value, String> {
-    let fields = payload_fields(doc, member);
     let name = member.get("name").and_then(Value::as_str).unwrap_or("?");
+    // GH #2109: a request that is one value is given by its parameter's name,
+    // `--id 7`, and sent as that value alone (the wire of § The `Rpc` interface)
+    if let Some((param, schema)) = scalar_request(doc, member) {
+        let usage = scalar_usage(doc, name, param, schema);
+        let other = flags.iter().find(|(f, _)| param != Some(f.replace('-', "_").as_str()));
+        return match (other, flags) {
+            (Some((flag, _)), _) => Err(format!("`--{flag}` is not a parameter of {name}; {usage}")),
+            (None, []) => Err(usage),
+            (None, [(flag, text)]) => typed_value(doc, flag, true, schema, text.as_deref()),
+            (None, [(flag, _), ..]) => Err(format!("`--{flag}` is given twice; {usage}")),
+        };
+    }
+    let fields = payload_fields(doc, member);
     let listed = || fields.iter().map(|(n, s, r)| format!("--{n} <{}>{}", type_label(doc, s), if *r { "" } else { " (optional)" })).collect::<Vec<_>>().join(" ");
     let mut given: Vec<(&str, Option<&str>)> = Vec::new();
     for (flag, text) in flags {
@@ -535,7 +718,7 @@ fn build_payload(doc: &Value, member: &Value, flags: &[(String, Option<String>)]
     for (n, schema, required) in &fields {
         match given.iter().find(|(g, _)| g == n) {
             Some((_, text)) => {
-                out.insert((*n).to_string(), typed_value(doc, n, schema, *text)?);
+                out.insert((*n).to_string(), typed_value(doc, n, false, schema, *text)?);
             }
             None if *required => {
                 return Err(format!(
@@ -698,7 +881,7 @@ pub(crate) fn run_call(rest: &[String]) -> ExitCode {
     let payload = match (given_payload, doc.as_ref(), entry) {
         (Some(p), _, _) => p,
         (None, Some(d), Some(m)) => {
-            if flags.is_empty() && !is_object_schema(d, m) {
+            if flags.is_empty() && !is_object_schema(d, m) && scalar_request(d, m).is_none() {
                 return usage_error("call", &format!("the payload of {member} is not a record: give it with --json"));
             }
             match build_payload(d, m, &flags) {
@@ -774,5 +957,118 @@ mod tests {
         let a = |v: &[&str]| split_args(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>(), &["json"]);
         assert_eq!(a(&["e", "--json", "m"]), vec![Arg::Pos("e".into()), Arg::Flag("json".into(), None), Arg::Pos("m".into())]);
         assert_eq!(a(&["--x=1", "--y", "2", "--z"]), vec![Arg::Flag("x".into(), Some("1".into())), Arg::Flag("y".into(), Some("2".into())), Arg::Flag("z".into(), None)]);
+    }
+
+    /// A description with a member per scalar kind, as a served one lists them
+    /// (GH #2109), and a record whose field is named like a parameter.
+    fn scalar_doc() -> Value {
+        let m = |name: &str, param: Option<&str>, request: Value| {
+            let mut m = json!({"name": name, "request": request, "response": {"type": "integer"}, "error": null, "requires": []});
+            if let Some(p) = param {
+                m["param"] = json!(p);
+            }
+            m
+        };
+        json!({
+            "members": [
+                m("Svc::submit", Some("id"), json!({"type": "integer"})),
+                m("Svc::ratio", Some("x"), json!({"type": "number"})),
+                m("Svc::flag", Some("on"), json!({"type": "boolean"})),
+                m("Svc::echo", Some("text"), json!({"type": "string"})),
+                m("Svc::price", Some("p"), json!({"type": "number", "x-hale-type": "Decimal<2>"})),
+                m("Svc::quoted", Some("p"), json!({"type": "string", "x-hale-type": "Decimal<2>"})),
+                m("Svc::stamp", Some("at"), json!({"type": "string", "format": "date-time", "x-hale-type": "Time"})),
+                m("Svc::wait", Some("d"), json!({"type": "integer", "x-hale-type": "Duration", "x-hale-unit": "q(ns)"})),
+                m("Svc::charge", Some("m"), json!({"type": "integer", "x-hale-type": "Money", "x-hale-unit": "q(cent)"})),
+                m("Svc::paint", Some("c"), json!({"type": "string", "enum": ["Red", "Green", "Blue"], "x-hale-type": "Color"})),
+                m("Svc::ship", Some("ship_to"), json!({"type": "string"})),
+                m("Svc::old", None, json!({"type": "integer"})),
+                m("Svc::pair", None, json!({"$ref": "#/schemas/Pair"})),
+            ],
+            "schemas": {"Pair": {"type": "object", "properties": {"id": {"type": "integer"}, "n": {"type": "integer"}}, "required": ["id", "n"]}},
+        })
+    }
+
+    fn payload(member: &str, flags: &[(&str, Option<&str>)]) -> Result<Value, String> {
+        let doc = scalar_doc();
+        let m = doc["members"].as_array().unwrap().iter().find(|m| m["name"] == member).unwrap().clone();
+        build_payload(&doc, &m, &flags.iter().map(|(k, v)| (k.to_string(), v.map(str::to_string))).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn a_scalar_request_is_its_parameter_sent_as_the_value_alone() {
+        assert_eq!(payload("Svc::submit", &[("id", Some("7"))]), Ok(json!(7)));
+        assert_eq!(payload("Svc::ratio", &[("x", Some("1.25"))]), Ok(json!(1.25)));
+        assert_eq!(payload("Svc::flag", &[("on", Some("false"))]), Ok(json!(false)));
+        assert_eq!(payload("Svc::flag", &[("on", None)]), Ok(json!(true)));
+        assert_eq!(payload("Svc::echo", &[("text", Some("hi there"))]), Ok(json!("hi there")));
+        assert_eq!(payload("Svc::stamp", &[("at", Some("2026-10-12T03:04:05.123456789Z"))]), Ok(json!("2026-10-12T03:04:05.123456789Z")));
+        assert_eq!(payload("Svc::wait", &[("d", Some("1500000000"))]), Ok(json!(1500000000)));
+        assert_eq!(payload("Svc::charge", &[("m", Some("125"))]), Ok(json!(125)));
+        assert_eq!(payload("Svc::paint", &[("c", Some("Green"))]), Ok(json!("Green")));
+        // a parameter's `_` may be written `-`, as a field's may
+        assert_eq!(payload("Svc::ship", &[("ship-to", Some("Oslo"))]), Ok(json!("Oslo")));
+        // a record keeps its fields, one of them named like a parameter
+        assert_eq!(payload("Svc::pair", &[("id", Some("3")), ("n", Some("4"))]), Ok(json!({"id": 3, "n": 4})));
+    }
+
+    #[test]
+    fn a_decimal_parameter_keeps_every_digit() {
+        // a double carries it exactly: the JSON number `--json` of the same text sends
+        assert_eq!(payload("Svc::price", &[("p", Some("97000.50"))]), Ok(json!(97000.5)));
+        assert_eq!(payload("Svc::price", &[("p", Some("-2"))]), Ok(json!(-2)));
+        assert_eq!(payload("Svc::price", &[("p", Some("1.5e1"))]), Ok(json!(15.0)));
+        // one no double carries: its digits in a string, which the decoder reads exactly
+        assert_eq!(payload("Svc::price", &[("p", Some("12345678901234567.89"))]), Ok(json!("12345678901234567.89")));
+        // a field tagged `string` is always its digits in a string
+        assert_eq!(payload("Svc::quoted", &[("p", Some("2.5"))]), Ok(json!("2.5")));
+        for (bad, why) in [("1.234", "past the scale of 2"), ("+1", "not a decimal"), (".5", "not a decimal"), ("01", "not a decimal"), ("1.", "not a decimal"), ("1e-3", "past the scale"), ("abc", "not a decimal")] {
+            let e = payload("Svc::price", &[("p", Some(bad))]).unwrap_err();
+            assert!(e.contains(why) && e.contains("the parameter is Float (Decimal<2>)"), "{bad}: {e}");
+        }
+        assert_eq!(payload("Svc::price", &[("p", Some("1.2300"))]), Ok(json!(1.23)));
+        // an exponent no i64 holds is no number of the scale, never an overflow
+        assert!(payload("Svc::price", &[("p", Some("1e-9223372036854775808"))]).unwrap_err().contains("past the scale"));
+        assert_eq!(payload("Svc::price", &[("p", Some("1e9223372036854775807"))]), Ok(json!("1e9223372036854775807")));
+    }
+
+    #[test]
+    fn a_bad_parameter_value_names_the_type_it_needs() {
+        for (member, flag, bad, why) in [
+            ("Svc::submit", "id", "x", "`x` is not an integer; the parameter is Int"),
+            ("Svc::ratio", "x", "fast", "`fast` is not a number; the parameter is Float"),
+            ("Svc::flag", "on", "yes", "`yes` is not true or false; the parameter is Bool"),
+            ("Svc::wait", "d", "1.5s", "`1.5s` is not an integer; the parameter is Int (Duration, q(ns))"),
+            ("Svc::paint", "c", "Pink", "`Pink` is not one of Red, Green, Blue; the parameter is Color"),
+            ("Svc::stamp", "at", "2026-10-12", "is not an RFC 3339 instant in UTC"),
+            ("Svc::stamp", "at", "2026-10-12T03:04:05+01:00", "is not an RFC 3339 instant in UTC"),
+            ("Svc::stamp", "at", "2026-10-12T03:04:05.1234567891Z", "is not an RFC 3339 instant in UTC"),
+        ] {
+            let e = payload(member, &[(flag, Some(bad))]).unwrap_err();
+            assert!(e.starts_with(&format!("`--{flag}`: ")) && e.contains(why), "{member} {bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_scalar_request_given_wrong_says_how_to_give_it() {
+        let usage = "Svc::submit takes one Int, `id`: pass `--id <int>`, or its JSON with --json";
+        assert_eq!(payload("Svc::submit", &[]), Err(usage.to_string()));
+        assert_eq!(payload("Svc::submit", &[("n", Some("7"))]), Err(format!("`--n` is not a parameter of Svc::submit; {usage}")));
+        assert_eq!(payload("Svc::submit", &[("id", Some("1")), ("id", Some("2"))]), Err(format!("`--id` is given twice; {usage}")));
+        assert_eq!(payload("Svc::submit", &[("id", Some("1")), ("n", Some("2"))]), Err(format!("`--n` is not a parameter of Svc::submit; {usage}")));
+        assert_eq!(
+            payload("Svc::paint", &[]),
+            Err("Svc::paint takes one Color, `c`: pass `--c <Red|Green|Blue>`, or its JSON with --json".to_string())
+        );
+        assert_eq!(
+            payload("Svc::wait", &[]),
+            Err("Svc::wait takes one Int (Duration, q(ns)), `d`: pass `--d <int, a count of ns>`, or its JSON with --json".to_string())
+        );
+        assert_eq!(payload("Svc::ship", &[]), Err("Svc::ship takes one String, `ship_to`: pass `--ship-to <text>`, or its JSON with --json".to_string()));
+        // a description served before the parameter was named
+        assert_eq!(
+            payload("Svc::old", &[("id", Some("7"))]),
+            Err("`--id` is not a parameter of Svc::old; Svc::old takes one Int, and its description names no parameter: pass its JSON with --json".to_string())
+        );
     }
 }

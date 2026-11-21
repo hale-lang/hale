@@ -239,7 +239,18 @@ pub fn check_resource_ceiling(
 /// `ownership` is the rows of the bundle's ownership graph
 /// (`Snapshot::demand_ownership_graph`): the rule reads which locus
 /// accepts which child there (`OwnershipRows::accepts_ancestor`).
-pub fn build_rule_diags(bundle: &Bundle<'_>, ownership: &ownership_graph::OwnershipRows) -> Vec<Diag> {
+///
+/// GH #2108: a seed whose own `main locus` nothing starts (no `fn main`)
+/// is refused here too, at the locus's name, in lowering's words
+/// ([`entry::unstarted_main_diags`], over `entry`, the snapshot's
+/// `entrypoint` row). It is a build rule rather than the typing's own
+/// error so that it leaves the model standing: the seed's laws are still
+/// judged while its `fn main` is missing.
+pub fn build_rule_diags(
+    bundle: &Bundle<'_>,
+    ownership: &ownership_graph::OwnershipRows,
+    entry: &entry::EntryRow,
+) -> Vec<Diag> {
     let programs: Vec<&hale_syntax::ast::Program> = bundle.programs.values().copied().collect();
     let mut diags = borrow_lifetime::borrow_lifetime_diags_with_renames(
         &programs,
@@ -250,6 +261,7 @@ pub fn build_rule_diags(bundle: &Bundle<'_>, ownership: &ownership_graph::Owners
     // GH #1417: a serve site or a hub binding is described in R1 and
     // served by nothing yet, so a build refuses it rather than drop it.
     diags.extend(surfaces::unserved_sites(&programs));
+    diags.extend(entry::unstarted_main_diags(bundle, entry));
     stdlib_bodies::demangle_imports(&mut diags, &[]);
     diags
 }

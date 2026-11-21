@@ -8,6 +8,49 @@ behavior.
 
 ## Unreleased
 
+## v0.36.5 — one entry rule, one spec (2026-11-20)
+
+This patch closes a check/build divergence and corrects the habitat spec. Nothing a correct program means changes.
+
+- **`hale check` refuses a `main locus` nothing starts.** A seed with its own `main locus` and no `fn main` passed the check and failed the build. The check, the editor and every build path now report it at the locus's name with the same text, and the parity gate draws seeds with `fn main` removed or moved so a divergence of this kind is caught (#2113, GH #2108).
+- **spec/habitat.md says what is built:** a habitat on this machine or another reached over SSH, joined hosts, several per admin machine, and organisms grafted with the `local` or `remote-body` profile. Only the `hosted` profile is not built (#2114).
+
+### Breaking
+
+None.
+
+The item-level notes follow.
+
+### Fixed
+- `hale check` refuses a seed that declares its own `main locus` and no `fn main`, at the locus's name and in the build's words (``a `main locus` is started by `fn main`, and this seed has none: add `fn main() { App { }; }` ``), so a seed the check accepts no longer fails `hale build` there. It is a build rule, reported by `hale check`, the editor and every build path, so the seed's laws are still judged; `*_test.hl` files are held to it, `*_bench.hl` files (whose `fn main` is `hale bench`'s driver) and `@export` modules are not. An application another seed imports is still started by its importer; checked alone, it needs a `fn main` of its own. The parity gate's new `entry_shape` mutator drops `fn main` from a seed with a `main locus`, so a refusal of this kind the build makes alone is caught (GH #2108).
+
+### Docs
+- spec/habitat.md opens with what is built: a habitat on this machine or another reached over SSH, joined hosts, several per admin machine, organisms grafted with the `local` or `remote-body` profile; only the `hosted` profile is not built (#2114).
+
+## v0.36.4 — a store that cleans up after itself (2026-11-20)
+
+This patch fixes the memory growth left from #2102's deep copies, and lets `hale api call` send a single-value request. A whole store into a `bounded` field of a record local (`q.tags = r.tags`), repeated in a loop, used to keep every copy it replaced. Nothing a correct program means changes.
+
+- **The fix:** the copy is now made in a region of the field's own, and the next store frees it whenever no other name can still reach it.
+- **When the old copy is kept:** a store keeps it, as before, when a binding read from the field is still in scope, when a value read from the field was stored elsewhere, or when the store runs only once per call.
+- **The effect:** 200,000 stores into a local declared before the loop went from 41 MB to 4.5 MB and ran twice as fast (#2107, GH #2105).
+
+`hale api call` can also send a request that is one value: for `fn submit(id: Int)`, `--id 7` sends the bare `7`, and the value is checked against the parameter's type before it's sent. The served description names the parameter, and `hale api describe` shows the row as `Svc::submit(id: Int) -> Int` (#2110, GH #2109).
+
+### Breaking
+
+None.
+
+The item-level notes follow.
+
+### Fixed
+
+- A whole store into a `bounded` field of a record local (`q.tags = r.tags`) repeated in a loop no longer grows memory with every store. The copy is made in an arena of the field's own, and the next store frees it, whenever no other name can still reach it. 200,000 stores of four nested-record tags over a local declared before the loop went from 41 MB to 4.5 MB, and ran twice as fast. A store keeps the old copy, as before, when a binding read from the field is in scope, a value read from it was stored elsewhere, or the store runs once per call. A block that reached the field any other way, such as a pushed String a local still holds, is never freed by it (GH #2105).
+
+### Fixed
+
+- `hale api call` sends a request that is one value by its parameter's name (GH #2109): for `fn submit(id: Int)`, `--id 7` sends the bare `7`, as `--json 7` does, where it was refused as "no field of Svc::submit's payload". A served description now names such a member's parameter (`"param": "id"`), `hale api describe` shows the row as `Svc::submit(id: Int) -> Int`, and the value is checked before it is sent: an enum takes one of its wire names, a `Time` RFC 3339 text in UTC, a `Duration` or quantity its count, a `Decimal` its digits with none lost. A missing or misspelled flag says how to give it. Record requests are unchanged.
+
 ## v0.36.3 — main's loops let go (2026-11-20)
 
 This patch makes a loop in `fn main`, or in a free function, free what each iteration makes when the iteration ends, as a loop in a locus method has done since #1765. Before, a main loop kept every iteration's values, and the records a helper returned into it, until `main` returned. Nothing a correct program means changes: values that leave the iteration (assigned to an outer binding, stored on a locus, pushed into an outer list, published, returned) are kept as before.

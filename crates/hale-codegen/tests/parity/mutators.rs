@@ -417,6 +417,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "return_in_text_source", apply: return_in_text_source },
     Mutator { name: "match_to_if_let", apply: match_to_if_let },
     Mutator { name: "byte_literal_spelling", apply: byte_literal_spelling },
+    Mutator { name: "entry_shape", apply: entry_shape },
 ];
 
 /// `return e;` ending a fn's body becomes the tail `e`.
@@ -661,6 +662,39 @@ fn decl_name(item: &TopDecl) -> Option<&str> {
         TopDecl::Interface(i) => Some(&i.name.name),
         _ => None,
     }
+}
+
+/// The seed's entry point reshaped (GH #2108): where `fn main` is and what
+/// starts the `main locus`. A program with a top-level `fn main`:
+///
+/// - `drop`, in a program that declares its own `main locus`: `fn main`
+///   is removed, so nothing starts the locus. The build refuses that seed
+///   at the locus's name, and so must the check: the shape a check that
+///   accepted it and a build that refused it diverged on;
+/// - `helper`: `fn main`'s body moves to `fn __pg_main_body`, which a new
+///   `fn main` calls, so the `main locus` is started (or not) from a fn
+///   that is not the entry point.
+fn entry_shape(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    let (src, program) = parsed(files)?;
+    let main = program.items.iter().find_map(|i| match i {
+        TopDecl::Fn(f) if f.name.name == "main" => Some(f),
+        _ => None,
+    })?;
+    let has_main_locus = program.items.iter().any(|i| matches!(i, TopDecl::Locus(l) if l.is_main));
+    let shapes: &[&str] = if has_main_locus { &["drop", "helper"] } else { &["helper"] };
+    let shape = *rng.pick(shapes)?;
+    let out = match shape {
+        "drop" => {
+            let (s, e) = decl_range(&src, main.span);
+            splice(&src, vec![(s, e, String::new())])?
+        }
+        _ => {
+            let name = main.name.span;
+            let renamed = splice(&src, vec![(name.start.as_usize(), name.end.as_usize(), "__pg_main_body".to_string())])?;
+            append(&renamed, "fn main() {\n    __pg_main_body();\n}")
+        }
+    };
+    Some((with_main(files, out), format!("entry_shape({shape})")))
 }
 
 /// Widen a declaration's range back over the annotations on the lines
