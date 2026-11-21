@@ -78,7 +78,8 @@ fn last_line(text: String) -> String {
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
-        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+        "FROM " + dna::TEST_ALPINE
+            + "\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
     ) or discard;
     std::io::fs::write_file(
         dir + "/docker.sh",
@@ -257,7 +258,8 @@ fn main() {
     std::io::fs::mkdir(render_dir) or discard;
     std::io::fs::write_file(
         render_dir + "/compose.yaml",
-        "services:\n  probe:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n    volumes: [\"probe:/data\"]\nvolumes:\n  probe: {}\n",
+        "services:\n  probe:\n    image: " + dna::TEST_BUSYBOX
+            + "\n    command: [\"sleep\", \"3600\"]\n    volumes: [\"probe:/data\"]\nvolumes:\n  probe: {}\n",
     ) or discard;
     let remote_project = dna::placed_project("localhost");
     let render = dna::Render { project: remote_project, dir: render_dir, files: "compose.yaml" };
@@ -442,7 +444,7 @@ fn main() {
         ).code == 0
             && dna::run_tool(
                 "docker\nrun\n-d\n--name\n" + blocker + "\n--network\n" + dservices
-                    + "_default\nbusybox:1.36\nsleep\n600",
+                    + "_default\n" + dna::TEST_BUSYBOX + "\nsleep\n600",
             ).code == 0
             && j.append(
                 j.revision(),
