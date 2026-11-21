@@ -1412,6 +1412,12 @@ fn json_refusal(
             p,
             PrimType::Int
                 | PrimType::U64
+                | PrimType::I32
+                | PrimType::U32
+                | PrimType::I16
+                | PrimType::U16
+                | PrimType::I8
+                | PrimType::U8
                 | PrimType::Float
                 | PrimType::Bool
                 | PrimType::String
@@ -3268,6 +3274,8 @@ impl<'a> Schemas<'a> {
         use hale_syntax::ast::PrimType;
         let json = |p: PrimType| match p {
             PrimType::Int => Some("integer"),
+            // GH #2132: a JSON number, every width below 2^53
+            p if p.is_narrow_int() => Some("integer"),
             PrimType::Float | PrimType::Decimal(_) => Some("number"),
             PrimType::Bool => Some("boolean"),
             PrimType::String => Some("string"),
@@ -3310,6 +3318,11 @@ impl<'a> Schemas<'a> {
             // so is a `U64` (GH #2121), past a JS number's 2^53
             TypeClass::Prim(p @ (PrimType::U64 | PrimType::U256 | PrimType::I256)) => {
                 FieldSchema::Scalar { json: "string", hale_type: Some(crate::ty::prim_name(p).to_string()), unit: None }
+            }
+            // GH #2132: a fixed-width integer is a JSON integer, named so a
+            // reader knows its range
+            TypeClass::Prim(p) if p.is_narrow_int() => {
+                FieldSchema::Scalar { json: "integer", hale_type: Some(crate::ty::prim_name(p).to_string()), unit: None }
             }
             TypeClass::Prim(p) => {
                 json(p).map_or(FieldSchema::Unformed, |j| FieldSchema::Scalar { json: j, hale_type: None, unit: None })

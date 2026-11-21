@@ -1,0 +1,98 @@
+// The fixed-width integers cross the protobuf codec (GH #2132; spec/api.md
+// § Codecs, § gRPC): a signed one as an `int32`, an unsigned one as a
+// `uint32`, the varint of its value (a negative one's ten bytes, as
+// protobuf writes an `int32`), and an 8- or 16-bit one is that varint with
+// its range checked on decode: a writer's `uint32` past `U8`'s top is the
+// wrong type, never a truncated byte. JSON in, protobuf through, JSON out
+// gives back the same text, for a field, a list's elements and an enum's
+// value. This program names no port: the serve site is in a method
+// nothing calls, which is all the compiler needs to write the codecs.
+
+type Side = enum { Flat, Long(I16) };
+
+type Narrow {
+    a: U8;
+    b: I8 = -3;
+    c: U32;
+    d: I32;
+    side: Side = Side::Flat;
+    recent: bounded[U16; 3];
+}
+
+api PbNarrow {
+    rpc Probe::narrow;
+}
+
+locus Probe {
+    fn narrow(w: Narrow) -> Narrow { return w; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(
+            PbNarrow,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Narrow(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Narrow(__api_pb_encode_Narrow(v)) or {
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Narrow(back), json, what);
+    }
+
+    fn refused(hex: String, field: String, what: String) {
+        let w = __api_pb_decode_Narrow(std::hex::decode(hex) or std::bytes::from_string("")) or {
+            std::test::assert_eq_str(err.kind + " " + err.field, "wrong_type " + field, what);
+            return;
+        };
+        std::test::assert(false, what + ": decoded " + __api_encode_Narrow(w));
+    }
+
+    run() {
+        self.round(
+            "{\"a\":255,\"b\":-128,\"c\":4294967295,\"d\":-2147483648,\"side\":{\"Long\":-32768},\"recent\":[65535,0]}",
+            "each end of each range, in a field, a list and an enum",
+        );
+        self.round("{\"a\":0,\"b\":0,\"c\":0,\"d\":0,\"side\":\"Flat\",\"recent\":[]}", "zero");
+
+        // field 1, varint: tag 0x08, then 255; field 2 (an int32): -1 as
+        // ten bytes
+        let m = __api_pb_encode_Narrow(Narrow { a: 255, b: -1, c: 1, d: 1 });
+        std::test::assert_eq_str(
+            std::hex::encode(std::bytes::slice(m, 0, 14)),
+            "08ff0110ffffffffffffffffff01",
+            "a uint32's varint, and a negative int32's ten bytes",
+        );
+        // a writer's uint32 of 256 in the U8 field, the rest in range
+        self.refused("088002" + "1000" + "1801" + "2001", "a", "a uint32 past U8's top");
+        // and an int32 of 128 in the I8 field
+        self.refused("0801" + "108001" + "1801" + "2001", "b", "an int32 past I8's top");
+    }
+}
+
+fn main() { Desk { }; }

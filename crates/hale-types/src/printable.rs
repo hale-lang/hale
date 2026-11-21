@@ -27,6 +27,12 @@ pub const PRINTABLE_PRIMS: &[PrimType] = &[
     PrimType::String,
     PrimType::Int,
     PrimType::U64,
+    PrimType::I32,
+    PrimType::U32,
+    PrimType::I16,
+    PrimType::U16,
+    PrimType::I8,
+    PrimType::U8,
     PrimType::Bool,
     PrimType::Float,
     PrimType::DECIMAL,
@@ -40,7 +46,7 @@ pub const PRINTABLE_PRIMS: &[PrimType] = &[
 /// The element types a fixed array or a `bounded` renders with: the
 /// scalars, whose storage is inline where the renderer walks it.
 pub const SEQUENCE_ELEMENT_PRIMS: &[PrimType] =
-    &[PrimType::Int, PrimType::U64, PrimType::Float, PrimType::Bool, PrimType::DECIMAL, PrimType::Duration];
+    &[PrimType::Int, PrimType::U64, PrimType::I32, PrimType::U32, PrimType::I16, PrimType::U16, PrimType::I8, PrimType::U8, PrimType::Float, PrimType::Bool, PrimType::DECIMAL, PrimType::Duration];
 
 /// `p`, with a `Decimal` of any scale as plain `Decimal`: every scale
 /// prints (its digits at its scale).

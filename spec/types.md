@@ -11,6 +11,7 @@ document tells you what's *meaningfully* valid.
 |---|---|---|
 | `Int` | i64 | Signed; default for integer literals |
 | `U64` | i64 | A 64-bit unsigned integer, `0` through `2^64 - 1` (GH #2121): the same 8 bytes as an `Int`, read as unsigned. An integer literal whose place is a `U64` is one, and a decimal literal past `Int`'s max is one by itself (range-checked where it is written). `+ - * / %` never wrap: an overflow or a division by zero is a runtime violation; `U64::wrapping_*` wrap modulo 2^64 and `U64::checked_*` fail instead. Unsigned division, comparison and `>>`. Never mixes with `Int` or another type implicitly ([§ U64](#u64--a-64-bit-unsigned-integer)). Replaces the reserved `Uint`, which the checker refused. |
+| `I32`, `U32`, `I16`, `U16`, `I8`, `U8` | i32, i16, i8 | The fixed-width integers (GH #2132, F.64), signed two's complement and unsigned, at their declared width in every layout: a record, a `bounded` element, a locus field, a topic payload, a local. An integer literal whose place is one is one, range-checked where it is written. `+ - * / %` never wrap: an overflow or a division by zero is a runtime violation; `T::wrapping_*` wrap and `T::checked_*` fail instead. One widens implicitly only where nothing is lost (into a wider type of the same signedness, an unsigned one into a strictly wider signed one, anything into `Int`); a narrowing is a cast with an `or`, and operands never widen ([§ Fixed-width integers](#fixed-width-integers--i32-u32-i16-u16-i8-u8)). |
 | `Float` | f64 | IEEE 754 double; default for float literals |
 | `Decimal<S>`, `Decimal` | i128 | Fixed point: an i128 mantissa at the scale `S` (`mantissa × 10^-S`), `S` an integer literal from 0 to 18 that is **part of the type**; plain `Decimal` is `Decimal<9>`, the same type (2026-10-12, [§ Decimal<S>](#decimals--the-scale-is-part-of-the-type)). Every scale is the one 16-byte, 16-aligned layout. Distinct from `Float` at the type level; suffix `d` on literals (`1.50d`). A literal holds no more places than the scale of the place it flows into (a check error at the literal otherwise, never a truncation); `+ - %` are exact, `*` and `/` truncate toward zero at the scale; two scales never mix, and `d.rescale(T)` converts. Real arbitrary-precision deferred. |
 | `U256`, `I256` | i256 | The 256-bit integers (GH #1934), unsigned and two's complement signed: 32 bytes at the target's i256 alignment (16 on x86-64 and aarch64). No literal: `U256::from_int(n)`, `U256::parse(s) or ...` (decimal or `0x` hex), `U256::from_be_bytes(b) or ...` (32 bytes) make one. `+ - * / %` never wrap: an overflow or a division by zero is a runtime violation, and `U256::checked_*` / `mul_div` fail instead. Never mixes with `Int` or another type implicitly ([§ U256 and I256](#u256-and-i256--256-bit-integers)). |
@@ -41,7 +42,8 @@ type set above carries an additional axis of distinction at the
 `Int` / `Float` / `Bool` / `Duration` / `Time` / `String` /
 `Bytes` / `BytesView` / `StringView` may appear in `@ffi`
 parameter and return positions, and so may `U64` (a C `uint64_t`;
-a JS `number` at `@ffi("js")`, as an `Int` is);
+a JS `number` at `@ffi("js")`, as an `Int` is) and the fixed-width
+integers (`int32_t` … `uint8_t`; a JS `number`);
 `Decimal` (any scale) / `U256` / `I256` are typecheck-rejected
 (platform-variable ABI; a 256-bit integer crosses as its 32 big-endian
 bytes, `U256::to_be_bytes`).
@@ -454,6 +456,138 @@ digits, a `uint64`, a `uint64_t`).
 in, `U64::parse(s) or ...` out), as a text-format driver such as pond's
 `pq` binds every parameter. Hale has no column mapping of its own to
 refuse a `bigint` at.
+
+## Fixed-width integers — I32, U32, I16, U16, I8, U8
+
+`I32`, `U32`, `I16`, `U16`, `I8` and `U8` (GH #2132, F.64) are the
+integers of a declared width: signed two's complement (`I`) or unsigned
+(`U`), 32, 16 or 8 bits. `I32` holds `-2147483648` through
+`2147483647`, `U32` `0` through `4294967295`, `I16` `-32768` through
+`32767`, `U16` `0` through `65535`, `I8` `-128` through `127` and `U8`
+`0` through `255`. Each is an LLVM `i32`, `i16` or `i8`, and each is its
+declared width wherever it is stored: a record field, a `bounded[T; N]`
+element (a `bounded[U8; 1024]` field is its count and 1024 bytes), a
+fixed array (inline), a locus field, a topic payload's field and a
+local, so a loop over them works lanes of that width. An enum's payload
+keeps its eight-byte slot. There are no aliases: a byte is `U8`, and
+`type Byte = Int { range: 0..256; }` stays the range type it is.
+
+**Literals take the type of their place**, as a `U64`'s do (every place
+listed under § U64), and are held to its range where they are written:
+`let b: U8 = 256;` is a check error at the literal ("integer literal 256
+does not fit \`U8\`, which is 0 through 255: …"), and so is a negative
+literal where an unsigned one is expected ("\`-1\` cannot be a \`U8\`: …
+has no unary \`-\`"). A negated literal is held as the value it is:
+`-128` is an `I8`, though `128` is not. A radix literal is its value
+(`let m: U8 = 0xFF;`). A literal cast `U8(200)` is the literal.
+
+**Functions.** `T::f` in expression position names the function `f` of
+`std::i32` … `std::u8` (spec/stdlib.md):
+
+| Call | Type | What |
+|---|---|---|
+| `T::max()`, `T::min()` | `T` | the ends of the range |
+| `T::checked_add / checked_sub / checked_mul / checked_div(a, b) or ...` | `fallible(ArithError)` | the operator, failing where it would stop the process (`kind` `overflow` or `division_by_zero`, `op` the call) |
+| `T::wrapping_add / wrapping_sub / wrapping_mul(a, b)` | `T` | the operator modulo `2^width`: a hash, a checksum, a vectorizable kernel |
+| `T::wrapping_shl / wrapping_shr(x, n)` | `T` | the shift by `n` modulo the width (`n` an `Int`) |
+| `Int(x)`, `Float(x)` | `Int` / `Float` | exact |
+| `to_string(x)`, `println`, `f"{x}"`, `+` with a `String`, a `@display` hole | `String` | decimal digits; `{x:x}` the hex of its own width's bits (`-5` as an `I8` is `fb`) |
+
+**Arithmetic never wraps unless asked**, as a `U64`'s (F.60): `+`, `-`
+and `*` past either end, `/` or `%` by zero, a signed `/` of the minimum
+by `-1` and a signed unary `-` of the minimum are a runtime violation
+where they happen, the process printing what happened and exiting 1
+(`violation: U8 \`+\` overflows: the result is outside U8's range, 0
+through 255 (U8::checked_add fails instead, and U8::wrapping_add
+wraps)`). Overflow is detected with `llvm.{s,u}{add,sub,mul}.with.overflow`
+at the width. A signed one's `/` truncates toward zero and its `%` takes
+the dividend's sign (the minimum's remainder by `-1` is `0`); an
+unsigned one's are `udiv` / `urem`, and its comparisons and `min` /
+`max` order unsigned. `abs(x)` of an unsigned one is `x`; of a signed
+one it is checked. An unsigned one has no unary `-`.
+
+**Bits.** `&`, `|`, `^` and `~` are bitwise at the width. `x << n` and
+`x >> n` shift by an `Int` count; `>>` is arithmetic on a signed one
+(it fills with the sign bit, as `I256`'s does) and logical on an
+unsigned one. A count outside 0 through the width less one is a
+violation (`violation: U8 shift by a count outside 0 through 7`); the
+`wrapping_shl` / `wrapping_shr` calls take the count modulo the width.
+
+**Conversions.**
+
+- **A widening is implicit**, only where nothing is lost: into a wider
+  type of the same signedness (`U8` into `U16`, `U32` or `U64`; `I8`
+  into `I16`, `I32` or `Int`), an unsigned one into a strictly wider
+  signed one (`U8` into `I16`, `U32` into `Int`), and anything into
+  `Int` that fits (every one of these; a `U64` does not). It applies
+  wherever a value flows: a `let` ascription, an argument, a return, a
+  record or locus field, an assignment, an element of an array or a
+  `bounded`, an `or`'s fallback. `T(x)` spells one explicitly and takes
+  no `or` (an `or` after it is refused: the cast is not fallible).
+- **A narrowing is a cast with an `or`**, as a range type's is (spec/units.md
+  § Conversions): `U8(n) or clamp` (the nearest end), `or wrap` (the
+  value modulo `2^width`, which is its low bits, two's complement for a
+  signed one), `or <value>`, `or handler(err)` with a `RangeError {
+  kind, value, low, high }` (the type's name, the value, its half-open
+  range), `or raise`, `or fail <payload>`. A bare one is refused at the
+  cast ("\`U8(…)\` narrows \`Int\` into \`U8\`'s range \`0..256\` and this
+  conversion says nothing about a value outside it: …"), and so is a
+  narrowing where a value flows ("let \`a\`: expected \`U8\`, got \`Int\`:
+  \`Int\` does not narrow to \`U8\` implicitly; write \`U8(x) or ...\`, which
+  says what becomes of a value outside \`U8\`'s range"). A signed one
+  into an unsigned one of any width is a narrowing (a negative value),
+  and so is an unsigned one into a signed one of its own width. `U64(i)
+  or ...` narrows a signed one into a `U64`; `Int` and `U64` keep their
+  own conversions between each other (§ U64).
+- **Operands never widen.** An operator over two different integer types
+  is refused naming the conversion ("binary op: \`U8\` and \`U32\` do not
+  mix: operands never widen; make the \`U8\` a \`U32\` with \`U32(x)\`");
+  only an integer literal takes the other operand's type. A `Float`
+  never mixes either: `Float(x)`.
+
+**The element chain's `sum`.** `.sum(seed)` accumulates in its seed's
+type (`sum(0.0)` for a `Float`), so a sum of a fixed-width integer
+names one: `.map(it * 3).sum(U32(0))`. Its `+` is checked like every
+other, so the loop carries an overflow branch per element and is not
+vectorized; a kernel that wants lanes says `U32::wrapping_add` /
+`wrapping_mul`, which are plain adds and multiplies at the width (on
+aarch64 four `i32` lanes a NEON instruction, where an `Int`'s
+`.map(it * 3)` has no vector multiply). `@vectorize(min_width: 4)` holds
+for such a `U32` fold on aarch64 and x86-64, and refuses the checked one
+at its loop (spec/semantics.md § Vectorized loops).
+
+**Where it goes.** Everywhere a `U64` goes (§ U64), at its own width:
+a record or locus field, a `bounded` buffer, a fixed array, an enum's
+payload, a hashmap cell's field, a `@form(vec)` slot, a generic
+argument (`Box<U8>`), a fn's parameter and return, a bus payload (its
+width on the wire; a topic's contract shape tags it `i32`, `u32`, `i16`,
+`u16`, `i8` or `u8`, spec/model.md § The shape of a type), an
+`@ffi("c")` parameter or return (the C `int32_t` … `uint8_t`, an 8- or
+16-bit one extended to the register as its signedness says; at
+`@ffi("js")` a JS `number`; spec/ffi.md), and the JSON and protobuf
+codecs (spec/api.md § Codecs):
+
+- **JSON: a number**, every width being exact below `2^53`; read back
+  from a JSON integer with the range held: one outside it (or a
+  fraction, or a string) is `wrong_type`, as a range type's is. The
+  schema is `{"type": "integer", "x-hale-type": "U8"}`.
+- **Protobuf: an `int32`** (a signed one) **or a `uint32`** (an unsigned
+  one), the varint of its value (a negative one's ten bytes, as protobuf
+  writes an `int32`); on decode the value is held to the type's range,
+  so a writer's `uint32` past `U8`'s top is `wrong_type`, never a
+  truncated byte.
+
+It is no routing key, no hashmap key, no `Numeric` generic bound's
+argument and no accumulator's element (`sum(self.x)`), as a `U64` is
+not.
+
+**Units.** A fixed-width integer is a base of the unit dialect
+(spec/units.md § The base): `type Ticks = quantity U32 in tick;`, `type
+Level = U8 { range: 0..100; }` and `type Port = distinct U16;` count
+one, with its arithmetic (unsigned or signed, an overflow a violation),
+its conversions and its four, two or one bytes of storage. A
+component counts one integer, so a `U32` count of time is a quantity of
+a unit of its own (the stdlib's `Duration` counts an `Int`).
 
 ## Scalar types (GH #1076)
 

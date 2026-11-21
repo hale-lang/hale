@@ -742,6 +742,12 @@ impl Shift for PrimType {
         match self {
             PrimType::Int
             | PrimType::U64
+            | PrimType::I32
+            | PrimType::U32
+            | PrimType::I16
+            | PrimType::U16
+            | PrimType::I8
+            | PrimType::U8
             | PrimType::Float
             | PrimType::Decimal(_)
             | PrimType::U256

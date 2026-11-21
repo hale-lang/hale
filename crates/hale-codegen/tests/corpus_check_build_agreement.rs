@@ -4645,7 +4645,7 @@ fn display_template_refusals_are_the_checks() {
             "@display(\"{s:x}\") type A { s: String; }\n\
              fn main() { let a = A { s: \"q\" }; println(a.s); }\n",
             "{s:x}",
-            "hexadecimal formatting applies to `Int`",
+            "hexadecimal formatting applies to an integer (`Int`",
         ),
     ];
     for (i, (src, at, says)) in cases.iter().enumerate() {

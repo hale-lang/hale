@@ -89,6 +89,7 @@ fn programs() -> Vec<hale_corpus::Program> {
     for (class, ty) in [
         ("decimal", "Decimal"),
         ("u64", "U64"),
+        ("fixedint", "U8"),
         ("bounded", "bounded[Int; 4]"),
         ("array", "[Int; 4]"),
         ("tuple", "(Int, Int)"),

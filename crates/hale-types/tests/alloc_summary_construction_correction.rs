@@ -734,8 +734,10 @@ fn own_entries_run_to_exit_programs() {
     // and call a locus's methods that build arrays (GH #2068); 33:
     // `tests/hale/u64_arith_test.hl`, whose loop over refused texts builds
     // its messages, and 34: `tests/hale/u64_codec_test.hl`, whose codecs of
-    // `U64`s decode the same way (GH #2121).
-    assert_eq!(moved, 34, "the run-to-exit programs among the targets that lose a site");
+    // `U64`s decode the same way (GH #2121); 35:
+    // `tests/hale/fixed_int_codec_test.hl`, whose codecs of the fixed-width
+    // integers decode the same way (GH #2132).
+    assert_eq!(moved, 35, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1043,6 +1045,18 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/crypto_sha256_stream_test.hl: main StringConcat #8 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads
             "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") #1 InvokedUnboundedly",
+            // `tests/hale/fixed_int_codec_test.hl`: its codecs of the fixed-width
+            // integers decode the same way (GH #2132)
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #2 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #4 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #6 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #8 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #13 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #14 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #15 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __json_parse_Stats StructLit(\"JsonError\") #3 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __json_parse_Stats StructLit(\"JsonError\") #4 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __json_parse_Stats StructLit(\"JsonError\") #5 InUnboundedLoop",
             // `tests/hale/json_defaults_test.hl`: its JSON codec of a record with
             // defaults, decoding the same way, and since 2026-11-07 its api codec
             // too (null is absence through both); its Decimal field's reader grew

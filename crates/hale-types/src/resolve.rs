@@ -655,6 +655,22 @@ fn bundle_declares_a_range(bundle: &Bundle<'_>) -> bool {
             matches!(item, TopDecl::Type(t) if matches!(&t.body, TypeDeclBody::Scalar(s)
                 if s.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }))))
         })
+    }) || bundle_names_a_fixed_cast(bundle)
+}
+
+/// GH #2132: true when the bundle spells a name a narrowing into a
+/// fixed-width integer is written with (`U8(n) or ...`, `U64(i) or ...`):
+/// the cast carries a `RangeError` through its `or`, as a range's does.
+fn bundle_names_a_fixed_cast(bundle: &Bundle<'_>) -> bool {
+    const NAMES: [&str; 7] = ["I32", "U32", "I16", "U16", "I8", "U8", "U64"];
+    bundle.programs.values().any(|p| {
+        let mut found = false;
+        hale_syntax::names::for_each_spelled(&p.items, &mut |s| {
+            if let hale_syntax::names::Spelled::Name(n) = s {
+                found |= NAMES.contains(&n);
+            }
+        });
+        found
     })
 }
 
@@ -2708,22 +2724,7 @@ fn check_stdlib_error_shadowing<'u, 's: 'u>(
 }
 
 fn prim_display(p: PrimType) -> &'static str {
-    match p {
-        PrimType::Int => "Int",
-        PrimType::U64 => "U64",
-        PrimType::Float => "Float",
-        PrimType::Decimal(s) => crate::ty::decimal_name(s),
-        PrimType::U256 => "U256",
-        PrimType::I256 => "I256",
-        PrimType::Bool => "Bool",
-        PrimType::String => "String",
-        PrimType::Time => "Time",
-        PrimType::Duration => "Duration",
-        PrimType::Bytes => "Bytes",
-        PrimType::BytesView => "BytesView",
-        PrimType::BytesMut => "BytesMut",
-        PrimType::StringView => "StringView",
-    }
+    crate::ty::prim_name(p)
 }
 
 /// Best-effort literal-typing for params declared with a value

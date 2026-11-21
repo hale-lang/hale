@@ -110,6 +110,12 @@ fn type_descriptor(ty: &TypeExpr) -> String {
         match p {
             P::Int => "Int",
             P::U64 => "U64",
+            P::I32 => "I32",
+            P::U32 => "U32",
+            P::I16 => "I16",
+            P::U16 => "U16",
+            P::I8 => "I8",
+            P::U8 => "U8",
             P::Float => "Float",
             P::Bool => "Bool",
             P::Decimal(s) => crate::ty::decimal_name(*s),

@@ -612,6 +612,7 @@ into a `Float`, F.23):
 | `Float` | `+ - * /`, unary `-`, every comparison |
 | `Decimal<S>` | `+ - * / %`, unary `-`, every comparison (one scale) |
 | `U64` | `+ - * / %` (checked and unsigned: an overflow or a division by zero is a violation), `& \| ^ ~`, `<< >>` by an `Int` count from 0 to 63, every comparison (unsigned); no unary `-`; an integer literal operand is a `U64`, and nothing else mixes in (spec/types.md § U64) |
+| `I32`, `U32`, `I16`, `U16`, `I8`, `U8` | `+ - * / %` (checked at the width: an overflow, a division by zero, or a signed minimum divided by or negated through `-1`, is a violation), `& \| ^ ~`, `<< >>` by an `Int` count below the width (`>>` arithmetic on a signed one), every comparison (signed or unsigned as the type is), unary `-` on a signed one; an integer literal operand is the other's type, and operands never widen (spec/types.md § Fixed-width integers) |
 | `U256`, `I256` | `+ - * / %` (checked: an overflow or a division by zero is a violation), `& \| ^ ~`, `<< >>` by an `Int` count, unary `-` (an `I256`'s only), every comparison; never mixed with another type (spec/types.md § U256 and I256) |
 | `Duration`, `Time`, a quantity, a point | the unit dialect's algebra (spec/units.md) |
 | `Bool` | `==` `!=`, `&&` `\|\|`, unary `!` |
@@ -5460,7 +5461,8 @@ Little-endian, nothing between values:
 
 | Value | Wire bytes |
 |---|---|
-| `Int`, `U64`, `Float`, `Bool`, `Duration`, `Time`, a unit type | 8 bytes |
+| `Int`, `U64`, `Float`, `Bool`, `Duration`, `Time`, a unit type over an `Int` or a `U64` | 8 bytes |
+| `I32` / `U32`, `I16` / `U16`, `I8` / `U8` (GH #2132), a unit type over one | 4, 2, 1 bytes |
 | `Decimal` | 16 bytes |
 | `U256`, `I256` | 32 bytes |
 | a payload-free enum | its tag, a `u32` (the variant's declaration index) |

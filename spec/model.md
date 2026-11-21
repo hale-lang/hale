@@ -319,6 +319,7 @@ Both forms tag a field the same way when its type is flat:
 |---|---|
 | `Int`, an identity, a range (`spec/units.md`) | `i` (one counting a `U64`, `u64`: GH #2131) |
 | `U64` | `u64` (GH #2121: the same 8 bytes as an `Int`, read as unsigned, so its own contract) |
+| `I32`, `U32`, `I16`, `U16`, `I8`, `U8` | `i32`, `u32`, `i16`, `u16`, `i8`, `u8` (GH #2132: each its own width and signedness, so its own contract); a unit type counting one is tagged by it, `q(u32 <denomination>)` |
 | `Float` | `f` |
 | `Bool` | `b` |
 | `Decimal` (`Decimal<9>`) | `d` |

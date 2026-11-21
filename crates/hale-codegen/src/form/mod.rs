@@ -43,7 +43,7 @@ pub(crate) fn cell_tree_has_heap_leaves(
     }
     match ty {
         CodegenTy::Int
-        | CodegenTy::U64
+        | CodegenTy::U64 | CodegenTy::Narrow(_)
         | CodegenTy::Float
         | CodegenTy::Bool
         | CodegenTy::Duration
@@ -1123,6 +1123,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         iface,
                     )?
                     .into()
+                } else if val_ty != elem_ty && crate::stdlib::fixed::int_fits(&val_ty, &elem_ty) {
+                    self.fit_int(val, &val_ty, &elem_ty)?
                 } else if val_ty != elem_ty && !crate::codegen::int_literal_as_u64(&val_ty, &elem_ty) {
                     return Err(CodegenError::Unsupported(format!(
                         "@form(vec) `{}`.set: value type mismatch: expected \
@@ -3655,7 +3657,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let heap_cell = !matches!(
                     slot.elem_ty,
                     CodegenTy::Int
-                        | CodegenTy::U64
+                        | CodegenTy::U64 | CodegenTy::Narrow(_)
                         | CodegenTy::Float
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)

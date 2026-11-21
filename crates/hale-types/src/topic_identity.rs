@@ -983,6 +983,19 @@ mod tests {
         assert_ne!(unsigned_h, signed_h);
     }
 
+    /// GH #2132: each fixed-width integer is its own contract, by its
+    /// width and signedness, and so is a quantity counting one.
+    #[test]
+    fn a_fixed_width_integer_is_its_own_contract() {
+        let (_, shape, h) = forms("type P { a: U8; b: I8; c: U16; d: I16; e: U32; f: I32; g: Int; }", "P");
+        assert_eq!(shape, "a:u8;b:i8;c:u16;d:i16;e:u32;f:i32;g:i");
+        let (_, wide, wide_h) = forms("type P { a: Int; b: Int; c: Int; d: Int; e: Int; f: Int; g: Int; }", "P");
+        assert_eq!(wide, "a:i;b:i;c:i;d:i;e:i;f:i;g:i");
+        assert_ne!(h, wide_h);
+        let (_, q, _) = forms("unit tick; type Ticks = quantity U32 in tick; type P { at: Ticks; }", "P");
+        assert_eq!(q, "at:q(u32 tick)");
+    }
+
     /// The unit dialect's scalars: an identity is the `Int` it is, a
     /// quantity its `q(<denomination>)`. These are the R0 fixture's
     /// values (tests/api-contract/digest.md), which no form moves.
@@ -1155,6 +1168,14 @@ pub(crate) fn prim_tag(p: PrimType) -> String {
         // GH #2121: a `U64` is its own contract, never an
         // `Int`'s `i` (the same 8 bytes, read another way).
         PrimType::U64 => "u64",
+        // GH #2132: each fixed-width integer is its own contract, by its
+        // width and signedness (`i32`, `u8`): never an `Int`'s `i`.
+        PrimType::I32 => "i32",
+        PrimType::U32 => "u32",
+        PrimType::I16 => "i16",
+        PrimType::U16 => "u16",
+        PrimType::I8 => "i8",
+        PrimType::U8 => "u8",
         PrimType::Float => "f",
         PrimType::Bool => "b",
         // A scale other than the default is part of the

@@ -1,4 +1,4 @@
-//! The `numeric` integration-test binary: 13 test files of this area, kept
+//! The `numeric` integration-test binary: 19 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -11,6 +11,8 @@ mod decimal_alignment;
 mod decimal_format;
 #[path = "duration_scalar_arith.rs"]
 mod duration_scalar_arith;
+#[path = "fixed_int_lowering.rs"]
+mod fixed_int_lowering;
 #[path = "float_to_int_cast.rs"]
 mod float_to_int_cast;
 #[path = "int_bitwise_ops.rs"]

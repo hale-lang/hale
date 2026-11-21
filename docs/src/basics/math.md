@@ -17,12 +17,12 @@ fn main() {
 
 | Category | Operators | Supported Types | Behavior & Notes |
 |---|---|---|---|
-| Arithmetic | `+`, `-`, `*`, `/` | `Int`, `U64`, `Float`, `Decimal`, `U256`, `I256`, `Duration` (restricted) | Integer `/` truncates toward zero; `String` also supports `+`; a `U64`'s or a 256-bit integer's overflow stops the process |
-| Remainder | `%` | `Int`, `U64`, `Decimal`, `U256`, `I256` | Not defined on `Float` |
-| Equality | `==`, `!=` | `Int`, `U64`, `Float`, `Decimal`, `U256`, `I256`, `Bool`, `String`, `Duration`, `Time`, `enum`, `distinct Int` | Not defined on structs, tuples, or arrays (compare field by field) |
-| Ordering | `<`, `<=`, `>`, `>=` | `Int`, `U64`, `Float`, `Decimal`, `U256`, `I256`, `String`, `Duration`, `Time` | Does not chain; write `a < b && b < c` |
+| Arithmetic | `+`, `-`, `*`, `/` | `Int`, `U64`, `I32`…`U8`, `Float`, `Decimal`, `U256`, `I256`, `Duration` (restricted) | Integer `/` truncates toward zero; `String` also supports `+`; a fixed-width integer's (`U64`, `I32`…`U8`) or a 256-bit integer's overflow stops the process |
+| Remainder | `%` | `Int`, `U64`, `I32`…`U8`, `Decimal`, `U256`, `I256` | Not defined on `Float` |
+| Equality | `==`, `!=` | `Int`, `U64`, `I32`…`U8`, `Float`, `Decimal`, `U256`, `I256`, `Bool`, `String`, `Duration`, `Time`, `enum`, `distinct Int` | Not defined on structs, tuples, or arrays (compare field by field) |
+| Ordering | `<`, `<=`, `>`, `>=` | `Int`, `U64`, `I32`…`U8`, `Float`, `Decimal`, `U256`, `I256`, `String`, `Duration`, `Time` | Does not chain; write `a < b && b < c` |
 | Logical | `&&`, `\|\|`, `!` | `Bool` | `&&` and `\|\|` short-circuit |
-| Bitwise | `&`, `\|`, `^`, `<<`, `>>`, `~` | `Int`, `U64`, `U256`, `I256` | Bitwise AND, OR, XOR, shifts (by an `Int` count), and NOT |
+| Bitwise | `&`, `\|`, `^`, `<<`, `>>`, `~` | `Int`, `U64`, `I32`…`U8`, `U256`, `I256` | Bitwise AND, OR, XOR, shifts (by an `Int` count), and NOT |
 
 ```hale,fragment
 let a = 7 + 3;                         // 10
@@ -43,6 +43,7 @@ let masked = (a << 2) & 0xFF;          // bitwise operations on Int
 |---|---|---|---|
 | `Int` | 64-bit signed integer (`i64`) | Widens to `Float` in unambiguous contexts | Counts, indices, bitwise logic |
 | `U64` | 64-bit unsigned integer, `0` to `2^64 - 1` | None (`U64::from_int(n)`); an integer literal takes it from its place | Hashes, counters past `2^63`, `uint64` IDs and protocol fields |
+| `I32`, `U32`, `I16`, `U16`, `I8`, `U8` | 32-, 16- and 8-bit signed and unsigned integers, stored at that width | Widen where nothing is lost (`U8` into `U32`, `I32` into `Int`); narrow with `T(x) or ...` | Dense buffers and records, vectorized kernels, binary protocols and C types |
 | `Float` | 64-bit IEEE-754 double (`f64`) | None | Scientific math, ratios, physical measurements |
 | `Decimal` (`Decimal<9>`) | 128-bit fixed-point, 9 fractional places | Widens to `Decimal<S>` where `S > 9` via `.rescale(S)` | General exact decimal arithmetic |
 | `Decimal<S>` (`S` in `0..=18`) | 128-bit fixed-point, `S` fractional places | None (distinct per scale `S`) | Currency (`Decimal<2>`), high-precision tokens (`Decimal<18>`) |
@@ -164,6 +165,40 @@ fn main() {
 - **No mixing.** A `U64` never mixes with an `Int`, a `Float` or another width: write `U64::from_int(n)` (a negative `n` stops the process), `U64::to_int(x) or ...`, `Float(x)`, `U64::from_float(f) or ...`. `U64::from_bits(n)` / `to_bits(x)` reinterpret the 64 bits. The check names the conversion.
 - **Text and bytes.** `to_string(x)`, `println`, f-strings and `+` with a `String` print unsigned decimal; `U64::to_hex(x)` is `0x` and lowercase digits; `U64::parse` reads either; `to_be_bytes` / `to_le_bytes` and `from_be_bytes` / `from_le_bytes` are its 8 bytes.
 - **Where it goes.** Record and locus fields, `bounded` lists, fixed arrays, enum payloads, hashmap cells, `Box<U64>`, bus payloads, `@ffi("c")` (a `uint64_t`), and the JSON codecs, which always write a JSON string (see [JSON Encoding & Decoding](../everyday/json.md)); protobuf carries a `uint64`. A unit-dialect scalar (`quantity U64 in wei`, `distinct U64`, `U64 { range: … }`) may count a `U64` and has its arithmetic (see [Units, End to End](../units.md)).
+
+## Fixed-width Integers (`I32`, `U32`, `I16`, `U16`, `I8`, `U8`)
+
+`Int` is 64 bits everywhere. When a value has a known, smaller range (a byte of a frame, a pixel channel, a 16-bit sample, a 32-bit ID another system hands out) a fixed-width integer stores it at its own width: a `bounded[U8; 1024]` field is 1024 bytes, not 8192, and a loop over `U32`s works four lanes of a 128-bit vector register where an `Int` loop works two. `I` is signed, `U` unsigned; `I32` holds `-2147483648` through `2147483647`, `U8` `0` through `255`.
+
+```hale
+type Frame { kind: U8; samples: bounded[I16; 256]; }
+
+fn checksum(f: Frame) -> U32 {
+    let mut h: U32 = 2166136261;                        // a literal takes its place's type
+    for s in f.samples {
+        h = U32::wrapping_mul(h ^ (U32(Int(s) & 0xFFFF) or 0), 16777619);
+    }
+    return h;
+}
+
+fn main() {
+    let mut f = Frame { kind: 3 };
+    push(f.samples, -32768) or discard;
+    push(f.samples, 1200) or discard;
+    let peak: Int = at(f.samples, 1) or 0;              // an I16 widens into an Int
+    let level = U8(peak / 8) or clamp;                  // a narrowing says what happens outside 0..255
+    let total = U32::checked_add(checksum(f), 1) or 0;  // overflow fails into the `or`
+    println(f.kind, " ", level, " ", total);
+}
+```
+
+- **Literals** are typed from their place, as a `U64`'s are, and must fit: `let b: U8 = 256;` is refused where it is written, and so is `-1` where an unsigned one is expected.
+- **Arithmetic never wraps unless you ask.** `+ - *` past either end, `/` or `%` by zero, and `-` of a signed one's minimum stop the process with a violation. `T::wrapping_add`, `wrapping_sub` and `wrapping_mul` wrap modulo the width; `T::checked_add`, `checked_sub`, `checked_mul` and `checked_div` fail into an `or` (`ArithError`). `T::max()` and `T::min()` are the ends.
+- **Widening is implicit where nothing is lost**: into a wider type of the same signedness, an unsigned one into a strictly wider signed one, and anything into `Int`, wherever a value flows (a `let`, an argument, a return, a field, an element). An operator never widens: `a + b` of a `U8` and a `U32` is refused, naming the conversion (`U32(a)`).
+- **Narrowing is a cast with an `or`**, as for a range type: `U8(n) or clamp`, `or wrap` (the low bits), `or 0`, `or handler(err)` (a `RangeError`), `or raise`. Without the `or` it is refused.
+- **Bits.** `& | ^ ~` work at the width; `<<` and `>>` shift by an `Int` count below the width, and `>>` keeps the sign of a signed one. `T::wrapping_shl` / `wrapping_shr` take the count modulo the width.
+- **Vectorized kernels.** A checked `+` has an overflow branch per element, which keeps a loop scalar. A kernel that wants vector lanes says so with `wrapping_*`: `acc = U32::wrapping_add(acc, U32::wrapping_mul(x, 3));` over a `bounded[U32; N]` is four `i32` lanes a NEON instruction on aarch64. The chain's `.sum(seed)` sums in its seed's type: `.sum(U32(0))`.
+- **Where it goes.** Everywhere `Int` goes, at its own width: record and locus fields, `bounded` lists, fixed arrays, enum payloads, hashmap cells, `Box<U8>`, bus payloads (tagged `u8`, `i32`, … in a topic's shape), `@ffi("c")` (the C `int8_t` … `uint32_t`), the JSON codecs (a number, its range checked on read) and protobuf (`int32` / `uint32`, range-checked on decode). A unit-dialect scalar may count one: `type Ticks = quantity U32 in tick;`.
 
 ## 256-bit Integers (`U256` and `I256`)
 
