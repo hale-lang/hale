@@ -419,6 +419,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "entry_shape", apply: entry_shape },
     Mutator { name: "receiver_call_spelling", apply: receiver_call_spelling },
     Mutator { name: "dot_variant_spelling", apply: dot_variant_spelling },
+    Mutator { name: "topic_on_full_fail", apply: topic_on_full_fail },
 ];
 
 /// `return e;` ending a fn's body becomes the tail `e`.
@@ -1519,4 +1520,94 @@ fn dot_variant_spelling(files: &Files, rng: &mut Rng) -> Option<(Files, String)>
     let edits = chosen.into_iter().map(|(sp, v)| (sp.start.as_usize(), sp.end.as_usize(), format!(".{v}"))).collect();
     let out = splice(&src, edits)?;
     Some((with_main(files, out), format!("dot_variant_spelling({what})")))
+}
+
+/// The sends in a block, nested blocks included: `(subject, value, has a
+/// disposition)`.
+fn sends<'a>(b: &'a Block, out: &mut Vec<(&'a Expr, &'a Expr, bool)>) {
+    fn stmt<'a>(s: &'a Stmt, out: &mut Vec<(&'a Expr, &'a Expr, bool)>) {
+        match s {
+            Stmt::Send { subject, value, or_disposition, .. } => out.push((subject, value, or_disposition.is_some())),
+            Stmt::If(i) => if_sends(i, out),
+            Stmt::Match(m) => {
+                for arm in &m.arms {
+                    if let MatchArmBody::Block(b) = &arm.body {
+                        sends(b, out);
+                    }
+                }
+            }
+            Stmt::For { body, .. } | Stmt::While { body, .. } => sends(body, out),
+            Stmt::Block(b) => sends(b, out),
+            _ => {}
+        }
+    }
+    fn if_sends<'a>(i: &'a IfStmt, out: &mut Vec<(&'a Expr, &'a Expr, bool)>) {
+        sends(&i.then_block, out);
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => sends(b, out),
+            Some(ElseBranch::ElseIf(e)) => if_sends(e, out),
+            None => {}
+        }
+    }
+    for s in &b.stmts {
+        stmt(s, out);
+    }
+}
+
+/// GH #2146: a topic the program declares without a bound becomes
+/// `bounded(N); on_full: fail;`, and every send to it that carries no
+/// disposition is given one the policy admits: `or raise`, `or discard`,
+/// or (unless the topic also declares `on_unmatched: fail`, whose
+/// unmatched key `or wait` cannot outwait) `or wait`. The check took
+/// none but `or wait` on an unkeyed topic until #2146 while the build
+/// took all three; this keeps the pair drawn.
+fn topic_on_full_fail(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    let (src, program) = parsed(files)?;
+    let topics: Vec<&TopicDecl> = program
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            TopDecl::Topic(t) if t.bounded.is_none() && t.on_full_fail.is_none() && t.parent.is_none() => Some(t),
+            _ => None,
+        })
+        .collect();
+    let t = *rng.pick(&topics)?;
+    let name = t.name.name.as_str();
+    let wire = t.subject.clone().unwrap_or_else(|| name.to_string());
+    let mut all = Vec::new();
+    for (b, _) in bodies(&program) {
+        sends(b, &mut all);
+    }
+    let targets: Vec<&Expr> = all
+        .into_iter()
+        .filter(|(subject, _, has)| {
+            !has && match subject {
+                Expr::Ident(id) => id.name == name,
+                Expr::Literal(Literal::String(s), _) => *s == wire,
+                _ => false,
+            }
+        })
+        .map(|(_, value, _)| value)
+        .collect();
+    if targets.is_empty() {
+        return None;
+    }
+    let mut options = vec!["raise", "discard"];
+    if !matches!(t.on_unmatched, Some(UnmatchedPolicy::Fail)) {
+        options.push("wait");
+    }
+    let pick = *rng.pick(&options)?;
+    let bound = *rng.pick(&[1i64, 2, 64])?;
+    // before the topic's closing brace
+    let close = t.span.start.as_usize() + text(&src, t.span)?.rfind('}')?;
+    let mut edits = vec![(close, close, format!(" bounded({bound}); on_full: fail; "))];
+    for v in &targets {
+        let end = v.span().end.as_usize();
+        edits.push((end, end, format!(" or {pick}")));
+    }
+    let out = splice(&src, edits)?;
+    Some((
+        with_main(files, out),
+        format!("topic_on_full_fail({name}: bounded({bound}), {} send(s) or {pick})", targets.len()),
+    ))
 }

@@ -18257,11 +18257,20 @@ impl<'a> Checker<'a> {
         span: Span,
     ) {
         let payload_ty = self.check_expr(value);
-        // Phase 3 routing keys (2026-05-25): the `or DISPOSITION`
-        // clause on Send is legal only when the target topic
-        // declares `on_unmatched: fail`. Conversely, fail topics
-        // REQUIRE the clause — a fail-policy publish without an
-        // or-disposition leaves the no-match err unhandled. The
+        // The `or DISPOSITION` clause on Send is legal only when the
+        // target topic can refuse the send: it declares
+        // `on_unmatched: fail` (Phase 3 routing keys, 2026-05-25) or
+        // `on_full: fail` (GH #255 phase 2). Conversely, such a topic
+        // REQUIRES the clause — a refusal-fallible publish without an
+        // or-disposition leaves the refusal unhandled. Which
+        // dispositions each admits (GH #2146):
+        //
+        //   on_full: fail       raise, discard, wait
+        //   on_unmatched: fail  raise, discard, handler(err), fail <p>
+        //   both                raise, discard
+        //
+        // `or wait` outwaits a full queue, never an unmatched key; the
+        // err-payload dispositions are not wired for a full topic. The
         // topic is the one the subject names in the topic rows — a
         // literal by the wire subject it delivers on, a topic reference
         // by its name — and both directions are validated.
@@ -18353,6 +18362,8 @@ impl<'a> Checker<'a> {
             // through so the fail-policy matrix doesn't
             // mis-diagnose it as an illegal disposition.
             (_, Some(OrDisposition::Wait(_))) => {}
+            // the `on_full: fail` block above already asked for one
+            (Some(UnmatchedPolicy::Fail), None) if target_full_fail => {}
             (Some(UnmatchedPolicy::Fail), None) => {
                 self.diags.push(Diag::ty(
                     span,
@@ -18441,12 +18452,17 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            // GH #2146: an `on_full: fail` topic's send is refusal-
+            // fallible on its own, keyed or not. Raise and discard
+            // pass; handler(err) / fail <p> were refused by the
+            // `on_full: fail` block above.
+            (_, Some(_)) if target_full_fail => {}
             (_, Some(_)) => {
                 self.diags.push(Diag::ty(
                     span,
                     "`or` disposition on a bus send is only legal \
-                     when the target topic declares \
-                     `on_unmatched: fail`",
+                     when the target topic declares `on_full: fail` \
+                     or `on_unmatched: fail`",
                 ));
             }
             (_, None) => {

@@ -1,0 +1,30 @@
+// GH #2146: a send to an unkeyed `bounded(N); on_full: fail;` topic
+// carries `or raise`, and the check takes it (it used to refuse every
+// disposition but `or wait` unless the topic declared
+// `on_unmatched: fail`, which needs `keyed_by`). Sends that stay within
+// the bound are delivered and raise nothing.
+type E { n: Int = 0; }
+topic Evt { payload: E; subject: "t_on_full_raise.evt"; bounded(4); on_full: fail; }
+
+locus Tally {
+    params { seen: Int = 0; sum: Int = 0; }
+    bus { subscribe Evt as on_e; }
+    fn on_e(e: E) {
+        self.seen = self.seen + 1;
+        self.sum = self.sum + e.n;
+    }
+}
+
+main locus App {
+    params { t: Tally = Tally { }; }
+    bus { publish Evt; }
+    run() {
+        Evt <- E { n: 1 } or raise;
+        Evt <- E { n: 2 } or raise;
+        std::time::sleep(50ms);
+        std::test::assert_eq_int(self.t.seen, 2, "both sends within the bound arrived");
+        std::test::assert_eq_int(self.t.sum, 3, "each arrived once");
+    }
+}
+
+fn main() { App { }; }
