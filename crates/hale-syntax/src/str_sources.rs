@@ -86,25 +86,32 @@ pub fn source_of(callee: &Expr) -> Option<(&'static str, usize)> {
     SOURCES.iter().copied().find(|(n, _)| *n == f.name)
 }
 
-/// GH #2068 (F.59): the text source a `for`'s or a chain's source call
-/// is, and its arguments, the string first: `std::str::lines(s)`, or the
-/// receiver call `s.lines()` (`s.split(sep)`, `s.words()`), at the
-/// source's own arity. A source position is read before types, so a
-/// receiver call there naming a source is the source whatever the
-/// receiver is: the check refuses one that is no string, in the source's
-/// words. `self.lines()` is a locus's own method, never a source.
+/// The text source a `for`'s or a chain's source call is, and its
+/// arguments, the string first: `std::str::lines(s)` at the source's own
+/// arity.
 pub fn source_call(e: &Expr) -> Option<(&'static str, Vec<Expr>)> {
     let Expr::Call { callee, args, .. } = e else { return None };
-    if let Some((name, arity)) = source_of(callee) {
-        return (args.len() == arity).then(|| (name, args.clone()));
-    }
-    let Expr::Field { receiver, name, .. } = callee.as_ref() else { return None };
-    if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
-        return None;
-    }
-    let (source, arity) = SOURCES.iter().copied().find(|(n, _)| *n == name.name)?;
-    (args.len() + 1 == arity).then(|| (source, std::iter::once(receiver.as_ref().clone()).chain(args.iter().cloned()).collect()))
+    let (name, arity) = source_of(callee)?;
+    (args.len() == arity).then(|| (name, args.clone()))
 }
+
+/// GH #2068 (F.59): whether `e` is a receiver call that may be a text
+/// source, `x.lines()` (`x.split(sep)`, `x.words()`, at the source's
+/// arity, `x` not `self`): only the check knows whether `x` is a string.
+/// A `for` or a chain over one is left as written until the snapshot has
+/// written the receiver calls the check resolved as their path calls
+/// (`desugar_str_sources_from`, `chains::desugar_deferred_chains`); one
+/// whose receiver is no string (a locus's method) stays the call it is.
+pub fn receiver_source_shape(e: &Expr) -> bool {
+    let Expr::Call { callee, args, .. } = e else { return false };
+    let Expr::Field { receiver, name, .. } = callee.as_ref() else { return false };
+    !matches!(receiver.as_ref(), Expr::KwSelf(_))
+        && SOURCES.iter().any(|(n, arity)| *n == name.name && args.len() + 1 == *arity)
+}
+
+/// GH #2068: where the snapshot's second desugar of the text sources
+/// numbers its scans from, past every number the first one gave.
+pub const SETTLED_BASE: usize = 1 << 32;
 
 /// The checker's refusal of a source left as written: a call used as a
 /// value, or one with the wrong number of arguments.
@@ -158,7 +165,14 @@ pub fn argument_refusal(source: &str, param: &str, got: &str) -> String {
 
 /// Rewrite every loop over a text source in `program`.
 pub fn desugar_str_sources(program: &mut Program) {
-    let mut n = 0usize;
+    desugar_str_sources_from(program, 0);
+}
+
+/// [`desugar_str_sources`], numbering the scans from `start`: the
+/// snapshot's second run, once receiver calls are path calls (GH #2068),
+/// from [`SETTLED_BASE`].
+pub fn desugar_str_sources_from(program: &mut Program, start: usize) {
+    let mut n = start;
     items(&mut program.items, &mut n);
 }
 

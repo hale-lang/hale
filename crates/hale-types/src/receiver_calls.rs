@@ -48,6 +48,25 @@ pub fn any_candidate(programs: &mut [&mut Program]) -> bool {
     false
 }
 
+/// Whether `programs` hold a receiver call that may be a text source
+/// (`x.words()`, [`hale_syntax::str_sources::receiver_source_shape`]): a
+/// `for` or a chain over one is left as written until the snapshot
+/// settles the receiver calls, which then desugars it.
+pub fn any_deferred_source(programs: &mut [&mut Program]) -> bool {
+    let mut found = false;
+    for p in programs.iter_mut() {
+        hale_syntax::json_gen::rewrite_items(&mut p.items, &mut |e: &mut Expr| {
+            if hale_syntax::str_sources::receiver_source_shape(e) {
+                found = true;
+            }
+        });
+        if found {
+            return true;
+        }
+    }
+    false
+}
+
 /// Rewrite each call `calls` records (by node id) into the path call it
 /// means: `x.f(args)` becomes `std::str::f(x, args)`. Returns how many
 /// were rewritten.

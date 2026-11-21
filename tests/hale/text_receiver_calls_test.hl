@@ -58,6 +58,35 @@ fn csv_total(s: String) -> Int {
     return t;
 }
 
+// a locus's own methods named like the text sources stay its methods:
+// through a local, a parameter and a field, as a `for`'s source and a
+// chain's
+locus Source {
+    fn words() -> [Int; 2] { return [4, 5]; }
+    fn lines() -> [Int; 3] { return [1, 2, 3]; }
+    fn split(sep: String) -> [Int; 2] { return [7, 8]; }
+}
+
+locus Shelf {
+    params { src: Source = Source { }; }
+}
+
+fn source_param(src: Source) -> Int {
+    let mut t = 0;
+    for n in src.lines() {
+        t = t + n;
+    }
+    return t + src.words().filter(it > 4).count();
+}
+
+fn source_field(sh: Shelf) -> Int {
+    let mut t = 0;
+    for n in sh.src.split(",") {
+        t = t + n;
+    }
+    return t + sh.src.lines().filter(it > 1).count();
+}
+
 fn kind(s: String) -> String {
     return match s {
         _ if s.starts_with("GET ") -> "read",
@@ -119,6 +148,29 @@ fn main() {
         ws = ws + w.upper();
     }
     std::test::assert_eq_str(ws, "ONETWO", "words, a for");
+
+    // a locus's methods named like the text sources
+    let src = Source { };
+    let mut got = 0;
+    for n in src.words() {
+        got = got + n;
+    }
+    std::test::assert_eq_int(got, 9, "a locus's words, a for over a local");
+    std::test::assert_eq_int(
+        src.split(",").filter(it > 7).count(),
+        1,
+        "a locus's split, a chain over a local",
+    );
+    std::test::assert_eq_int(
+        source_param(src),
+        7,
+        "a locus's lines and words, through a parameter",
+    );
+    std::test::assert_eq_int(
+        source_field(Shelf { }),
+        17,
+        "a locus's split and lines, through a field",
+    );
 
     // a guard, a locus method, a generic body
     std::test::assert_eq_str(kind("GET /"), "read", "a guard");

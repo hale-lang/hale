@@ -66,12 +66,13 @@ fn main() {
 - **Calls chain left to right**, each receiver the value the call
   before it returned: `raw.trim().lower()`.
 - **Text sources.** In a `for` loop's source and an element chain's,
-  `x.split(sep)`, `x.lines()` and `x.words()` are the sources
-  `std::str::split(x, sep)`, `std::str::lines(x)` and
-  `std::str::words(x)` (§ Text sources). That position is read before
-  types, so there those three names are the sources whatever `x` is,
-  and the check refuses an `x` that is no string in the source's words;
-  `self.lines()` stays a locus's own method.
+  `x.split(sep)`, `x.lines()` and `x.words()` on a string are the
+  sources `std::str::split(x, sep)`, `std::str::lines(x)` and
+  `std::str::words(x)` (§ Text sources). Whether `x` is a string is the
+  check's to say, so such a loop or chain is desugared once the receiver
+  calls are written as path calls: on a string it is the text source's
+  scan, and on any other value (a locus's own `words()`) it is the loop
+  over that method's result it always was.
 - **Nothing else is a receiver call.** A record type has no methods, a
   locus's methods are its own, and a fn of the program's is never called
   on a value (`s.shout()` is refused; write `shout(s)`). On a text value,

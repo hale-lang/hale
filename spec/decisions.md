@@ -4391,10 +4391,15 @@ typed for this; one whose calls resolve none keeps its one walk. The
 editor settles a snapshot after it is offered the previous one, so its
 walk reuses what it can.
 
-In a `for` loop's source and an element chain's source, which are read
-before types (the chain desugar runs at parse), `x.split(sep)`,
-`x.lines()` and `x.words()` are the text sources whatever `x` is; the
-check refuses an `x` that is no string in the source's words.
+In a `for` loop's source and an element chain's source, `x.split(sep)`,
+`x.lines()` and `x.words()` on a string are the text sources. Those loops
+are desugared before the check, and only the check knows whether `x` is a
+string, so a loop or a chain over such a receiver call is left as written
+until the snapshot has written the receiver calls as path calls; then it
+is desugared, a text source's scan over a string, and the loop over the
+method's result it always was over anything else (a locus's own
+`words()`). The snapshot types again until a walk resolves no receiver
+call, since a call inside such a loop is typed only once the loop is.
 
 **What a program now gets.** On a text value, a name that is no fn of
 its namespace taking that type first is a located type error with the

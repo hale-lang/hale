@@ -560,6 +560,12 @@ pub struct Snapshot {
     receivers_settled: bool,
 }
 
+/// GH #2068: how many rounds [`Snapshot::settle_receiver_calls`] types a
+/// program in at most: one, one more once receiver calls were written,
+/// and one more per nesting of a call typed only inside a loop or a chain
+/// the first round desugared.
+const SETTLE_ROUNDS: usize = 6;
+
 /// What [`Snapshot::from_program`]'s program is keyed and minted by:
 /// it names no file.
 const BARE_PROGRAM: &str = "program";
@@ -1436,16 +1442,46 @@ impl Snapshot {
                 return;
             }
         }
-        let calls = match self.final_walk() {
-            Ok(w) => w.walk.record.receiver_calls.clone(),
-            Err(_) => return,
-        };
-        if calls.is_empty() {
-            return;
+        // Each round types the program, writes the receiver calls its walk
+        // resolved as path calls and, once, desugars the `for`s and chains
+        // over a receiver call that may be a text source; a call inside
+        // one (`part.trim()` in `for part in s.split(",")`) is typed only
+        // once that loop is, so the rounds go on until a walk resolves
+        // none. Each round but the last rewrites at least one call.
+        let mut desugared = false;
+        for _ in 0..SETTLE_ROUNDS {
+            let deferred = !desugared && {
+                let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
+                hale_types::receiver_calls::any_deferred_source(&mut refs)
+            };
+            let calls = match self.final_walk() {
+                Ok(w) => w.walk.record.receiver_calls.clone(),
+                Err(_) => return,
+            };
+            if calls.is_empty() && !deferred {
+                return;
+            }
+            let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
+            hale_types::receiver_calls::rewrite(&mut refs, &calls);
+            // A `for` or a chain over a receiver call that may be a text
+            // source waited for the check: one over a string is now over
+            // the path call, a text source's; one over another value (a
+            // locus's `words()`) is the loop it always was. Its new nodes
+            // are minted.
+            if deferred {
+                for p in self.programs.values_mut() {
+                    hale_syntax::chains::desugar_deferred_chains(p);
+                    hale_syntax::str_sources::desugar_str_sources_from(p, hale_syntax::str_sources::SETTLED_BASE);
+                }
+                let names: Vec<String> = self.programs.keys().map(|p| p.display().to_string()).collect();
+                self.identities = hale_types::snapshot::mint(
+                    names.iter().map(String::as_str).zip(self.programs.values_mut()),
+                    &self.source_map,
+                );
+                desugared = true;
+            }
+            self.forget_derived();
         }
-        let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
-        hale_types::receiver_calls::rewrite(&mut refs, &calls);
-        self.forget_derived();
     }
 
     /// Every family derived from the programs, forgotten: what

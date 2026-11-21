@@ -127,9 +127,26 @@
 use crate::ast::*;
 use crate::span::Span;
 
-/// Rewrite every recognized chain in the program.
+/// Rewrite every recognized chain in the program. A chain over a
+/// receiver call that may be a text source (`s.words().filter(…)`, GH
+/// #2068) is left as written: only the check knows whether `s` is a
+/// string ([`desugar_deferred_chains`]).
 pub fn desugar_chains(program: &mut Program) {
-    let mut n = 0usize;
+    desugar_chains_from(program, 0);
+}
+
+/// GH #2068 (F.59): the chains [`desugar_chains`] left as written, once
+/// the snapshot has written the receiver calls the check resolved as
+/// their path calls: a chain over `std::str::words(s)` is a text source's,
+/// one over a locus's method `src.words()` an indexed loop, as before.
+/// Its temporaries are numbered past the first pass's, and its nodes,
+/// minted once already, are made new sites (the lowering copies some).
+pub fn desugar_deferred_chains(program: &mut Program) {
+    desugar_chains_from(program, crate::str_sources::SETTLED_BASE);
+}
+
+fn desugar_chains_from(program: &mut Program, start: usize) {
+    let mut n = start;
     for item in &mut program.items {
         match item {
             TopDecl::Fn(f) => block(&mut f.body, &mut n),
@@ -380,9 +397,19 @@ fn mentions_it(e: &Expr) -> bool {
     mentions_ident(e, "it")
 }
 
+/// GH #2068: in the snapshot's second pass (`n` past the base), a chain
+/// about to be lowered is made of new sites first: its nodes were minted,
+/// and the lowering copies some of them. `Some(())` to go on.
+fn settle_ids(e: &mut Expr, n: usize) -> Option<()> {
+    if n >= crate::str_sources::SETTLED_BASE && peel(e, false).is_some() {
+        crate::sites::clear_ids_in_expr(e);
+    }
+    Some(())
+}
+
 /// Peel `src.filter(p).map(f).<terminal>(…)` into its parts. `None`
 /// when this is not a recognized chain — an ordinary method call.
-fn peel(e: &Expr) -> Option<Chain> {
+fn peel(e: &Expr, defer: bool) -> Option<Chain> {
     let Expr::Call { callee, args, .. } = e else {
         return None;
     };
@@ -471,7 +498,11 @@ fn peel(e: &Expr) -> Option<Chain> {
     // the source's own arity. It is a call of the standard library's,
     // never a user's facade, so every terminal is recognized on it, a
     // stage or none (`std::str::words(s).count()`).
-    // GH #2068: or the receiver call naming one, `s.words()`.
+    // GH #2068: a receiver call that may be one (`s.words()`) waits for
+    // the check (`desugar_deferred_chains`).
+    if defer && crate::str_sources::receiver_source_shape(cur) {
+        return None;
+    }
     let text = crate::str_sources::source_call(cur).map(|(name, _)| name);
 
     // Recognition gate.
@@ -649,7 +680,7 @@ fn expr(e: &mut Expr, n: &mut usize) {
     // the `src.get(idx)` tail — the shape the existing or-machinery
     // already lowers.
     if let Expr::Or { inner, disposition, span } = e {
-        if let Some(c) = peel(inner) {
+        if let Some(c) = settle_ids(inner, *n).and_then(|_| peel(inner, *n < crate::str_sources::SETTLED_BASE)) {
             if matches!(
                 c.terminal.as_str(),
                 "first" | "find" | "min" | "max"
@@ -689,7 +720,7 @@ fn expr(e: &mut Expr, n: &mut usize) {
         Expr::Or { inner, .. } => expr(inner, n),
         _ => {}
     }
-    if let Some(c) = peel(e) {
+    if let Some(c) = settle_ids(e, *n).and_then(|_| peel(e, *n < crate::str_sources::SETTLED_BASE)) {
         *n += 1;
         let sp = e.span();
         *e = match c.terminal.as_str() {
