@@ -47,7 +47,6 @@ run:    loop 5 times { total += step }  →  total = 160
 
 - `accept()`, `dissolve()`, `drain()` lifecycle methods (parent-child
   + recovery work)
-- Modes (`bulk` / `harmonic` / `resolution`)
 - Closure-test cycles
 - Bus subscriptions
 - Long-lived loci surviving past the surrounding fn — requires

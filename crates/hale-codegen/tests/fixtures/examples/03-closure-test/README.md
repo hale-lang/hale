@@ -139,8 +139,8 @@ Three commitments locked in this commit:
 3. **Default epoch is `dissolve`.** Closures with no `epoch`
    clause evaluate at dissolution. Other epochs (`tick`,
    `duration(d)`, `birth`, `explicit`) are still in the
-   grammar; their semantics will land in `04-modes` or
-   `04.5-epochs` when the example forces them.
+   grammar; their semantics will land in a later
+   example when the example forces them.
 
 ## What this still does *not* exercise
 
@@ -152,12 +152,10 @@ Three commitments locked in this commit:
 - Multi-closure interaction in one locus — deferred
 - `on_failure` handlers that absorb vs. bubble — deferred
   (will likely surface in a later closure example)
-- Mode declarations — 04
 - Bus interface — 05
 
 ## Next on the ladder
 
-`04-modes` — a locus that exposes the same kernel under
-bulk / harmonic / resolution modes; introduces `self.children`
-iteration; closures over child collections become natural
+`04-child-aggregates` — a locus that reads its children's state
+through several methods; introduces `self.children` iteration; closures over child collections become natural
 (e.g., `sum(c.value for c in self.children)`).

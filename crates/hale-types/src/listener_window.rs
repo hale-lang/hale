@@ -295,10 +295,6 @@ pub fn for_each_expression_root<'a>(items: &'a [hale_syntax::ast::TopDecl], f: &
                             defaults(&lc.params, f);
                             f(Root::Block(&lc.body));
                         }
-                        LocusMember::Mode(md) => {
-                            defaults(&md.params, f);
-                            f(Root::Block(&md.body));
-                        }
                         LocusMember::Failure(fd) => {
                             defaults(&fd.params, f);
                             f(Root::Block(&fd.body));

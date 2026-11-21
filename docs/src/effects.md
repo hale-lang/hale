@@ -54,7 +54,7 @@ Every built-in effect class name is reserved by the compiler (redeclaring `effec
 | `@budget(dim = N, ...)` | `fn` | Bounds per-call resource dimensions (`alloc_per_call`, `stack_bytes`, `block_points`, `publish`, `fanout`, or `<user_class>`). |
 | `@phase_effects(phase: {...})` | `locus` | Restricts each named lifecycle hook (`birth`, `run`, etc.) or method to the exact listed effect classes. |
 | `@hot` | `fn` | Enforces zero arena allocations and hot-path speed rules on the function. |
-| `@unbounded` / `@bounded_by(x)` | `fn`, hook, `mode` | Acknowledges intentional arena accumulation and silences the unbounded-allocation advisory. |
+| `@unbounded` / `@bounded_by(x)` | `fn`, hook | Acknowledges intentional arena accumulation and silences the unbounded-allocation advisory. |
 
 ---
 
@@ -143,7 +143,7 @@ The compiler rejects contradictory or duplicate decorator combinations at the de
 - **Duplicate decorators**: Writing the same decorator twice on one declaration is an error.
 - **`@unbounded` vs. `@bounded_by(<name>)`**: Mutually exclusive; use `@bounded_by(<param>)` when growth is bounded by a named input, or `@unbounded` when growth has no static bound.
 - **Zero-allocation contradictions**: Neither `@unbounded` nor `@bounded_by` can be paired with `@hot`, `@effects(none: {alloc})`, or `@budget(alloc_per_call = 0)`. However, pairing `@unbounded` with a non-zero per-call ceiling (such as `@budget(alloc_per_call = 2)`) is valid.
-- **Lifecycle hooks and modes**: Lifecycle hooks (`birth`, `run`, `dissolve`, etc.) and `mode` blocks (`@unbounded mode bulk() { ... }`) execute once per phase rather than per call, so they accept only `@unbounded` or `@bounded_by(<name>)`. Place per-call `@effects` and `@budget` contracts on helper `fn` members invoked by the hook.
+- **Lifecycle hooks**: Lifecycle hooks (`birth`, `run`, `dissolve`, etc.) execute once per phase rather than per call, so they accept only `@unbounded` or `@bounded_by(<name>)`. Place per-call `@effects` and `@budget` contracts on helper `fn` members invoked by the hook.
 
 ### Forbidding Unhandled Failures (`@no_panic`)
 

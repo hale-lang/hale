@@ -186,7 +186,6 @@ impl World {
                         let body = match m {
                             LocusMember::Fn(fd) => &fd.body,
                             LocusMember::Lifecycle(lc) if lc.kind != LifecycleKind::Birth => &lc.body,
-                            LocusMember::Mode(md) => &md.body,
                             _ => continue,
                         };
                         self_fields_in_block(body, &mut f.used_outside_birth);
@@ -875,7 +874,6 @@ impl<'a> Walk<'a> {
                         let (name, decls, body) = match m {
                             LocusMember::Fn(fd) => (fd.name.name.clone(), &fd.params, &fd.body),
                             LocusMember::Lifecycle(lc) => (lifecycle_name(lc.kind).to_string(), &lc.params, &lc.body),
-                            LocusMember::Mode(md) => ("<mode>".to_string(), &md.params, &md.body),
                             _ => continue,
                         };
                         self.ctx = Some(Ctx {
@@ -1503,11 +1501,6 @@ impl<'a> CallCollector<'a> {
                                 lifecycle_name(lc.kind).to_string(),
                                 lc.params.iter().map(|p| p.name.name.clone()).collect(),
                                 &lc.body,
-                            ),
-                            LocusMember::Mode(md) => (
-                                "<mode>".to_string(),
-                                md.params.iter().map(|p| p.name.name.clone()).collect(),
-                                &md.body,
                             ),
                             _ => continue,
                         };

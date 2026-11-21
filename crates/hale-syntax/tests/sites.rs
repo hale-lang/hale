@@ -41,7 +41,7 @@ locus Worker {
     }
     closure steady { self.n ~~ self.n within 0; }
     birth { let x = 1; }
-    mode bulk() -> Int { return self.n; }
+    fn bulk() -> Int { return self.n; }
     on_failure(c: Worker, err: ClosureViolation) { }
     fn on_tick(v: Int) {
         let (a, b) = (v, 2);
@@ -78,7 +78,7 @@ fn one_of_each_kind_in_pre_order() {
         Closure,
         Lifecycle,
         Let, // let x
-        Mode,
+        Fn, // bulk
         Failure,
         Binder, // c
         Binder, // err
@@ -110,7 +110,7 @@ fn one_of_each_kind_in_pre_order() {
     // The program exercises every kind the enum names.
     let seen: BTreeSet<SiteKind> = expected.iter().copied().collect();
     let all: BTreeSet<SiteKind> = [
-        Locus, Fn, Topic, Type, Interface, Closure, Lifecycle, Mode, Failure,
+        Locus, Fn, Topic, Type, Interface, Closure, Lifecycle, Failure,
         Const, Group, Param, PlacementEntry,
         BindingEntry, Publish, Subscribe, Let, LetTuple, Assign, For, Send,
         StructLiteral, Call, Use, Binder, Unit, UnitEquation,
@@ -206,7 +206,7 @@ fn corpus_walk_reaches_every_identity_field() {
     }
     eprintln!("{} programs, {} sites: {:?}", programs.len(), total, by_kind);
     // Vacuity: every kind turns up somewhere in the corpus.
-    assert_eq!(by_kind.len(), 27, "kinds seen: {:?}", by_kind.keys());
+    assert_eq!(by_kind.len(), 26, "kinds seen: {:?}", by_kind.keys());
 }
 
 /// The same over the syntax crate's own desugars, which synthesize

@@ -202,7 +202,6 @@ pub fn infer_sync_for_bundle(
                     LocusMember::Fn(fd) => {
                         (Some(&fd.body), fd.name.name.starts_with("on_"))
                     }
-                    LocusMember::Mode(md) => (Some(&md.body), false),
                     LocusMember::Lifecycle(lc) => (Some(&lc.body), false),
                     _ => (None, false),
                 };

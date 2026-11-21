@@ -10,7 +10,7 @@
 //!   the call except through the return value (GH #1148).
 //! - `nonalloc`: the free fns that provably allocate nothing (FORM-3),
 //!   with the numeric-returning subset.
-//! - `elidable_methods`: per locus, the `fn` methods and modes whose
+//! - `elidable_methods`: per locus, the `fn` methods whose
 //!   `self.m()` call allocates nothing (stage 2 of method-scratch
 //!   elision).
 //! - `loci`: per locus, whether its arena is elided, and per lifecycle
@@ -42,7 +42,7 @@ pub struct LocusElision {
     /// caller's current arena, and dissolve destroys none.
     pub arena: bool,
     /// By position in the locus's `members`: whether that lifecycle
-    /// hook, `fn` method or mode lowers without its per-call scratch
+    /// hook or `fn` method lowers without its per-call scratch
     /// subregion (stage-1 method-scratch elision).
     pub scratch: BTreeMap<usize, bool>,
 }
@@ -60,7 +60,7 @@ pub struct AllocRouting {
     /// Of `nonalloc`, the fns returning a numeric scalar.
     pub nonalloc_numeric_ret: BTreeSet<String>,
     /// Stage 2 of method-scratch elision ([`elidable_methods`]): per
-    /// locus name, the elidable `fn` methods and modes, and the
+    /// locus name, the elidable `fn` methods, and the
     /// numeric-returning subset. A monomorph has no entry.
     pub elidable_methods: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)>,
     /// Per non-generic locus of the program, by name.
@@ -285,7 +285,6 @@ fn locus_elision(l: &LocusDecl, rows: &AllocRouting, types: &TypeFacts) -> Locus
         let (body, params, ret) = match m {
             LocusMember::Lifecycle(lc) => (&lc.body, &lc.params, lc.ret.as_ref()),
             LocusMember::Fn(fd) => (&fd.body, &fd.params, fd.ret.as_ref()),
-            LocusMember::Mode(md) => (&md.body, &md.params, md.ret.as_ref()),
             _ => continue,
         };
         let ctx = MemberCtx {
@@ -1896,11 +1895,6 @@ fn elidable_methods(
         // Candidates: gate-1-eligible (scalar/Unit return), non-fallible,
         // non-FFI `fn` methods. Heap-returning methods are never elidable and
         // never a non-allocating call target.
-        // Aliasing stage 2 (2026-07-02): MODES join the candidate
-        // set under their synthetic names (bulk/harmonic/
-        // resolution) — they lower as ordinary locus methods and
-        // brain-tower pulls hit them hot, so both scratch elision
-        // and the noalias-self attribute want the same proof.
         let fns: Vec<(&str, &[Param], Option<&TypeExpr>, &Block)> = l
             .members
             .iter()
@@ -1915,21 +1909,6 @@ fn elidable_methods(
                         fd.params.as_slice(),
                         fd.ret.as_ref(),
                         &fd.body,
-                    ))
-                }
-                LocusMember::Mode(md)
-                    if ret_is_scalar_or_unit(md.ret.as_ref()) =>
-                {
-                    let name = match md.kind {
-                        ModeKind::Bulk => "bulk",
-                        ModeKind::Harmonic => "harmonic",
-                        ModeKind::Resolution => "resolution",
-                    };
-                    Some((
-                        name,
-                        md.params.as_slice(),
-                        md.ret.as_ref(),
-                        &md.body,
                     ))
                 }
                 _ => None,
@@ -2078,7 +2057,6 @@ fn locus_arena_elidable(l: &LocusDecl) -> bool {
     for m in &l.members {
         let body = match m {
             LocusMember::Lifecycle(lc) => &lc.body,
-            LocusMember::Mode(md) => &md.body,
             LocusMember::Fn(fd) => &fd.body,
             _ => continue,
         };

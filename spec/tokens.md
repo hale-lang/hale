@@ -128,9 +128,9 @@ fragment (STABILITY.md § Keywords).
 Two declarations of a contextual word stay refused, because the name
 would collide with the syntax the word introduces at the use site:
 
-- a **locus method** named like a lifecycle hook, the failure handler
-  or a mode (`fn run()`, `fn on_failure()`, `fn bulk()` inside a
-  locus) — that name IS the hook, and `self.bulk()` runs the mode:
+- a **locus method** named like a lifecycle hook or the failure
+  handler (`fn run()`, `fn on_failure()` inside a locus) — that name
+  IS the hook:
 
   ```text
   work.hl:2:8: parse error: a locus method cannot be named `run`: that
@@ -221,22 +221,18 @@ closure body, and a `@phase_effects( … )` key or a claim's `during`
 phase names any of them. A field, parameter, local or free fn may be
 named `run`; a locus METHOD may not (above).
 
-### Mode keywords (contextual)
+### Mode words (removed)
 
-```
-bulk            harmonic        resolution
-```
+`mode`, `bulk`, `harmonic` and `resolution` are not keywords (F.61):
+locus modes were removed, and the four words lex and parse as ordinary
+identifiers in every position, a locus method's name included. A
+program that still writes `mode NAME` (followed by `(`, `->` or `{`)
+at locus-member position is refused there with one located error
+naming the `fn` to write:
 
-`mode` is a **contextual keyword**: recognized only
-at locus-member position (as the leading token of a `mode_decl`
-production in `grammar.ebnf` § 7). Outside that position it
-lexes as an ordinary Ident, so `cam.mode: Int` and similar
-param/field uses are admissible — relevant for raylib-style
-bindings where `mode` is a natural API name. Same F.10-style
-narrowing as `bindings`, `birth_check`, `pool`, `heap`.
-`bulk` / `harmonic` / `resolution` are keywords right after `mode`;
-`self.bulk()` calls the mode, which is why a locus method may not
-take one of the three names.
+```text
+work.hl:4:5: parse error: locus modes were removed in 0.38: write `fn bulk(...)` (a mode compiled as an ordinary method; spec/decisions.md F.61)
+```
 
 ### Projection-class keywords (contextual)
 
@@ -270,7 +266,7 @@ placement specs (topology Phase 1a). Phase 1b adds
 A..B, replicas = K)`). All are contextual idents — outside their
 positions they lex as ordinary Idents
 and can name fns / vars / fields (same F.10-style narrowing the
-closure / mode keyword families use). Note L3-domain names go
+closure keyword family uses). Note L3-domain names go
 through the identifier rule, so a **hard** keyword (e.g. `match`)
 can't name a domain — use a plain identifier. `cores` range
 bounds and set elements are integer literals; the range reuses
@@ -297,7 +293,7 @@ only inside a `closure { ... }` block body (and only in the
 specific positions the closure-assertion grammar admits them).
 They lex as ordinary Idents elsewhere, so `fn approx(...)` and
 `let within = ...` are admissible outside closure bodies. Same
-F.10-style narrowing the mode-keyword family uses
+F.10-style narrowing the framework vocabulary uses
 post-dot. Shipped 2026-05-11; resolves
 `notes/hale-friction.md` 2026-05-10
 `closure-keyword-shadows-helper-ident`.
@@ -375,8 +371,8 @@ Bindings are immutable by default. `let mut x = ...` declares a
 mutable binding; reassignment via `x = ...` is permitted. Without
 `mut`, reassignment is a compile-time error.
 
-`self` is meaningful only inside a lifecycle block, mode block,
-or closure block. It refers to the enclosing locus's own params
+`self` is meaningful only inside a lifecycle block, a locus `fn`,
+or a closure block. It refers to the enclosing locus's own params
 and contract-exposed state. Outside such a block, `self` is a
 parse error.
 
