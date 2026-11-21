@@ -49,6 +49,14 @@ pub(crate) fn render_codegen_error(
         hale_codegen::CodegenError::CapabilityRefused(msg, Some(span)) => {
             Some((msg.clone(), *span))
         }
+        // GH #2134: a loop of a `@vectorize` fn the build did not
+        // vectorize, at the loop (a stdlib fn's names the stdlib line).
+        hale_codegen::CodegenError::NotVectorized(msg, span, false) => {
+            Some((msg.clone(), *span))
+        }
+        hale_codegen::CodegenError::NotVectorized(msg, span, true) => {
+            return format!("error: {} ({})", msg, stdlib_note(*span));
+        }
         _ => None,
     };
     match located {

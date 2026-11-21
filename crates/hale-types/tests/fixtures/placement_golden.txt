@@ -2023,6 +2023,13 @@ row	App@literal1	App	main	default
 row	App@literal1.p	Pusher	pinned:App@literal1.p	entry	off owner
 row	App@literal1.tally	Tally	main	default
 
+== crates/hale-codegen/tests/bus_bounded_topics.rs#4cb22b4a
+root	App
+domain	pinned:App@literal1.p	cpus 0
+row	App@literal1	App	main	default
+row	App@literal1.p	Pusher	pinned:App@literal1.p	entry	off owner
+row	App@literal1.tally	Tally	main	default
+
 == crates/hale-codegen/tests/bus_bounded_topics.rs#8c6d716d
 root	App
 domain	pinned:App@literal1.p	cpus 0
@@ -7208,6 +7215,13 @@ row	App@literal1.leaf	Leaf	main	default
 row	~	Adapter	pinned:~	binding
 row	~.leaf	Leaf	pinned:~	inherited
 
+== crates/hale-types/tests/model_builder.rs#f7d333d5
+root	App
+row	App@literal1	App	main	default
+row	App@literal1.c	Catcher	main	default
+row	App@literal1.s	Store	main	default
+row	App@literal1.w	Worker	main	default
+
 == crates/hale-types/tests/model_builder.rs#0bc750a5
 root	App
 row	App@literal1	App	main	default
@@ -8550,6 +8564,25 @@ row	Store@main1	Store	main	default
 root	App
 row	App@literal1	App	main	default
 row	App@literal1.w	Worker	main	default
+
+== tests/hale/bus_on_full_discard_test.hl
+root	App
+domain	pinned:App@literal1.p	cpus 0
+row	App@literal1	App	main	default
+row	App@literal1.p	Pusher	pinned:App@literal1.p	entry	off owner
+row	App@literal1.t	Tally	main	default
+
+== tests/hale/bus_on_full_raise_test.hl
+root	App
+row	App@literal1	App	main	default
+row	App@literal1.t	Tally	main	default
+
+== tests/hale/bus_on_full_wait_test.hl
+root	App
+domain	pinned:App@literal1.p	cpus 0
+row	App@literal1	App	main	default
+row	App@literal1.p	Pusher	pinned:App@literal1.p	entry	off owner
+row	App@literal1.t	Tally	main	default
 
 == tests/hale/bus_static_wide_payload_test.hl
 row	Printer@main1	Printer	main	default

@@ -66,6 +66,7 @@ pub(crate) mod string_len;
 pub(crate) mod typed_seam;
 pub(crate) mod types;
 pub(crate) mod view_bindings;
+pub mod vectorize;
 
 pub use ownership::{
     resolve_owners, Entry as OwnerEntry, ExprId, Owner, OwnerTable,

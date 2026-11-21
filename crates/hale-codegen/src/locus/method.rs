@@ -901,6 +901,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         fd: &hale_syntax::ast::FnDecl,
         func: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
+        let name = format!("{}.{}", l.name.name, fd.name.name);
+        let stdlib = crate::codegen::stdlib_named(&l.name.name);
+        self.with_vec_fn(fd, name, stdlib, |cx| cx.lower_user_fn_member_body_at(l, info, member_idx, fd, func))
+    }
+
+    fn lower_user_fn_member_body_at(
+        &mut self,
+        l: &LocusDecl,
+        info: &crate::codegen::LocusInfo<'ctx>,
+        member_idx: usize,
+        fd: &hale_syntax::ast::FnDecl,
+        func: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
         let entry = self.context.append_basic_block(func, "entry");
         self.builder.position_at_end(entry);
         self.di_begin_function();

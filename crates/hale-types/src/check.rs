@@ -1430,6 +1430,8 @@ fn walk_bundle(
         templates: &templates,
         generic_bindings: BTreeMap::new(),
         specializing: None,
+        vec_fn: None,
+        vec_loop: None,
         dot_bound: Vec::new(),
         dot_resolution: std::collections::HashMap::new(),
         block_may_leave: false,
@@ -1449,6 +1451,8 @@ fn walk_bundle(
         decimal_literals: Vec::new(),
         decimal_scales: std::collections::HashMap::new(),
         fixed_literals_judged: std::collections::HashSet::new(),
+        met_rows: Default::default(),
+        met_scoped_rows: Vec::new(),
     };
     let mut reported: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
     for (key, program) in &bundle.programs {
@@ -1659,6 +1663,16 @@ pub fn check_bundle_rules(
     // (hoisted field / `recv_into`).
     let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false, advisory: inputs.hot_path_advisory };
     diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
+    // GH #2134 (F.63): what an innermost loop of a `@vectorize` fn calls,
+    // allocates or publishes that no target's vectorizer takes.
+    {
+        // (the effect rows are demanded only by a program that has one:
+        // a check with no `@vectorize` runs no effects fixpoint for it)
+        let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+        if crate::vectorize::declares_any(&programs) {
+            diags.extend(crate::vectorize::call_laws(&programs, inputs.alloc_summary, (inputs.effects)()));
+        }
+    }
     // A subscriber built and dissolved inside one call on a classic
     // cooperative pool: its deliveries are always dropped (spec/runtime.md
     // § "Subscriptions follow the tower").
@@ -11628,6 +11642,10 @@ struct Checker<'a> {
     /// on the ordinary walk.
     generic_bindings: BTreeMap<String, Ty>,
     specializing: Option<Vec<Ty>>,
+    /// GH #2134 (F.63): the `@vectorize` fn being walked (its name as
+    /// written) and the innermost loop of it being walked.
+    vec_fn: Option<String>,
+    vec_loop: Option<crate::vectorize::LoopFindings>,
     /// GH #2069: the names a `.Variant` arm in scope binds, by the locals
     /// frame binding them: a call of such a name, a fn value whose payload
     /// type the shadowing desugar could not see, calls the binding
@@ -11717,6 +11735,12 @@ struct Checker<'a> {
     /// GH #2121: the negations refused as a `U64`, by span: a value is
     /// walked more than once, and each is refused once.
     fixed_literals_judged: std::collections::HashSet<(usize, usize)>,
+    /// GH #2111 (phase 1, family 7): the expressions whose row a place
+    /// decided (`meet_row`): by node in the `views` column, by body, scope
+    /// and key in a monomorph's or a default's walk. Another walk of one
+    /// types it as it stands alone, which is not a second answer.
+    met_rows: std::collections::HashSet<usize>,
+    met_scoped_rows: Vec<(NodeId, crate::typed_bodies::ExprScope, (u32, u32, u8, u64))>,
 }
 
 /// A Decimal literal awaiting its scale's judgment (`Decimal<S>`).
@@ -16162,6 +16186,18 @@ impl<'a> Checker<'a> {
     }
 
     fn check_fn(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
+        let vec_fn = decl.vectorize.as_ref().filter(|_| self.specializing.is_none()).map(|_| match locus {
+            Some(l) => format!("{}.{}", l.name, decl.name.name),
+            None => decl.name.name.clone(),
+        });
+        let prev_vec = std::mem::replace(&mut self.vec_fn, vec_fn);
+        let prev_vec_loop = self.vec_loop.take();
+        self.check_fn_vectorized(decl, locus);
+        self.vec_fn = prev_vec;
+        self.vec_loop = prev_vec_loop;
+    }
+
+    fn check_fn_vectorized(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
         let prev_body = std::mem::replace(&mut self.body, decl.id);
         let prev_tpl = std::mem::replace(
             &mut self.in_display_template,
@@ -17126,6 +17162,43 @@ impl<'a> Checker<'a> {
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) {
+        if self.vec_fn.is_none() {
+            return self.check_stmt_at(stmt);
+        }
+        // GH #2134 (F.63): what an innermost loop of a `@vectorize` fn
+        // holds that no target's vectorizer takes.
+        use crate::vectorize::Cannot;
+        let mut entered = None;
+        match stmt {
+            Stmt::While { .. } | Stmt::For { .. } => {
+                if let Some(findings) = crate::vectorize::LoopFindings::of(stmt) {
+                    entered = Some(self.vec_loop.replace(findings));
+                }
+            }
+            Stmt::Return(_, span) | Stmt::Break(span) => {
+                if self.vec_loop.as_ref().is_some_and(|l| l.exits_more_than_once()) {
+                    self.vec_note(*span, Cannot::SecondExit);
+                }
+            }
+            Stmt::Send { span, .. } if self.vec_loop.is_some() => self.vec_note(*span, Cannot::Send),
+            _ => {}
+        }
+        self.check_stmt_at(stmt);
+        if let Some(outer) = entered {
+            let done = std::mem::replace(&mut self.vec_loop, outer);
+            if let (Some(done), Some(name)) = (done, self.vec_fn.as_ref()) {
+                self.diags.extend(done.diags(name));
+            }
+        }
+    }
+
+    fn vec_note(&mut self, span: Span, what: crate::vectorize::Cannot) {
+        if let Some(l) = self.vec_loop.as_mut() {
+            l.note(span, what);
+        }
+    }
+
+    fn check_stmt_at(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
                 let declared = ty.as_ref().map(|te| crate::resolve::resolve_type_expr(te, &self.top.names));
@@ -18312,11 +18385,20 @@ impl<'a> Checker<'a> {
         span: Span,
     ) {
         let payload_ty = self.check_expr(value);
-        // Phase 3 routing keys (2026-05-25): the `or DISPOSITION`
-        // clause on Send is legal only when the target topic
-        // declares `on_unmatched: fail`. Conversely, fail topics
-        // REQUIRE the clause — a fail-policy publish without an
-        // or-disposition leaves the no-match err unhandled. The
+        // The `or DISPOSITION` clause on Send is legal only when the
+        // target topic can refuse the send: it declares
+        // `on_unmatched: fail` (Phase 3 routing keys, 2026-05-25) or
+        // `on_full: fail` (GH #255 phase 2). Conversely, such a topic
+        // REQUIRES the clause — a refusal-fallible publish without an
+        // or-disposition leaves the refusal unhandled. Which
+        // dispositions each admits (GH #2146):
+        //
+        //   on_full: fail       raise, discard, wait
+        //   on_unmatched: fail  raise, discard, handler(err), fail <p>
+        //   both                raise, discard
+        //
+        // `or wait` outwaits a full queue, never an unmatched key; the
+        // err-payload dispositions are not wired for a full topic. The
         // topic is the one the subject names in the topic rows — a
         // literal by the wire subject it delivers on, a topic reference
         // by its name — and both directions are validated.
@@ -18408,6 +18490,8 @@ impl<'a> Checker<'a> {
             // through so the fail-policy matrix doesn't
             // mis-diagnose it as an illegal disposition.
             (_, Some(OrDisposition::Wait(_))) => {}
+            // the `on_full: fail` block above already asked for one
+            (Some(UnmatchedPolicy::Fail), None) if target_full_fail => {}
             (Some(UnmatchedPolicy::Fail), None) => {
                 self.diags.push(Diag::ty(
                     span,
@@ -18496,12 +18580,17 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            // GH #2146: an `on_full: fail` topic's send is refusal-
+            // fallible on its own, keyed or not. Raise and discard
+            // pass; handler(err) / fail <p> were refused by the
+            // `on_full: fail` block above.
+            (_, Some(_)) if target_full_fail => {}
             (_, Some(_)) => {
                 self.diags.push(Diag::ty(
                     span,
                     "`or` disposition on a bus send is only legal \
-                     when the target topic declares \
-                     `on_unmatched: fail`",
+                     when the target topic declares `on_full: fail` \
+                     or `on_unmatched: fail`",
                 ));
             }
             (_, None) => {
@@ -23439,15 +23528,16 @@ impl<'a> Checker<'a> {
         if let Some(seen) = &mut self.expr_types {
             seen.push((expr as *const Expr, ty.clone()));
         }
+        if self.met_row(expr) {
+            return ty;
+        }
         if self.records_views() {
             self.note_view_expr(expr, &ty);
         } else if let Some(scope) = self.expr_scope() {
             // GH #2111: a monomorph's walk and a default's evaluation keep
             // what they typed each expression, for lowering in the
             // monomorph and where it evaluates the default
-            if !matches!(expr, Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. }) {
-                self.typed.scoped_expr(self.body, &scope, expr, ty.clone());
-            }
+            self.typed.scoped_expr(self.body, &scope, expr, ty.clone());
         }
         ty
     }
@@ -23459,6 +23549,39 @@ impl<'a> Checker<'a> {
     /// `views` column's), and on a walk that is no evaluation: a default
     /// typed where it is declared, and a type declaration's walk of its
     /// fields' calls.
+    /// GH #2111 (phase 1, family 7): the place `e` flows into decides its
+    /// type, `ty` (an integer literal into a `U64` is one): its row in this
+    /// walk says so, whatever the walk that typed it alone said, and no
+    /// later walk of it alone undoes that.
+    fn meet_row(&mut self, e: &Expr, ty: Ty) {
+        if self.records_views() {
+            self.met_rows.insert(e as *const Expr as usize);
+            self.views.meet_expr(e, ty);
+        } else if let Some(scope) = self.expr_scope() {
+            let key = Self::row_key(e);
+            if !self.met_scoped_rows.iter().any(|(b, s, k)| *b == self.body && *s == scope && *k == key) {
+                self.met_scoped_rows.push((self.body, scope.clone(), key));
+            }
+            self.typed.scoped_meet(self.body, &scope, key, ty);
+        }
+    }
+
+    /// Whether this walk's row of `e` is one a place decided
+    /// ([`Self::meet_row`]).
+    fn met_row(&self, e: &Expr) -> bool {
+        if self.records_views() {
+            return self.met_rows.contains(&(e as *const Expr as usize));
+        }
+        let Some(scope) = self.expr_scope() else { return false };
+        let key = Self::row_key(e);
+        self.met_scoped_rows.iter().any(|(b, s, k)| *b == self.body && *s == scope && *k == key)
+    }
+
+    fn row_key(e: &Expr) -> (u32, u32, u8, u64) {
+        let sp = e.span();
+        (sp.start.0, sp.end.0, crate::typed_bodies::expr_kind(e), crate::typed_bodies::expr_name(e))
+    }
+
     fn expr_scope(&self) -> Option<crate::typed_bodies::ExprScope> {
         if self.records_views() || self.defaults_judged_at_literals {
             return None;
@@ -23536,10 +23659,12 @@ impl<'a> Checker<'a> {
     /// (a field written as an interface is that interface, as a binding
     /// is), and a call's callee.
     fn note_view_expr(&mut self, expr: &Expr, ty: &Ty) {
-        // The pass reads a literal and an operator by their shape, and a
-        // local's read by its binding's row: no row of their own.
+        // A local's read is answered by its binding's row; the read's own
+        // row is kept apart, for lowering's per-body table. A literal and
+        // an operator have rows of their own since GH #2111 (phase 1,
+        // family 7): the pass still reads them by their shape, and
+        // lowering takes their types from them.
         match expr {
-            Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. } => return,
             Expr::Ident(id) if self.locals.lookup(&id.name).is_some() => {
                 // GH #2111: the read's own row, for lowering's per-body table
                 self.views.note_read(expr, ty.clone());
@@ -24309,6 +24434,11 @@ impl<'a> Checker<'a> {
     /// literal is its 64-bit pattern, as an `Int`'s is.
     fn adopt_fixed(&mut self, e: &Expr, p: PrimType) {
         let (_, signed) = p.machine_int().expect("a machine integer");
+        // GH #2111 (family 7): an operator, a block, an `if` or a `match`
+        // over adopted literals is one too, and its row says so
+        if !matches!(e, Expr::Literal(..)) && Self::int_adoptable(e) {
+            self.meet_row(e, Ty::Prim(p));
+        }
         match e {
             Expr::Literal(Literal::Int(n), span) => {
                 if p.is_narrow_int() {
@@ -24387,12 +24517,7 @@ impl<'a> Checker<'a> {
 
     /// The literal `e`'s row: a value of `p`.
     fn note_fixed_literal(&mut self, e: &Expr, p: PrimType) {
-        let t = Ty::Prim(p);
-        if self.records_views() {
-            self.views.note_expr(e, t);
-        } else if let Some(scope) = self.expr_scope() {
-            self.typed.scoped_expr(self.body, &scope, e, t);
-        }
+        self.meet_row(e, Ty::Prim(p));
     }
 
     /// GH #2132: an integer literal of the value `v` where a `p` is

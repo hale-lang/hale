@@ -2987,6 +2987,15 @@ pub struct FnDecorator {
     pub span: Span,
 }
 
+/// GH #2134 (F.63): a fn's `@vectorize` assertion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VectorizeAttr {
+    /// `@vectorize(min_width: N)`: the narrowest vector, in lanes, the
+    /// loops may be vectorized at. `None` asks only for a vector loop.
+    pub min_width: Option<u32>,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct FnDecl {
     pub name: Ident,
@@ -3062,6 +3071,13 @@ pub struct FnDecl {
     /// contributes to its seed's default surface. A locus fn's alone;
     /// the surface law says so of any other.
     pub rpc: Option<RpcAttr>,
+    /// GH #2134 (F.63): `@vectorize` / `@vectorize(min_width: N)` —
+    /// every innermost loop written in this fn's body must be
+    /// vectorized by the build's optimizer on the build's target, at a
+    /// vector width of at least `min_width` lanes when one is given, or
+    /// the build fails at the loop with the reason. What the check can
+    /// see cannot vectorize, it refuses first (`hale-types::vectorize`).
+    pub vectorize: Option<VectorizeAttr>,
     /// GH #723: the contract decorators as written, in source order.
     /// Only the coherence check reads this; every other consumer reads
     /// the flattened fields. See [`FnDecorator`].
