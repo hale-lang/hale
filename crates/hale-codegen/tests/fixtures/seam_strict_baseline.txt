@@ -11,11 +11,11 @@ measure	value+type lowerings	373
 measure	CodegenTy built in an expression	980
 measure	seam fallbacks (static)	32
 measure	seam reads	18
-total	2009
+total	2015
 2	call	program	no row	4
 2	call	program	unknown	14
 3	field	program	no layout	10
-3	field	program	no row	38
+3	field	program	no row	40
 3	field	program	unknown	2
 3	field	stdlib	no row	2
 3	path	program	no row	3
@@ -46,7 +46,7 @@ total	2009
 7	literal	generated	no body	2
 7	literal	generated	no row	77
 7	literal	program	no body	2
-7	literal	program	no row	598
+7	literal	program	no row	602
 7	literal	program	unknown	62
 7	literal	stdlib	no row	94
 7	unary	program	no row	3

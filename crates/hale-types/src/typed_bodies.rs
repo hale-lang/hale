@@ -2267,12 +2267,18 @@ impl TypedBodies {
     /// ([`TypedBody::scoped_exprs`]).
     pub fn scoped_expr(&self, body: NodeId, args: Option<&[Ty]>, path: &[u32], e: &Expr) -> Option<&Ty> {
         let sp = e.span();
+        self.scoped_row(body, args, path, (sp.start.0, sp.end.0, expr_kind(e), expr_name(e)))
+    }
+
+    /// [`Self::scoped_expr`] by the row's key: an expression's, or an
+    /// assignment target's place ([`place_name_key`], [`place_index_key`]).
+    pub fn scoped_row(&self, body: NodeId, args: Option<&[Ty]>, path: &[u32], key: (u32, u32, u8, u64)) -> Option<&Ty> {
         self.body(body)?
             .scoped_exprs
             .iter()
             .find(|(s, _)| s.args.as_deref() == args && s.path == path)?
             .1
-            .get(&(sp.start.0, sp.end.0, expr_kind(e), expr_name(e)))
+            .get(&key)
             .filter(|t| **t != Ty::Unknown)
     }
 

@@ -18708,6 +18708,8 @@ impl<'a> Checker<'a> {
         let records = self.records_views();
         if records {
             self.views.note_place(&lv.head, ty.clone());
+        } else {
+            self.note_scoped_place(crate::typed_bodies::place_name_key(&lv.head), &ty);
         }
         if let (Ty::Unknown, Some(elem), false) = (&ty, cell_elem, lv.tail.is_empty()) {
             ty = elem;
@@ -18770,12 +18772,14 @@ impl<'a> Checker<'a> {
                         self.refuse_missing_lvalue_field(&owner, f);
                     }
                     ty = found.unwrap_or(Ty::Unknown);
+                    let view = match &ty {
+                        Ty::Unknown => self.interface_field(&owner, &f.name).map(Ty::Named).unwrap_or(Ty::Unknown),
+                        t => t.clone(),
+                    };
                     if records {
-                        let view = match &ty {
-                            Ty::Unknown => self.interface_field(&owner, &f.name).map(Ty::Named).unwrap_or(Ty::Unknown),
-                            t => t.clone(),
-                        };
                         self.views.note_place(f, view);
+                    } else {
+                        self.note_scoped_place(crate::typed_bodies::place_name_key(f), &view);
                     }
                 }
                 LValueSeg::Index(idx) => {
@@ -18787,6 +18791,8 @@ impl<'a> Checker<'a> {
                     };
                     if records {
                         self.views.note_place(idx, ty.clone());
+                    } else {
+                        self.note_scoped_place(crate::typed_bodies::place_index_key(idx), &ty);
                     }
                 }
             }
@@ -23486,6 +23492,16 @@ impl<'a> Checker<'a> {
     fn row_key(e: &Expr) -> (u32, u32, u8, u64) {
         let sp = e.span();
         (sp.start.0, sp.end.0, crate::typed_bodies::expr_kind(e), crate::typed_bodies::expr_name(e))
+    }
+
+    /// GH #2111: an assignment target's place on a walk that records no
+    /// `views` row (a monomorph's, a default's evaluation), kept with the
+    /// walk's expression rows, as lowering reads it in the monomorph or
+    /// where it evaluates the default (`Cx::place_ty`).
+    fn note_scoped_place(&mut self, key: (u32, u32, u8, u64), ty: &Ty) {
+        if let Some(scope) = self.expr_scope() {
+            self.typed.scoped_key(self.body, &scope, key, ty.clone());
+        }
     }
 
     fn expr_scope(&self) -> Option<crate::typed_bodies::ExprScope> {

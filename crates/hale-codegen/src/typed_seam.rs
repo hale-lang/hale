@@ -124,9 +124,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Some(hale_syntax::ast::LValueSeg::Field(f)) => hale_types::typed_bodies::place_name_key(f),
             Some(hale_syntax::ast::LValueSeg::Index(ix)) => hale_types::typed_bodies::place_index_key(ix),
         };
-        self.current_body
-            .and_then(|body| self.expr_types.place_at(body, key))
-            .and_then(|t| self.layout_of(t))
+        // read as `ty_at` reads an expression's row: a monomorph's own
+        // walk (else the template's), a default's evaluation's
+        let row = self.current_body.and_then(|body| {
+            let args = self.specialization_args();
+            let path = self.default_evaluation.as_slice();
+            match (args, path.is_empty()) {
+                (None, true) => self.expr_types.place_at(body, key),
+                (Some(_), true) => self.typed.scoped_row(body, args, path, key).or_else(|| self.expr_types.place_at(body, key)),
+                (_, false) => self.typed.scoped_row(body, args, path, key),
+            }
+        });
+        row.and_then(|t| self.layout_of(t))
             .ok_or_else(|| {
                 CodegenError::missing_row("expression_typing", "the checker's type of this assignment's target", Some(target.span))
             })
