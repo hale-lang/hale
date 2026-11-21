@@ -107,6 +107,10 @@ fn reserved_member_diag(diags: &mut Vec<Diag>, kind: &str, id: &Ident) {
     ));
 }
 
+/// GH #2068 (F.59): the local a receiver call's path call reads its
+/// receiver through, already typed (`Checker::check_receiver_call`).
+const RECEIVER_LOCAL: &str = "__hale_receiver";
+
 /// GH #2069: why a `.Variant` pattern names no enum
 /// (`Checker::dot_variant_enum`).
 enum DotRefusal {
@@ -19253,6 +19257,125 @@ impl<'a> Checker<'a> {
         self.access_visits.extend(reached.into_iter().map(|v| AccessVisit { at, ..v }));
     }
 
+    /// GH #2068 (F.59): the stdlib fn a receiver call `x.name(…)` on a
+    /// value of type `recv` names: `std::str::name` on a String or a
+    /// StringView, `std::bytes::name` on a Bytes, a BytesView or a BytesMut,
+    /// when that fn is public and takes the receiver's type first. Its path,
+    /// or `None`.
+    fn receiver_fn(&self, recv: &Ty, name: &str) -> Option<Vec<String>> {
+        let ns = crate::stdlib_surface::receiver_namespace(recv)?;
+        if name.starts_with("__") {
+            return None;
+        }
+        let segs = ["std", ns, name];
+        let f = crate::stdlib_surface::row(&segs).filter(|f| f.is_public())?;
+        let takes = match &f.sig {
+            Some(sig) => sig
+                .params
+                .first()
+                .is_some_and(|p| *p != crate::stdlib_surface::SigTy::Any && p.accepts(recv)),
+            // A fn the stdlib writes in Hale: its declared first parameter.
+            None => match crate::stdlib_bodies::mangled_locus_name(&segs).and_then(|m| self.top.lookup(m)) {
+                Some(TopSymbol::Fn(hf)) => hf.params.first().is_some_and(|(_, t)| {
+                    t.assignable_from(recv)
+                        || (matches!(t, Ty::Prim(PrimType::String)) && matches!(recv, Ty::Prim(PrimType::StringView)))
+                }),
+                // the text sources (`lines`, `split`, `words`): a `for`'s or
+                // a chain's source, refused anywhere else as the path is
+                _ => ns == "str" && hale_syntax::str_sources::SOURCES.iter().any(|(n, _)| *n == name),
+            },
+        };
+        takes.then(|| segs.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// GH #2068 (F.59): why `.name` on a value of the text type `recv`
+    /// names nothing: no fn of `std::ns` takes one first by that name. A
+    /// fn of the program's is called with the value as an argument (no fn
+    /// but the stdlib's is called on it); otherwise the nearest names it
+    /// may have meant.
+    fn text_member_refusal(&self, recv: &Ty, ns: &str, name: &str) -> String {
+        let head = format!("no fn `{name}` in `std::{ns}` takes a `{}` first, so `.{name}` names nothing on it", recv.display());
+        if matches!(self.top.lookup(name), Some(TopSymbol::Fn(_))) || self.generic_fns.contains_key(name) {
+            return format!(
+                "{head} — `{name}` is a fn of the program's: call it as `{name}(x, …)` (only a `std::{ns}` fn is \
+                 called on the value)"
+            );
+        }
+        let names = crate::stdlib_surface::receiver_fn_names(recv);
+        let near = crate::stdlib_surface::nearest_names(name, names.iter().copied(), 3);
+        match near.as_slice() {
+            [] => head,
+            [one] => format!("{head} — did you mean `.{one}(…)`?"),
+            many => format!(
+                "{head} — the nearest are {}",
+                many.iter().map(|n| format!("`.{n}`")).collect::<Vec<_>>().join(", ")
+            ),
+        }
+    }
+
+    /// GH #2068 (F.59): a call `x.f(args)` whose receiver is a text value
+    /// and `f` a stdlib fn taking it first ([`Self::receiver_fn`]), typed
+    /// as the call `std::str::f(x, args)` it means, and recorded. `None`
+    /// for every other call, which is typed as it always was (the
+    /// receiver's typing, done to decide, discarded). The receiver is typed
+    /// once: the path call reads it through a local of its type, so a
+    /// chain `raw.trim().lower()` types `raw` once however long it is.
+    /// In a walk per monomorph, a receiver call the template's walk did
+    /// not resolve (the receiver is of a type parameter there) is refused:
+    /// the call is written once for every specialization.
+    fn check_receiver_call(&mut self, callee: &Expr, args: &[Expr], call_id: NodeId, call_span: Span) -> Option<Ty> {
+        let Expr::Field { receiver, name, .. } = callee else { return None };
+        if matches!(receiver.as_ref(), Expr::KwSelf(_)) || !crate::stdlib_surface::is_receiver_fn_name(&name.name) {
+            return None;
+        }
+        let mark = self.walk_mark();
+        let recv = self.check_expr(receiver);
+        let Some(path) = self.receiver_fn(&recv, &name.name) else {
+            self.discard_since(mark);
+            return None;
+        };
+        if self.specializing.is_some() && !call_id.is_none() && !self.typed.receiver_calls.contains_key(&call_id.0) {
+            let args_ty: Vec<String> =
+                self.specializing.iter().flatten().map(|t| format!("`{}`", t.display())).collect();
+            self.push_or_keep(Diag::ty(
+                call_span,
+                format!(
+                    "`.{name}(…)` on a value of a type parameter calls nothing: a generic body is written once for \
+                     every specialization, and a receiver call names a `std::str` or `std::bytes` fn only on a value \
+                     the body itself types as text (here a `{recv}`, specialized for {args}); write `{path}(…)`",
+                    name = name.name,
+                    path = path.join("::"),
+                    recv = recv.display(),
+                    args = args_ty.join(", "),
+                ),
+            ));
+            for a in args {
+                self.check_expr(a);
+            }
+            return Some(Ty::Unknown);
+        }
+        if self.specializing.is_none() {
+            self.typed.receiver_call(call_id, path.clone());
+        }
+        let local = RECEIVER_LOCAL;
+        let call = Expr::Call {
+            callee: Box::new(Expr::Path(QualifiedName {
+                segments: path.iter().map(|s| Ident::new(s.clone(), name.span)).collect(),
+                span: name.span,
+            })),
+            args: std::iter::once(Expr::Ident(Ident::new(local, receiver.span())))
+                .chain(args.iter().cloned())
+                .collect(),
+            span: call_span,
+            id: call_id,
+        };
+        self.locals.push();
+        self.locals.insert(local, LocalSym { ty: recv, is_mut: false, cell: None, param_place: false, from_let: false });
+        let t = self.check_expr(&call);
+        self.locals.pop();
+        Some(t)
+    }
+
     /// The start of a walk whose findings may be discarded.
     fn walk_mark(&self) -> WalkMark {
         WalkMark { diags: self.diags.len(), visits: self.access_visits.len(), decimals: self.decimal_literals.len() }
@@ -24224,6 +24347,15 @@ impl<'a> Checker<'a> {
                         self.discard_since(mark);
                     }
                 }
+                // GH #2068 (F.59): `x.f(args)` on a String, a StringView or
+                // a Bytes (or a view of one) is the call `std::str::f(x,
+                // args)` (`std::bytes::f`), when that fn takes the
+                // receiver's type first: typed as that call, and recorded,
+                // so the snapshot writes it as that call for every pass
+                // after the check (`crate::receiver_calls`).
+                if let Some(t) = self.check_receiver_call(callee, args, *call_id, *call_span) {
+                    return t;
+                }
                 // RFC #1995 E1: `E::name(v)`, `E::parse(s)`, `E::index(v)`
                 // the desugar sequence left as written: one the functions do
                 // not apply to (a payload enum's `parse`), or of the wrong
@@ -25931,15 +26063,13 @@ impl<'a> Checker<'a> {
                                     }
                                 }
                             }
-                            self.diags.push(Diag::ty(
-                                *span,
-                                format!(
-                                    "no field `{}` on `{}`{}",
-                                    name.name,
-                                    rt.display(),
-                                    hint
-                                ),
-                            ));
+                            // GH #2068 (F.59): on a text value a member is a
+                            // stdlib fn it can be called with, or nothing.
+                            let message = match crate::stdlib_surface::receiver_namespace(&rt) {
+                                Some(ns) if hint.is_empty() => self.text_member_refusal(&rt, ns, &name.name),
+                                _ => format!("no field `{}` on `{}`{}", name.name, rt.display(), hint),
+                            };
+                            self.diags.push(Diag::ty(*span, message));
                         }
                         Ty::Unknown
                     }
@@ -26121,14 +26251,22 @@ impl<'a> Checker<'a> {
                 // Call arm types them Unknown; the precise
                 // success/payload for the `or` form comes from the
                 // signature table here.
+                // GH #2068 (F.59): a receiver call the Call arm resolved is
+                // the path call it means, here as everywhere.
+                let receiver_path: Option<Vec<String>> = match inner.as_ref() {
+                    Expr::Call { callee, id, .. } if matches!(callee.as_ref(), Expr::Field { .. }) => {
+                        self.typed.receiver_calls.get(&id.0).cloned()
+                    }
+                    _ => None,
+                };
                 let stdlib_or = match inner.as_ref() {
-                    Expr::Call { callee, .. } => match callee.as_ref() {
-                        Expr::Path(qn) => {
-                            let segs: Vec<&str> = qn
-                                .segments
-                                .iter()
-                                .map(|s| s.name.as_str())
-                                .collect();
+                    Expr::Call { callee, .. } => match (callee.as_ref(), &receiver_path) {
+                        (Expr::Path(_), _) | (_, Some(_)) => {
+                            let segs: Vec<&str> = match (callee.as_ref(), &receiver_path) {
+                                (_, Some(p)) => p.iter().map(String::as_str).collect(),
+                                (Expr::Path(qn), None) => qn.segments.iter().map(|s| s.name.as_str()).collect(),
+                                _ => Vec::new(),
+                            };
                             // GH #470: a path renaming to a
                             // REGISTERED Hale-source fn is an
                             // ordinary fn call — the Call arm typed

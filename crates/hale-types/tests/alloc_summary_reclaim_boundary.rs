@@ -789,4 +789,5 @@ const PINNED: &[&str] = &[
     "tests/hale/string_append_test.hl: 0 go, 0 appear; dump 3 tags, 0 reclaim, 6 verdicts",
     "tests/hale/string_len_test.hl: 2 go, 0 appear; dump 5 tags, 3 reclaim, 2 verdicts",
     "tests/hale/tail_value_returns_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/text_receiver_calls_test.hl: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
 ];

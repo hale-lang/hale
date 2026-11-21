@@ -2283,6 +2283,23 @@ where
     }
 }
 
+/// GH #2068: up to `n` of `candidates` nearest `name`, nearest first:
+/// within an edit distance of a third of the name's length (at least 2),
+/// or sharing its first three letters.
+pub fn nearest_names<'a, I>(name: &str, candidates: I, n: usize) -> Vec<&'a str>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let limit = (name.len() / 3).max(2);
+    let mut scored: Vec<(usize, &'a str)> = candidates
+        .into_iter()
+        .map(|c| (edit_distance(name, c), c))
+        .filter(|(d, c)| *d <= limit || name.get(..3).is_some_and(|p| name.len() >= 3 && c.starts_with(p)))
+        .collect();
+    scored.sort();
+    scored.into_iter().take(n).map(|(_, c)| c).collect()
+}
+
 fn edit_distance(a: &str, b: &str) -> usize {
     let a: Vec<char> = a.chars().collect();
     let b: Vec<char> = b.chars().collect();
@@ -2397,18 +2414,59 @@ pub fn builtin_member_advice(recv: &Ty, field: &str) -> Option<&'static str> {
 /// (`std::str::trim(s)`, `std::str::cut(s, …)`). The fns over a
 /// `ByteView` take no String first and are not suggested.
 pub fn str_fn_member_advice(recv: &Ty, field: &str) -> Option<String> {
-    if !matches!(recv, Ty::Prim(PrimType::String) | Ty::Prim(PrimType::StringView)) {
+    let ns = receiver_namespace(recv)?;
+    if !receiver_fn_names(recv).contains(&field) {
         return None;
     }
-    let f = row(&["std", "str", field]).filter(|f| f.is_public() && !field.starts_with("__"))?;
-    let args = match f.sig.as_ref() {
-        Some(sig) if sig.params.first() != Some(&SigTy::Str) => return None,
-        Some(sig) if sig.params.len() == 1 => "s",
-        _ => "s, …",
-    };
-    Some(format!(
-        "string operations are free functions, not methods: `std::str::{field}({args})`"
-    ))
+    // GH #2068 (F.59): a call `x.trim()` is `std::str::trim(x)`; read
+    // without the call it is no value.
+    Some(format!("`{field}` is the fn `std::{ns}::{field}`, called on the value as `.{field}(…)`; it is not a field"))
+}
+
+/// GH #2068 (F.59): the namespace a receiver call on a value of `recv`
+/// reads its fn from: `str` for a String, a StringView or a
+/// `std::str::ByteView`, `bytes` for a Bytes, a BytesView or a BytesMut;
+/// `None` for every other type, which has no receiver calls.
+pub fn receiver_namespace(recv: &Ty) -> Option<&'static str> {
+    match recv {
+        Ty::Prim(PrimType::String | PrimType::StringView) => Some("str"),
+        Ty::Prim(PrimType::Bytes | PrimType::BytesView | PrimType::BytesMut) => Some("bytes"),
+        // a `std::str::ByteView`, a String's byte view, by the name its
+        // declaration is merged under
+        Ty::Named(n) if Some(n.as_str()) == byte_view_name() => Some("str"),
+        _ => None,
+    }
+}
+
+/// The merged name of `std::str::ByteView` (GH #720).
+fn byte_view_name() -> Option<&'static str> {
+    hale_stdlib::PATH_RENAMES.iter().find(|(p, _)| *p == ["std", "str", "ByteView"]).map(|(_, m)| *m)
+}
+
+/// GH #2068: whether `name` is a public fn of `std::str` or `std::bytes`,
+/// the names a receiver call can spell: the check types a method call's
+/// receiver to decide only for one of these.
+pub fn is_receiver_fn_name(name: &str) -> bool {
+    !name.starts_with("__")
+        && ["str", "bytes"].iter().any(|ns| row(&["std", ns, name]).is_some_and(|f| f.is_public()))
+}
+
+/// GH #2068: the public fns of the receiver's namespace that take a value
+/// of `recv` first, by name: what a receiver call on it may spell, and
+/// what an unknown one is matched against. A fn written in Hale (no
+/// signature row) is listed; the check confirms its first parameter.
+pub fn receiver_fn_names(recv: &Ty) -> Vec<&'static str> {
+    let Some(ns) = receiver_namespace(recv) else { return Vec::new() };
+    let Some(surface) = SURFACES.iter().find(|s| s.ns == [ns]) else { return Vec::new() };
+    surface
+        .public()
+        .filter(|f| !f.name.starts_with("__"))
+        .filter(|f| match &f.sig {
+            Some(sig) => sig.params.first().is_some_and(|p| *p != SigTy::Any && p.accepts(recv)),
+            None => true,
+        })
+        .map(|f| f.name)
+        .collect()
 }
 
 /// The stage-1 check: for a call whose callee is a `std::` path,

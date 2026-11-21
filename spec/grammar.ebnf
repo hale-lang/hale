@@ -1620,6 +1620,11 @@ multiplicative_expr = unary_expr , { ( "*" | "/" | "%" ) , unary_expr } ;
 
 unary_expr        = [ "-" | "!" | "~" ] , postfix_expr ;
 
+(* GH #2068 (F.59): a `"." member_name` followed by a call on a value of a
+   text type (`String`, `StringView`, `Bytes`, `BytesView`, `BytesMut`) is
+   a receiver call, `x.f(args)` being `std::str::f(x, args)` (or
+   `std::bytes::f`): no production of its own; the check resolves it
+   (spec/semantics.md § Receiver calls on text values). *)
 postfix_expr      = primary_expr , { postfix_op } ;
 postfix_op        = "." , member_name
                   | "::" , member_name

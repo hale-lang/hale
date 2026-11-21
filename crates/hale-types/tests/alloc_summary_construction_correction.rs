@@ -728,8 +728,10 @@ fn own_entries_run_to_exit_programs() {
     // stores each summary as it is (GH #2067; until GH #2099 the whole
     // assignment kept the row's elements and the push copied the summary); 31:
     // `tests/hale/bounded_inline_enum_result_push_test.hl`, whose `s_of`
-    // builds the record `build` pushes as it is (GH #2088).
-    assert_eq!(moved, 31, "the run-to-exit programs among the targets that lose a site");
+    // builds the record `build` pushes as it is (GH #2088); 32:
+    // `tests/hale/text_receiver_calls_test.hl`, whose loops build Strings
+    // and call a locus's methods that build arrays (GH #2068).
+    assert_eq!(moved, 32, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1100,6 +1102,19 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/string_append_test.hl: build_reading StringConcat #2 InUnboundedLoop",
             "tests/hale/string_append_test.hl: build_reading StringConcat #3 InUnboundedLoop",
             "tests/hale/string_append_test.hl: Doc::build StringConcat #1 InUnboundedLoop",
+            // `tests/hale/text_receiver_calls_test.hl`: the arrays the locus
+            // `Source`'s methods named like the text sources build, each
+            // called in a loop, `main`'s loop appending the String a
+            // receiver call repeats, and `nested_words`' appends in its
+            // loops over a text and each of its lines
+            "tests/hale/text_receiver_calls_test.hl: main StringConcat #3 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: nested_words StringConcat #1 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: nested_words StringConcat #2 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: nested_words StringConcat #3 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: nested_words StringConcat #4 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: Source::lines ArrayLit #1 InvokedUnboundedly",
+            "tests/hale/text_receiver_calls_test.hl: Source::split ArrayLit #1 InvokedUnboundedly",
+            "tests/hale/text_receiver_calls_test.hl: Source::words ArrayLit #1 InvokedUnboundedly",
             // `tests/hale/u256_arith_test.hl`: the parse refusals it loops over
             // build their assertion messages in the loop (GH #1934)
             "tests/hale/u256_arith_test.hl: conversions StringConcat #4 InUnboundedLoop",

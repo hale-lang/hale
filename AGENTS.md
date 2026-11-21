@@ -213,9 +213,9 @@ Filter these reflexes before they cost you time.
 - **No closures-as-values.** Function pointers exist (typed
   `fn(T) -> U`); inline closure-with-capture does not.
   Reconstruct context in the callee or route through the bus.
-- **No method syntax on builtins.** `len(s)`, `to_string(n)` —
-  not `s.len()`. User-defined locus / type methods use
-  `obj.method()` normally.
+- **Builtins are not methods.** `len(s)`, `to_string(n)` — not
+  `s.len()`. A locus's methods use `obj.method()` normally; a record
+  type has none.
 - **A `String` slices by byte offset**, clamped: `s[lo..hi]`,
   `s[lo..]` (to the end), `s[..hi]` (from the start). Write
   `line[(at + 1)..]`, not `line[(at + 1)..len(line)]`. There is no
@@ -231,7 +231,8 @@ Filter these reflexes before they cost you time.
   (CRLF stripped, no final empty line), `for w in
   std::str::words(s)` (ASCII-whitespace runs, no empties). One pass,
   each part a `String`, `break`/`continue` work, pure. Each also
-  starts an element chain, the same one pass:
+  starts an element chain, the same one pass (spelled on the string
+  too: `for line in s.lines()`, `s.words().count()`):
   `std::str::words(s).filter(len(it) > 2).count()`,
   `std::str::lines(s).find(std::str::starts_with(it, "#")) or ""`.
   They are not values: to keep the parts,
@@ -240,8 +241,11 @@ Filter these reflexes before they cost you time.
   once and walk it by index.
 - **No printf-style format strings.** `println(a, b, c)`
   concatenates its args. F-strings `f"hello {name}"` interpolate.
-- **String operations are `std::str` free functions**, not methods:
-  `std::str::trim(s)`, not `s.trim()`. Split and strip with them,
+- **String operations are `std::str` functions, callable on the
+  string**: `s.trim()` is `std::str::trim(s)`, and calls chain,
+  `raw.trim().lower()`; the same holds for `Bytes` and `std::bytes`
+  (`b.at(0)`). Only `std::str` / `std::bytes` fns that take the value
+  first are called this way, never your own fns. Split and strip with them,
   not with offsets: `let (k, v) = std::str::cut(line, "=") or { … };`
   splits once (`cut_last` at the last `sep`); `trim_prefix(s, "v")` /
   `trim_suffix` drop an affix if present; `trim_start` / `trim_end`,

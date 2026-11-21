@@ -418,6 +418,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "match_to_if_let", apply: match_to_if_let },
     Mutator { name: "byte_literal_spelling", apply: byte_literal_spelling },
     Mutator { name: "entry_shape", apply: entry_shape },
+    Mutator { name: "receiver_call_spelling", apply: receiver_call_spelling },
     Mutator { name: "dot_variant_spelling", apply: dot_variant_spelling },
 ];
 
@@ -1404,6 +1405,51 @@ fn byte_literal_spelling(files: &Files, rng: &mut Rng) -> Option<(Files, String)
     };
     let out = splice(&src, vec![(span.start.as_usize(), span.end.as_usize(), spelled.clone())])?;
     Some((with_main(files, out), format!("byte_literal_spelling({n} as {spelled})")))
+}
+
+/// GH #2068 (F.59): a call of a `std::str` or `std::bytes` fn the program
+/// wrote as a path, `std::str::f(x, args)`, is spelled as the receiver
+/// call `x.f(args)` (`x` in parentheses unless it is a name, a field, a
+/// call, an element or a string literal). The check decides whether `x`
+/// is text and the fn takes it first, and the snapshot writes what it
+/// accepts back as the path call, so it must build as the path did.
+fn receiver_call_spelling(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    let (src, program) = parsed(files)?;
+    let mut sites: Vec<(Span, String)> = Vec::new();
+    for site in exprs(&program) {
+        let Expr::Call { callee, args, span, .. } = site.e else { continue };
+        let Expr::Path(qn) = callee.as_ref() else { continue };
+        let [std, ns, f] = qn.segments.as_slice() else { continue };
+        if std.name != "std" || !matches!(ns.name.as_str(), "str" | "bytes") || f.name.starts_with("__") {
+            continue;
+        }
+        // written by the program, not by a desugar (whose callee is at the
+        // call's own span)
+        if text(&src, qn.span) != Some(format!("std::{}::{}", ns.name, f.name).as_str()) {
+            continue;
+        }
+        let Some((first, rest)) = args.split_first() else { continue };
+        let Some(recv) = text(&src, first.span()) else { continue };
+        let recv = match first {
+            Expr::Ident(_) | Expr::Field { .. } | Expr::Call { .. } | Expr::Index { .. } => recv.to_string(),
+            Expr::Literal(Literal::String(_), _) => recv.to_string(),
+            _ => format!("({recv})"),
+        };
+        let Some(rest) = rest.iter().map(|a| text(&src, a.span())).collect::<Option<Vec<_>>>() else { continue };
+        sites.push((*span, format!("{recv}.{}({})", f.name, rest.join(", "))));
+    }
+    let (span, new) = rng.pick(&sites)?.clone();
+    let was = text(&src, span)?.to_string();
+    let out = splice(&src, vec![(span.start.as_usize(), span.end.as_usize(), new.clone())])?;
+    Some((with_main(files, out), format!("receiver_call_spelling({} as {})", describe_text(&was), describe_text(&new))))
+}
+
+fn describe_text(t: &str) -> String {
+    let one: String = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    match one.char_indices().nth(40) {
+        Some((i, _)) => format!("`{}…`", &one[..i]),
+        None => format!("`{one}`"),
+    }
 }
 
 /// GH #2069 (F.58): an enum constructor pattern written with its enum

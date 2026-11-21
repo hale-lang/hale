@@ -251,7 +251,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 39] = [
+const CALL_LINES_ONLY: [(&str, usize); 40] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -346,6 +346,10 @@ const CALL_LINES_ONLY: [(&str, usize); 39] = [
     // picked through a one-element array's `get`, the array's `at`, which
     // only the check's typing names (as GH #1984's cursors above)
     ("tests/hale/str_chain_sources_test.hl", 21),
+    // GH #2068's test: one call of a `std::str` fn written in Hale, which
+    // only the renames name, as every program calling one by its path, and
+    // three calls of the locus `Source`'s own methods in its chains
+    ("tests/hale/text_receiver_calls_test.hl", 4),
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.

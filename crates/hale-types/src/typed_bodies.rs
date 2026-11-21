@@ -1597,6 +1597,13 @@ pub struct TypingRecord {
     /// template is with its parameters bound ([`MonoShape`]): what the
     /// owned-view pass classifies `Box_Int` through.
     pub mono_shapes: std::sync::Arc<MonoShapes>,
+    /// GH #2068 (F.59): each receiver call on a text value the check
+    /// resolved, by the call's node id: the `std::str` / `std::bytes` path
+    /// `x.f(args)` calls as `path(x, args)`. The snapshot rewrites each one
+    /// into that path call before any later pass reads the program
+    /// ([`crate::receiver_calls::rewrite`]). Kept across discarded walks,
+    /// as `ident_reads` is: a call resolves the same on every path.
+    pub receiver_calls: BTreeMap<u32, Vec<String>>,
     /// GH #2069 (F.58): each `.Variant` pattern's variant, by the body
     /// declaring it and the pattern's span. Kept across discarded walks,
     /// as `ident_reads` is: a pattern resolves the same on every path.
@@ -1748,6 +1755,16 @@ impl TypingRecord {
     /// ([`CheckedCalls`]).
     pub fn checked_calls(&self) -> CheckedCalls {
         checked_calls_of(&self.bodies)
+    }
+
+    /// GH #2068 (F.59): the call `call` is the receiver call of the
+    /// stdlib fn at `path`. A call the snapshot has not numbered is not
+    /// recorded.
+    pub fn receiver_call(&mut self, call: NodeId, path: Vec<String>) {
+        if call.is_none() {
+            return;
+        }
+        self.receiver_calls.entry(call.0).or_insert(path);
     }
 
     /// GH #2069 (F.58): the `.Variant` pattern at `span` in the body `body`
