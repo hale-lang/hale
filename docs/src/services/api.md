@@ -25,10 +25,11 @@ locus Orders {
         next: Int = 41;
         open: Int = 0;
     }
-    closure position_limit { captures: open; epoch inline; }
 
-    fn place(req: OrderRequest) -> OrderResponse fallible(ClosureViolation) {
-        if req.qty > 10000 { violate position_limit; }
+    fn place(req: OrderRequest) -> OrderResponse fallible(OrderError) {
+        if req.qty > 10000 {
+            fail OrderError { code: "over_limit", reason: "qty is over 10000" };
+        }
         let id = OrderId(self.next);
         self.next = self.next + 1;
         self.open = self.open + 1;
@@ -75,13 +76,14 @@ An `api` block names a surface and lists its operations as `rpc` rows. Each row 
 - **Return Value & Errors**: The return type is the wire response. If the handler is `fallible(E)`:
   - When `E` is a user record or enum (like `OrderError` above), failures are returned to the caller as a structured `HandlerError` matching `E`'s schema.
   - When the handler may `violate` an inline closure, it must declare `fallible(ClosureViolation)`. If a violation occurs, the owner's `on_failure` policy runs first and the caller receives an opaque `ServerError` containing no internal violation state.
+  - A bad request is the caller's error, so refuse it with `fail`, as `place` does above. `violate` is for the locus's own invariant breaking: it stops the locus, hands it to its owner's `on_failure`, and fails every call still queued for it. Never use it to reject input.
 
 Instead of writing a separate `api` block, you can annotate locus methods with `@rpc` to add them to the seed's **default surface** (named after the seed):
 
 ```hale,fragment
 locus Orders {
     @rpc
-    fn place(req: OrderRequest) -> OrderResponse fallible(ClosureViolation) { … }
+    fn place(req: OrderRequest) -> OrderResponse fallible(OrderError) { … }
     @rpc(requires: [trader])
     fn cancel(req: CancelRequest) -> CancelResponse fallible(OrderError) { … }
 }
