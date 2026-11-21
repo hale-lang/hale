@@ -20,26 +20,96 @@
 use hale_syntax::ast::{Expr, Ident, QualifiedName, TypeExpr};
 use hale_types::ty::Ty;
 
-use crate::codegen::{CodegenError, CodegenTy, Cx};
+use hale_types::typed_bodies::{expr_kind, expr_name};
+
+use crate::codegen::{CodegenError, CodegenTy, Cx, MissingRow};
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The checker's type of `e`, an expression of the body being lowered,
     /// as a layout: `None` outside every body, where the checker recorded
     /// no row (or two answers), or for a type with no layout.
     pub(crate) fn ty_at(&self, e: &Expr) -> Option<CodegenTy> {
-        let body = self.current_body?;
+        match self.row_layout(e) {
+            Ok(t) => Some(t),
+            Err(reason) => {
+                if self.seam_strict {
+                    self.note_missing_row(e, reason);
+                }
+                None
+            }
+        }
+    }
+
+    /// [`Cx::ty_at`] at a site that takes another path where the checker
+    /// left no row: one of the seam's fallbacks (GH #2111), counted by
+    /// `seam_strict_baseline`. A site moves to `ty_at` when it refuses a
+    /// missing row instead.
+    pub(crate) fn ty_or_fallback(&self, e: &Expr) -> Option<CodegenTy> {
+        self.ty_at(e)
+    }
+
+    /// One of the seam's fallbacks (GH #2111): lowering types `e` itself
+    /// below this call, the checker's row or none. Under strict mode a
+    /// missing row is noted here; otherwise it does nothing. Every call
+    /// site is counted by `seam_strict_baseline`, and goes when its
+    /// lowering takes `e`'s type from the row.
+    pub(crate) fn seam_fallback(&self, e: &Expr) {
+        if self.seam_strict {
+            let _ = self.ty_at(e);
+        }
+    }
+
+    /// [`Cx::ty_at`]'s answer, or why there is none (a [`MissingRow`]'s
+    /// reason).
+    fn row_layout(&self, e: &Expr) -> Result<CodegenTy, &'static str> {
+        let body = self.current_body.ok_or("no body")?;
         let args = self.specialization_args();
         let path = self.default_evaluation.as_slice();
         let ty = match (args, path.is_empty()) {
-            (None, true) => self.expr_types.at(body, e)?,
+            (None, true) => self.expr_types.at(body, e),
             // a monomorph's body outside every default: its own walk's
             // row, else the template's (a site whose type names no
             // parameter)
-            (Some(_), true) => self.typed.scoped_expr(body, args, path, e).or_else(|| self.expr_types.at(body, e))?,
+            (Some(_), true) => self.typed.scoped_expr(body, args, path, e).or_else(|| self.expr_types.at(body, e)),
             // a default evaluated here: the row of this evaluation
-            (_, false) => self.typed.scoped_expr(body, args, path, e)?,
+            (_, false) => self.typed.scoped_expr(body, args, path, e),
         };
-        self.layout_of(ty)
+        let Some(ty) = ty else {
+            let typed_unknown = path.is_empty() && self.expr_types.recorded(body, e).is_some();
+            return Err(if typed_unknown { "unknown" } else { "no row" });
+        };
+        self.layout_of(ty).ok_or("no layout")
+    }
+
+    /// GH #2111 strict mode: `e` is lowered without the checker's type.
+    fn note_missing_row(&self, e: &Expr, reason: &'static str) {
+        let sp = e.span();
+        let stdlib = self.lowering_stdlib_body();
+        let key = (sp.start.0, sp.end.0, expr_kind(e), expr_name(e), stdlib);
+        self.seam_misses.borrow_mut().entry(key).or_insert_with(|| MissingRow {
+            family: family_of(e),
+            kind: kind_name(e),
+            stdlib,
+            reason,
+            span: sp,
+            in_fn: self
+                .current_fn
+                .map(|f| f.get_name().to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        });
+    }
+
+    /// GH #2111 strict mode, at the end of lowering: every expression it
+    /// typed without the checker's row, refused together.
+    pub(crate) fn refuse_missing_rows(&self) -> Result<(), CodegenError> {
+        if !self.seam_strict {
+            return Ok(());
+        }
+        let rows: Vec<MissingRow> = self.seam_misses.borrow().values().cloned().collect();
+        if rows.is_empty() {
+            return Ok(());
+        }
+        Err(CodegenError::MissingRows(rows))
     }
 
     /// The checker's type of the call `call`, the value its lowering
@@ -112,3 +182,52 @@ fn spelled(t: &Ty) -> Option<TypeExpr> {
     })
 }
 
+/// The survey's family of an expression lowering types (GH #2111):
+/// what a [`MissingRow`] is counted under.
+fn family_of(e: &Expr) -> u8 {
+    match e {
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Path(q) if q.segments.first().is_some_and(|s| s.name == "std") => 9,
+            _ => 2,
+        },
+        Expr::Path(_) | Expr::Path2 { .. } | Expr::Field { .. } | Expr::Index { .. } | Expr::KwSelf(_) => 3,
+        Expr::Ident(_) => 4,
+        Expr::Struct { .. } | Expr::Array(..) | Expr::ArrayRepeat { .. } | Expr::Tuple(..) => 5,
+        Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Or { .. } => 6,
+        Expr::Literal(..)
+        | Expr::Binary { .. }
+        | Expr::Unary { .. }
+        | Expr::Range { .. }
+        | Expr::Sum(..)
+        | Expr::Prod(..)
+        | Expr::Approx { .. } => 7,
+    }
+}
+
+/// An expression's kind, by name.
+fn kind_name(e: &Expr) -> &'static str {
+    match e {
+        Expr::Literal(..) => "literal",
+        Expr::Ident(_) => "ident",
+        Expr::Path(_) => "path",
+        Expr::KwSelf(_) => "self",
+        Expr::Binary { .. } => "binary",
+        Expr::Unary { .. } => "unary",
+        Expr::Call { .. } => "call",
+        Expr::Field { .. } => "field",
+        Expr::Path2 { .. } => "path2",
+        Expr::Index { .. } => "index",
+        Expr::Tuple(..) => "tuple",
+        Expr::Array(..) => "array",
+        Expr::Struct { .. } => "struct",
+        Expr::Block(_) => "block",
+        Expr::If(_) => "if",
+        Expr::Match(_) => "match",
+        Expr::Sum(..) => "sum",
+        Expr::Prod(..) => "prod",
+        Expr::Approx { .. } => "approx",
+        Expr::Range { .. } => "range",
+        Expr::ArrayRepeat { .. } => "array_repeat",
+        Expr::Or { .. } => "or",
+    }
+}
