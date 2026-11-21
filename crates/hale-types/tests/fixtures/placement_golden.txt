@@ -7990,6 +7990,9 @@ dynamic	<hole>	on main|unresolved declaration `Pair_Int`	in the seed
 == crates/hale-types/tests/typed_bodies.rs#199bd6c8
 dynamic	Holder	on main|unresolved arguments	in the seed
 
+== crates/hale-types/tests/typed_bodies.rs#6432bb00
+row	Lane@main1	Lane	main	default
+
 == crates/hale-types/tests/unit_quantities.rs#8dea9a52
 row	Fills@main1	Fills	main	default
 

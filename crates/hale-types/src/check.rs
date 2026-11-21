@@ -15452,6 +15452,17 @@ impl<'a> Checker<'a> {
                         self.diags.push(Diag::ty(qn.span, msg));
                     }
                 }
+                // GH #2111: a subscription's `where key == EXPR` is the
+                // locus's own text, evaluated where the locus is born:
+                // typed here, in the locus's body, as its `birth_check`
+                // is, so lowering reads what it is
+                for bm in &bb.members {
+                    if let BusMember::Subscribe { key_filter: Some(KeyFilter::Specific { expr, .. }), .. } = bm {
+                        self.locals.push();
+                        let _ = self.check_expr(expr);
+                        self.locals.pop();
+                    }
+                }
             }
             LocusMember::Contract(_) => {
                 // Already lowered by the resolver.
@@ -24449,7 +24460,16 @@ impl<'a> Checker<'a> {
                                     }
                                 }
                             }
-                            return sig.ret_ty();
+                            // GH #2111: the call an `or` handles is the
+                            // row's fallible value, its success and its
+                            // payload, as a fallible fn's call is; a bare
+                            // one stays `Unknown` (`Sig::ret_ty`)
+                            return match (sig.or_types(), self.handling) {
+                                (Some((success, payload)), crate::typed_bodies::Handling::Or) => {
+                                    Ty::Fallible { success: Box::new(success), payload: Box::new(payload) }
+                                }
+                                _ => sig.ret_ty(),
+                            };
                         }
                     }
                 }

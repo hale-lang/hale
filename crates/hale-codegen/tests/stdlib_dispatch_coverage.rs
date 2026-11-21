@@ -1520,6 +1520,8 @@ fn signature_text(path: &str) -> String {
         SigTy::I256 => "I256".to_string(),
         SigTy::Duration => "Duration".to_string(),
         SigTy::Time => "Time".to_string(),
+        SigTy::StrView => "StringView".to_string(),
+        SigTy::BytesView => "BytesView".to_string(),
         SigTy::Unit => "()".to_string(),
         SigTy::Any => "_".to_string(),
         SigTy::Named(n) => n.to_string(),

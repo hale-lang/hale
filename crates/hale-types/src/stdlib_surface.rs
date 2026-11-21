@@ -55,6 +55,11 @@ pub enum SigTy {
     I256,
     Duration,
     Time,
+    /// GH #2111: a window onto a String's bytes (`StringView`), what a
+    /// text view of a buffer the callee owns hands back.
+    StrView,
+    /// GH #2111: a window onto a Bytes value's bytes (`BytesView`).
+    BytesView,
     Unit,
     Any,
     /// A stdlib locus/struct handle (File, Stream, Child, ...).
@@ -80,6 +85,8 @@ impl SigTy {
             SigTy::I256 => Ty::Prim(PrimType::I256),
             SigTy::Duration => Ty::Prim(PrimType::Duration),
             SigTy::Time => Ty::Prim(PrimType::Time),
+            SigTy::StrView => Ty::Prim(PrimType::StringView),
+            SigTy::BytesView => Ty::Prim(PrimType::BytesView),
             SigTy::Unit => Ty::Unit,
             SigTy::Any => Ty::Unknown,
             SigTy::Named(n) => Ty::Named(n.to_string()),
@@ -151,7 +158,8 @@ impl Sig {
     /// the bare-fallible law's error, and lowering has no bare form of
     /// one (F.40 phase 4, S5), so it types Unknown and the call reports
     /// that one error and no type mismatch, while `or` positions get the
-    /// precise types via `or_types` (consulted by the Or arm).
+    /// precise types via `or_types`: the call an `or` handles is typed
+    /// `Fallible` from them, and the Or arm reads them (GH #2111).
     pub fn ret_ty(&self) -> Ty {
         match self.fallible {
             Some(_) => Ty::Unknown,
@@ -549,10 +557,10 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__local_dispatch", PUBLISH, [Str, Bytes] -> Int, Intrinsic(BusLocalDispatchRaw)),
             // GH #233: the unix transports' lifecycle primitives, called
             // by `__StdBusUnixConnectTransport` / `__StdBusUnixListenTransport`.
-            internal!("__binding_fail", _, Intrinsic(BusBindingFailRaw)),
-            internal!("__transport_realize", _, Intrinsic(BusTransportRealizeRaw)),
-            internal!("__transport_reclaim", _, Intrinsic(BusTransportReclaimRaw)),
-            internal!("__transport_spawn_server", _, Intrinsic(BusTransportSpawnServerRaw)),
+            internal!("__binding_fail", [Str, Str] -> Unit, Intrinsic(BusBindingFailRaw)),
+            internal!("__transport_realize", [Str, Str, Int] -> Int, Intrinsic(BusTransportRealizeRaw)),
+            internal!("__transport_reclaim", [Int] -> Unit, Intrinsic(BusTransportReclaimRaw)),
+            internal!("__transport_spawn_server", [Int] -> Int, Intrinsic(BusTransportSpawnServerRaw)),
         ],
         open_prefixes: &[],
     },
@@ -643,8 +651,7 @@ pub const SURFACES: &[NsSurface] = &[
             // The `BytesBuilder` locus's primitives (F.40 phase 4, S6: the
             // signatures their helpers enforce). The handle is the C
             // builder's pointer as an Int; `__text_view` and `__view`
-            // return a StringView and a BytesView, which a signature cannot
-            // state, so their success is `Any`.
+            // return a StringView and a BytesView over its buffer.
             row!("__append", PURE, [Int, Bytes] -> Int, Intrinsic(BytesBuilderAppendRaw)),
             row!("__append_f32", PURE, [Int, Float, Int] -> Int, Intrinsic(BytesBuilderAppendF32Raw)),
             row!("__append_f64", PURE, [Int, Float, Int] -> Int, Intrinsic(BytesBuilderAppendF64Raw)),
@@ -659,8 +666,8 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__new", PURE, [Int] -> Int, Intrinsic(BytesBuilderNewRaw)),
             row!("__shift_front", PURE, [Int, Int] -> Int, Intrinsic(BytesBuilderShiftFrontRaw)),
             row!("__snapshot", PURE, [Int] -> Bytes, Intrinsic(BytesBuilderSnapshotRaw)),
-            row!("__text_view", PURE, [Int] -> Any, Intrinsic(BytesBuilderTextViewRaw)),
-            row!("__view", PURE, [Int] -> Any, Intrinsic(BytesBuilderViewRaw)),
+            row!("__text_view", PURE, [Int] -> StrView, Intrinsic(BytesBuilderTextViewRaw)),
+            row!("__view", PURE, [Int] -> BytesView, Intrinsic(BytesBuilderViewRaw)),
             row!("__xor_mask_into", PURE, [Int, Bytes, Int] -> Int, Intrinsic(BytesBuilderXorMaskIntoRaw)),
         ],
         open_prefixes: &[],
@@ -1393,13 +1400,13 @@ pub const SURFACES: &[NsSurface] = &[
             row!("__kill_escalate", SYSCALL, [Int] -> Unit ! "IoError", Intrinsic(ProcessKillEscalateRaw)),
             row!("__pipe_read", SYSCALL | BLOCK, [Int] -> Str ! "IoError", Intrinsic(ProcessPipeReadRaw)),
             row!("__pipe_write", SYSCALL, [Int, Str] -> Int ! "IoError", Intrinsic(ProcessPipeWriteRaw)),
-            row!("__run_with", SYSCALL | BLOCK, [Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int] -> Any ! "IoError", Intrinsic(ProcessRunWithRaw)),
+            row!("__run_with", SYSCALL | BLOCK, [Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int] -> Named("__StdProcessOutput") ! "IoError", Intrinsic(ProcessRunWithRaw)),
             row!("__signal_pid", SYSCALL, [Int, Int] -> Unit ! "IoError", Intrinsic(ProcessSignalPidRaw)),
-            row!("__spawn", SYSCALL, [Str] -> Any ! "IoError", Intrinsic(ProcessSpawnRaw)),
-            row!("__spawn_with", SYSCALL, [Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int] -> Any ! "IoError", Intrinsic(ProcessSpawnWithRaw)),
-            row!("__try_wait_pid", SYSCALL, [Int] -> Any ! "IoError", Intrinsic(ProcessTryWaitPidRaw)),
-            row!("__wait_deadline", SYSCALL | BLOCK, [Int, Int, Int] -> Any ! "IoError", Intrinsic(ProcessWaitDeadlineRaw)),
-            row!("__wait_pid", SYSCALL | BLOCK, [Int] -> Any ! "IoError", Intrinsic(ProcessWaitPidRaw)),
+            row!("__spawn", SYSCALL, [Str] -> Named("__StdProcessSpawnHandle") ! "IoError", Intrinsic(ProcessSpawnRaw)),
+            row!("__spawn_with", SYSCALL, [Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int] -> Named("__StdProcessSpawnHandle") ! "IoError", Intrinsic(ProcessSpawnWithRaw)),
+            row!("__try_wait_pid", SYSCALL, [Int] -> Named("__StdProcessWaitOutcome") ! "IoError", Intrinsic(ProcessTryWaitPidRaw)),
+            row!("__wait_deadline", SYSCALL | BLOCK, [Int, Int, Int] -> Named("__StdProcessWaitOutcome") ! "IoError", Intrinsic(ProcessWaitDeadlineRaw)),
+            row!("__wait_pid", SYSCALL | BLOCK, [Int] -> Named("__StdProcessWaitOutcome") ! "IoError", Intrinsic(ProcessWaitPidRaw)),
             // GH #716: adopt closes the outgoing handle's fds and
             // TERM/KILL-reaps its process, so it carries the same
             // syscall class as kill — not PURE, despite reading like
@@ -1437,7 +1444,7 @@ pub const SURFACES: &[NsSurface] = &[
             row!("write_stdin", SYSCALL, _, Renamed),
             // GH #1477: a `std::observe::Probes` param's birth starts the
             // runtime's probe thread; only the stdlib's seed calls it
-            internal!("__probes_start", _, Intrinsic(ProcessProbesStartRaw)),
+            internal!("__probes_start", [Int] -> Unit, Intrinsic(ProcessProbesStartRaw)),
         ],
         open_prefixes: &[],
     },
@@ -1607,10 +1614,10 @@ pub const SURFACES: &[NsSurface] = &[
             // GH #230 / #717: the pass counter and the recorded-failure
             // latch, called by the `__test_assert*` bodies and
             // `__test_fail_trailer`.
-            internal!("__failed", _, Intrinsic(TestFailedRaw)),
-            internal!("__note_fail", _, Intrinsic(TestNoteFailRaw)),
-            internal!("__note_pass", _, Intrinsic(TestNotePassRaw)),
-            internal!("__passes", _, Intrinsic(TestPassesRaw)),
+            internal!("__failed", [] -> Int, Intrinsic(TestFailedRaw)),
+            internal!("__note_fail", [] -> Unit, Intrinsic(TestNoteFailRaw)),
+            internal!("__note_pass", [] -> Unit, Intrinsic(TestNotePassRaw)),
+            internal!("__passes", [] -> Int, Intrinsic(TestPassesRaw)),
         ],
         open_prefixes: &[],
     },

@@ -2230,6 +2230,7 @@ crates/hale-types/tests/typed_bodies.rs#2 17884afdb16fe160
 crates/hale-types/tests/typed_bodies.rs#3 cdfd782535c25ee2
 crates/hale-types/tests/typed_bodies.rs#5 39acea31f52e8191
 crates/hale-types/tests/typed_bodies.rs#7 cf178ddd4d2a94b9
+crates/hale-types/tests/typed_bodies.rs#8 d823f05bc6dd074a
 crates/hale-types/tests/unit_quantities.rs#0 593c93051bef4507
 crates/hale-types/tests/unit_values.rs#0 910cffb6f7c9b269
 crates/hale-types/tests/violate.rs#0 8bef0857136a5c1f
