@@ -98,7 +98,8 @@ fn last_line(text: String) -> String {
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
-        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+        "FROM " + dna::TEST_ALPINE
+            + "\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
     ) or discard;
     std::io::fs::write_file(
         dir + "/docker.sh",
@@ -249,7 +250,10 @@ fn main() {
     std::io::fs::mkdir(src + "/docker") or discard;
     std::io::fs::mkdir(src + "/site") or discard;
     std::io::fs::mkdir(src + "/conf") or discard;
-    std::io::fs::write_file(src + "/docker/web.Dockerfile", "FROM busybox:1.36\nCOPY site /site\n")
+    std::io::fs::write_file(
+        src + "/docker/web.Dockerfile",
+        "FROM " + dna::TEST_BUSYBOX + "\nCOPY site /site\n",
+    )
     or discard;
     std::io::fs::write_file(src + "/site/index.html", "sprout\n") or discard;
     std::io::fs::write_file(src + "/conf/web.conf", "listen 8080\n") or discard;
@@ -257,7 +261,8 @@ fn main() {
     std::io::fs::write_file(src + "/.gitignore", "conf/state.db\n") or discard;
     std::io::fs::write_file(
         src + "/compose.yaml",
-        "services:\n  setup:\n    image: busybox:1.36\n    command: [\"true\"]\n  web:\n    build:\n      context: .\n      dockerfile: docker/web.Dockerfile\n    image: hale-dna-test-sprout:1\n    pull_policy: build\n    depends_on:\n      setup:\n        condition: service_completed_successfully\n    volumes:\n      - ./conf:/conf:ro\n    command: [\"sh\", \"-c\", \"trap 'exit 3' USR1; while :; do sleep 1; done\"]\n",
+        "services:\n  setup:\n    image: " + dna::TEST_BUSYBOX
+            + "\n    command: [\"true\"]\n  web:\n    build:\n      context: .\n      dockerfile: docker/web.Dockerfile\n    image: hale-dna-test-sprout:1\n    pull_policy: build\n    depends_on:\n      setup:\n        condition: service_completed_successfully\n    volumes:\n      - ./conf:/conf:ro\n    command: [\"sh\", \"-c\", \"trap 'exit 3' USR1; while :; do sleep 1; done\"]\n",
     ) or discard;
     git(src, "add\n-A");
     git(src, "commit\n-q\n-m\nsprout");
