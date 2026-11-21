@@ -8,6 +8,65 @@ behavior.
 
 ## Unreleased
 
+## v0.37.0 — dots, receivers, and the checker's types (2026-11-21)
+
+This release adds two shorter spellings and starts moving the compiler onto one set of types.
+
+- **`.Variant` in patterns.** When the matched value is an enum, an arm can name the variant without the enum: `.Result(r) -> r` means `Outcome::Result(r) -> r`. It works in every pattern form, through aliases and generic enums. A dot against a value that isn't an enum, or a variant the enum lacks, is a located error with the nearest name (F.58, #2124).
+- **Text functions as methods.** A `std::str` function can be called on the string it takes first: `raw.trim().lower()`, `line.starts_with("#")`, `for w in s.words()`. The same works for `std::bytes` on `Bytes` and its views. The check, every analysis and the build see the plain path call, so the two spellings behave identically. Record types still have no methods, and the editor completes the functions after `s.` (F.59, #2126).
+- **Codegen reads the checker's types** (GH #2111, phase 1). For a bounded receiver, a `for` iterand, an element chain's anchor, a builtin's result and a call's aggregate, lowering now takes the type the checker recorded instead of working it out again (#2125, #2127). Where the two used to disagree, the checker was right. That fixes the two breaking cases below, and closes several gaps where `hale check` passed a program that `hale build` then refused.
+
+Both breaking changes are programs that held a value of the wrong type without being told:
+- a `for` over a locus's own `items` or `entries` field, whose loop variable was untyped;
+- a builtin called beside a binding of the same name, whose result was untyped.
+
+Each entry below has its migration. Also in this release, three flaky tests are fixed (#2119, #2120, #2123).
+
+The item-level notes follow, breaking changes first.
+
+### Breaking
+
+- **A `for` over a locus's own `items` or `entries` field types its loop variable** (#2125, GH #2111). On a locus with no `@form`, `for x in self.items` over a `bounded[T; N]` param left `x` untyped, as if `items` were a form's iteration surface. Now `x` is a `T`, so what is read through it is checked as it is anywhere else. Two programs that built now behave differently:
+  - a quantity field read through `x` keeps its unit: `x.amount / 1cent` printed `125cent` and now prints `125`;
+  - `total + x.amount` with an `Int` total is refused, like any `Int + Money`.
+
+  Migration: give the arithmetic its unit (`x.amount / 1cent` for the count, or a `Money` total).
+- **A builtin call beside a binding of its name is typed** (#2127, GH #2111). A bare call left as written calls the builtin whatever binding of its name is in scope: `max(1, 2)` beside `let max = 10`. Its result was left untyped there, so `let s: String = max(1, 2)` built and held an `Int` in a local declared `String`. It is now refused as any `String = Int` is. Migration: declare what the value is, or convert it (`to_string(max(1, 2))`).
+
+### Fixed
+- tests: `tests/hale/api/queued_call_answered_test.hl` no longer fails now and then with "the owner heard each failure" (3 of 4). A receiver that fails in `run()` stops and announces the stop before its failure reaches the owner, so its queued calls can be answered `unavailable` first. The test read the count once, right after the last of those answers. It now waits for the count, with a deadline. No failure was lost (GH #2116).
+
+### Fixed
+- tests: the scaling tests in `crates/hale-codegen/tests/stdlib_str.rs` no longer fail on a loaded runner. `words_source_scales_linearly…` read a 10x growth on a 0.6 ms base. The five tests now time the process's CPU time instead of wall-clock time, run both sizes of a pair in each round, and hold the median per-round growth under the same 10x bound. Under eight-way load they pass 200 of 200, where the old timing failed 8 (GH #2115).
+
+### Fixed
+- tests: the DNA fixture `body_lease_start_test` no longer flakes on a loaded runner. Host A's slow build now lasts until the head's lease claim has returned, where it used to sleep a fixed twenty seconds that the claim could outlast. The DNA suite also starts every fixture under `HALE_DNA_SENSES_PORT=0`, so bodies in neighbouring slices no longer race for the senses' fixed readings ports (9464 to 9466) (#2118).
+
+### Added
+
+- A pattern can name an enum variant with a leading dot: `.Result(r)` means `Outcome::Result(r)` when the matched value is an `Outcome`, also through an alias or a generic enum's instantiation. It works in match arms, or-pattern alternatives, `if let`, `let … else` and a pattern `let`. A `.Variant` against a value that is not an enum, or one naming no variant of the enum, is a located type error with the nearest variant (spec/decisions.md F.58). A variant pattern naming the wrong number of values is now refused by `hale check` too, in both spellings, where only the build refused it before.
+
+### Fixed
+
+- `hale check` refuses a missing field read through such a loop variable (`x.nosuch`), which only `hale build` refused before (GH #2111).
+- A bounded intrinsic or a `for` over a receiver that is an `if`, a `match` or a block builds: `count(if c { a.xs } else { b.xs })`, `for x in (if c { a.xs } else { b.xs })`, `at({ a.xs }, 0) or 9`. The check accepted these and the build refused them, with "call to `count`: no free fn …", "for-loop iterator must be an array" or "`or` over call to unknown fn `at`" (GH #2111).
+
+### Changed
+
+- internal: lowering reads the checker's type of a bounded intrinsic's receiver, a `for` iterand, a collection `get`'s receiver and an element chain's anchor (`Cx::ty_at`, over the lowering view's new `expr_types` table) instead of typing them again with a walk of its own (GH #2111, phase 1).
+
+### Added
+
+- A `std::str` function can be called on the string it takes first: `raw.trim().lower()` is `std::str::lower(std::str::trim(raw))`, and `line.starts_with("#")` is `std::str::starts_with(line, "#")`. The same works with `std::bytes` on `Bytes` and its views, and with `std::str` on a `ByteView`. `s.words()`, `s.lines()` and `s.split(sep)` are text sources in a `for` loop and an element chain. The call is the path call to `hale check`, the analyses and the build alike. Record types still have no methods and your own functions are not called this way. An unknown name on a string is a located error listing the nearest functions, and the editor completes them after `s.` (spec/decisions.md F.59).
+
+### Fixed
+
+- `hale check` refuses a builtin call beside a binding of its name that the build refused: `len(5)` beside `let len = 4` checked, and the build said "`len` not supported for argument type Int" (GH #2111).
+
+### Changed
+
+- internal: lowering reads a bare builtin's result, and whether a call hands back an aggregate holding loci, from the checker's type of the call (`Cx::call_result`, `Cx::ty_at`) instead of deriving it itself. The checker now keeps expression rows for a default where it is evaluated, for a locus's param defaults and for a constant's initializer (GH #2111, phase 1).
+
 ## v0.36.5 — one entry rule, one spec (2026-11-20)
 
 This patch closes a check/build divergence and corrects the habitat spec. Nothing a correct program means changes.
