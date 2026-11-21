@@ -241,7 +241,8 @@ pub enum FfiTypeClass {
     Time,
     Duration,
     Decimal,
-    Uint,
+    /// `U64` (GH #2121): a C `uint64_t`.
+    U64,
     /// `U256` / `I256` (GH #1934).
     Wide,
     Unit,
@@ -271,7 +272,7 @@ impl FfiTypeClass {
         FfiTypeClass::Time,
         FfiTypeClass::Duration,
         FfiTypeClass::Decimal,
-        FfiTypeClass::Uint,
+        FfiTypeClass::U64,
         FfiTypeClass::Wide,
         FfiTypeClass::Unit,
         FfiTypeClass::Named,
@@ -297,7 +298,7 @@ impl FfiTypeClass {
             FfiTypeClass::Time => "Time",
             FfiTypeClass::Duration => "Duration",
             FfiTypeClass::Decimal => "Decimal",
-            FfiTypeClass::Uint => "Uint",
+            FfiTypeClass::U64 => "U64",
             FfiTypeClass::Wide => "Wide",
             FfiTypeClass::Unit => "Unit",
             FfiTypeClass::Named => "Named",
@@ -326,7 +327,7 @@ impl FfiTypeClass {
                 PrimType::Time => FfiTypeClass::Time,
                 PrimType::Duration => FfiTypeClass::Duration,
                 PrimType::Decimal(_) => FfiTypeClass::Decimal,
-                PrimType::Uint => FfiTypeClass::Uint,
+                PrimType::U64 => FfiTypeClass::U64,
                 PrimType::U256 | PrimType::I256 => FfiTypeClass::Wide,
             },
             Ty::Unit => FfiTypeClass::Unit,
@@ -1144,6 +1145,9 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     // runtime's `lotus_wide_*` use no 128-bit libcall, so wasm32 too
     std_ns("u256", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("i256", STD_NATIVE, STD_NATIVE, STD_WASM),
+    // GH #2121: the 64-bit unsigned integer (`U64::f`); its runtime
+    // text and parse are 64-bit arithmetic only, so wasm32 too
+    std_ns("u64", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("url", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("yaml", STD_NATIVE, STD_NATIVE, STD_WASM),
     // ---- link, exports, entry
@@ -1301,8 +1305,8 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     ffi_row(FfiTypeClass::Duration, Abi::Js, FFI_PORTABLE),
     ffi_row(FfiTypeClass::Decimal, Abi::C, FFI_DECIMAL),
     ffi_row(FfiTypeClass::Decimal, Abi::Js, FFI_DECIMAL),
-    ffi_row(FfiTypeClass::Uint, Abi::C, FFI_UINT),
-    ffi_row(FfiTypeClass::Uint, Abi::Js, FFI_UINT),
+    ffi_row(FfiTypeClass::U64, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::U64, Abi::Js, FFI_PORTABLE),
     ffi_row(FfiTypeClass::Wide, Abi::C, FFI_WIDE),
     ffi_row(FfiTypeClass::Wide, Abi::Js, FFI_WIDE),
     ffi_row(FfiTypeClass::Unit, Abi::C, FFI_UNIT),
@@ -1568,10 +1572,6 @@ const fn ffi_reject(reason: &'static str) -> Behaviour {
 const FFI_DECIMAL: Behaviour = ffi_reject(
     "Decimal (i128) has platform-variable ABI; marshal as \
      Int/Float at the Hale side instead",
-);
-const FFI_UINT: Behaviour = ffi_reject(
-    "Uint is Hale-internal; declare as Int in the @ffi \
-     signature",
 );
 const FFI_WIDE: Behaviour = ffi_reject(
     "U256 / I256 (i256) has no portable C mapping; pass its 32 \

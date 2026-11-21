@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
     BusMember, CapacitySlotKind, ClosureAssertion,
-    ClosureClause, EpochSpec, Expr, KeyFilter, LifecycleKind,
+    ClosureClause, EpochSpec, Expr, KeyFilter, LifecycleKind, Literal,
     LocusAnnotation, LocusDecl, LocusMember, ModeKind,
     ParamInit, ProjectionClass, RecoveryEvent, ScheduleClass,
     TypeExpr,
@@ -286,6 +286,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                         match literal {
                             Ok(pv) => {
                                 let ty = match &pv {
+                                    // GH #2121: a literal past `Int`'s max
+                                    // is a `U64` by itself
+                                    ParamValue::Int(_)
+                                        if matches!(default_expr, Expr::Literal(Literal::U64(_), _)) =>
+                                    {
+                                        CodegenTy::U64
+                                    }
                                     ParamValue::Int(_) => CodegenTy::Int,
                                     ParamValue::Float(_) => CodegenTy::Float,
                                     ParamValue::Bool(_) => CodegenTy::Bool,
@@ -344,10 +351,14 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     // to a view at construction time.
                     let default_ty = if let Some(ascribed) = &p.ty {
                         let asc_ty = self.type_expr_to_codegen_ty(ascribed)?;
+                        // GH #2121: an integer literal into a `U64` param is
+                        // one (the check held it to the range); the same
+                        // i64 either way
                         let literal_to_view = matches!(
                             (&default_ty, &asc_ty),
                             (CodegenTy::String, CodegenTy::StringView)
                                 | (CodegenTy::Bytes, CodegenTy::BytesView)
+                                | (CodegenTy::Int, CodegenTy::U64)
                         );
                         if asc_ty != default_ty && !literal_to_view {
                             return Err(CodegenError::Unsupported(format!(
@@ -1857,7 +1868,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => self
+                                CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration | CodegenTy::Time => self
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
@@ -2027,7 +2038,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .context
                                     .ptr_type(AddressSpace::default())
                                     .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => self
+                                CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration | CodegenTy::Time => self
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),

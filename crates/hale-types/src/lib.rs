@@ -421,7 +421,7 @@ mod flat_shapeable_tests {
         with_scope("fn main() {}", |s| {
             for p in [
                 PrimType::Int,
-                PrimType::Uint,
+                PrimType::U64,
                 PrimType::Float,
                 PrimType::DECIMAL,
                 PrimType::Bool,

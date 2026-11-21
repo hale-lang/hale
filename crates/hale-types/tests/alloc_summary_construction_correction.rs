@@ -321,11 +321,12 @@ fn own_scope_let_block_scope_test() {
             // sources' eight cursor hooks came (GH #1995 S2); 534 since
             // `net.hl` came (GH #1908: `std::net::resolve`); 535 since a
             // chain over a text source compares a part with the best one in
-            // place (`__str_view_cmp`, GH #1995 S2, chain sources)
+            // place (`__str_view_cmp`, GH #1995 S2, chain sources); 544
+            // since `u64.hl` came (GH #2121: std::u64's nine fallible calls)
             changed_lines(&stable_dump(&old.render()), &stable_dump(&now.render())),
             [
-                "- # 535 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 535 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 544 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 544 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -728,8 +729,11 @@ fn own_entries_run_to_exit_programs() {
     // stores each summary as it is (GH #2067; until GH #2099 the whole
     // assignment kept the row's elements and the push copied the summary); 31:
     // `tests/hale/bounded_inline_enum_result_push_test.hl`, whose `s_of`
-    // builds the record `build` pushes as it is (GH #2088).
-    assert_eq!(moved, 31, "the run-to-exit programs among the targets that lose a site");
+    // builds the record `build` pushes as it is (GH #2088); 32:
+    // `tests/hale/u64_arith_test.hl`, whose loop over refused texts builds
+    // its messages, and 33: `tests/hale/u64_codec_test.hl`, whose codecs of
+    // `U64`s decode the same way (GH #2121).
+    assert_eq!(moved, 33, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1146,6 +1150,25 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat #12 InUnboundedLoop",
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat #13 InUnboundedLoop",
             "tests/hale/u256_codec_test.hl: __json_to_json_Account StringConcat #14 InUnboundedLoop",
+            // `tests/hale/u64_arith_test.hl`: the parse refusals it loops over
+            // build their assertion messages in the loop (GH #2121)
+            "tests/hale/u64_arith_test.hl: text_and_bytes StringConcat #1 InUnboundedLoop",
+            "tests/hale/u64_arith_test.hl: text_and_bytes StringConcat #2 InUnboundedLoop",
+            // `tests/hale/u64_codec_test.hl`: its codecs of `U64`s, the decoders'
+            // refusals and the encoders' per-element pieces (GH #2121)
+            "tests/hale/u64_codec_test.hl: __api_decode_Row StructLit(\"JsonError\") #3 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #13 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #19 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __api_encode_Stats StringConcat #6 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __api_encode_Stats StringConcat #7 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __api_encode_Stats StringConcat #9 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __api_encode_Stats StringConcat #10 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __json_parse_Stats StructLit(\"JsonError\") #9 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __json_parse_Stats StructLit(\"JsonError\") #14 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __json_to_json_Stats StringConcat #6 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __json_to_json_Stats StringConcat #7 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __json_to_json_Stats StringConcat #9 InUnboundedLoop",
+            "tests/hale/u64_codec_test.hl: __json_to_json_Stats StringConcat #10 InUnboundedLoop",
             // `tests/hale/units_form_iteration_test.hl`: the f-strings its
             // loops over a form's cells build (GH #2026)
             "tests/hale/units_form_iteration_test.hl: main StringConcat #1 InUnboundedLoop",
@@ -1224,8 +1247,9 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
     }
     // 34 since `time_rfc3339.hl` came (GH #1948: `std::time::parse_rfc3339`);
     // 35 since `str_helpers.hl` came (GH #1995: std::str's splits and trims);
-    // 36 since `net.hl` came (GH #1908: std::net::resolve).
-    assert_eq!(sharing, 36, "the stdlib source files that share a name with the copy");
+    // 36 since `net.hl` came (GH #1908: std::net::resolve); 37 since
+    // `u64.hl` came (GH #2121: std::u64's fallible calls).
+    assert_eq!(sharing, 37, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

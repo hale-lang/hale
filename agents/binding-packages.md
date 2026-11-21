@@ -73,7 +73,7 @@ reference material translates directly: raylib's `InitWindow`
 Type signatures use the FFI-portable subset (see
 [`spec/ffi.md`](../spec/ffi.md) marshalling table): scalars,
 `String`, `Bytes`, views, user-type structs (by pointer).
-`Decimal` / `Uint` / projections / tuples / arrays / fallibles
+`Decimal` / `U256` / projections / tuples / arrays / fallibles
 are rejected; convert at the Hale side if needed.
 
 ### 2. Hale-side value types (`type Foo { ... }`)

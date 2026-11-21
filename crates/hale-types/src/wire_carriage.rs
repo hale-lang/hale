@@ -81,8 +81,8 @@ pub struct WireRow {
 pub const WIRE_TABLE: &[WireRow] = &[
     WireRow {
         shape: WireShape::Scalar,
-        carried: "scalars (`Int`, `Float`, `Bool`, `Decimal`, `U256`, `I256`, `Duration`, `Time`, a unit type)",
-        encoding: "its bytes: 8 (`Int`, `Float`, `Bool`, `Duration`, `Time`, a unit type), 16 (`Decimal`) or 32 (`U256`, `I256`)",
+        carried: "scalars (`Int`, `U64`, `Float`, `Bool`, `Decimal`, `U256`, `I256`, `Duration`, `Time`, a unit type)",
+        encoding: "its bytes: 8 (`Int`, `U64`, `Float`, `Bool`, `Duration`, `Time`, a unit type), 16 (`Decimal`) or 32 (`U256`, `I256`)",
     },
     WireRow { shape: WireShape::PayloadFreeEnum, carried: "payload-free enums", encoding: "its tag, a `u32` (the variant's declaration index)" },
     WireRow { shape: WireShape::String, carried: "`String`", encoding: "an `i64` length, then its bytes" },
@@ -150,11 +150,12 @@ fn ty_shape(ty: &Ty, top: &TopScope) -> Result<Option<WireShape>, &'static str> 
     use hale_syntax::ast::PrimType as P;
     Ok(Some(match ty {
         Ty::Prim(p) => match p {
-            P::Int | P::Float | P::Bool | P::Decimal(_) | P::U256 | P::I256 | P::Duration | P::Time => WireShape::Scalar,
+            P::Int | P::U64 | P::Float | P::Bool | P::Decimal(_) | P::U256 | P::I256 | P::Duration | P::Time => {
+                WireShape::Scalar
+            }
             P::String => WireShape::String,
             P::Bytes => WireShape::Bytes,
             P::BytesView | P::StringView | P::BytesMut => return Err(refusal::VIEW),
-            P::Uint => return Err(refusal::NO_FORM),
         },
         Ty::Named(n) if n == hale_syntax::json_gen::JSON_VALUE => WireShape::JsonValue,
         Ty::Named(n) => match top.lookup(n) {
@@ -329,7 +330,7 @@ impl<'a> WireDecls<'a> {
         let refuse = |what: &str| Some(Uncarried { path: path.to_string(), ty: crate::surfaces::type_text(te), what: what.to_string() });
         match te {
             TypeExpr::Primitive(p, _) => match p {
-                PrimType::BytesMut | PrimType::Uint => refuse("a primitive the wire has no form for"),
+                PrimType::BytesMut => refuse("a primitive the wire has no form for"),
                 _ => None,
             },
             TypeExpr::Named { .. } => {
@@ -363,6 +364,7 @@ impl<'a> WireDecls<'a> {
             TypeExpr::Array { elem, .. } => match elem.as_ref() {
                 TypeExpr::Primitive(
                     PrimType::Int
+                    | PrimType::U64
                     | PrimType::Float
                     | PrimType::Bool
                     | PrimType::Time

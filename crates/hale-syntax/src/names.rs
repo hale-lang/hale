@@ -867,6 +867,7 @@ fn literal<'a>(l: &'a Literal, f: &mut Visit<'_, 'a>) {
         // The unit a quantity literal names.
         Literal::Quantity { value: _, unit } => f(Spelled::Name(unit)),
         Literal::Int(_)
+        | Literal::U64(_)
         | Literal::Float(_)
         | Literal::Bool(_)
         | Literal::Nil

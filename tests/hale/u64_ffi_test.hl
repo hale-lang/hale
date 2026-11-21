@@ -1,0 +1,17 @@
+// tests/hale/u64_ffi_test.hl — a `U64` crosses `@ffi("c")` as a C
+// `uint64_t` (GH #2121; spec/ffi.md): its 64 bits in the register an
+// `i64` takes, in either direction. libc's `strtoull` hands one back
+// (`unsigned long long`), and `labs` takes one in: 2^64 - 5 arrives as the
+// `long` -5, so its absolute value says the bits crossed whole.
+
+@ffi("c") fn strtoull(s: String, end: Int, base: Int) -> U64;
+@ffi("c") fn labs(x: U64) -> U64;
+
+fn main() {
+    let m = strtoull("18446744073709551615", 0, 10);
+    std::test::assert(m == U64::max(), "a returned U64 past Int's max");
+    let h = strtoull("8000000000000000", 0, 16);
+    std::test::assert(h == 9223372036854775808, "2^63 from C");
+    std::test::assert(labs(18446744073709551611) == 5, "a U64 argument's 64 bits");
+    std::test::assert(labs(12345) == 12345, "and a small one");
+}

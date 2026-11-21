@@ -1360,7 +1360,7 @@ unless it can hand a value to the next iteration through the frame:
 
   1. it assigns a binding declared before the loop (whole, through
      a field or through an index) whose type is not a scalar (Int,
-     Uint, Float, Decimal, Bool, Duration, Time) or a locus or
+     U64, Float, Decimal, Bool, Duration, Time) or a locus or
      interface reference;
   2. it names an outside `bounded[T; N]` or `BytesMut` at all (a
      `bounded` write into a field or record is a call, rule 3);
@@ -2008,7 +2008,7 @@ class allocates into its own subregion again. A free fn is
 it returns except its return value:
 
 - its signature is not fallible, `@ffi` or `@export`, has no
-  generics, every parameter is a by-value scalar (`Int`, `Uint`,
+  generics, every parameter is a by-value scalar (`Int`, `U64`,
   `Float`, `Bool`, `Duration`), a `String`, or a *plain record* — a
   non-generic `type` record whose every field is one of those or a
   `bounded` list of them, with literal defaults (GH #2090; a locus,

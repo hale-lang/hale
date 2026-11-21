@@ -97,7 +97,7 @@ fn the_hex_tag_option_is_for_integers() {
     assert!(
         msgs.contains(
             &"`R.d`: `json:` tag option `hex` writes an integer as `0x` hex text, and the field is `String`: it is for \
-              an `Int`, `U256` or `I256` field or a list of them"
+              an `Int`, `U64`, `U256` or `I256` field or a list of them"
         ),
         "{msgs:?}"
     );
@@ -105,8 +105,8 @@ fn the_hex_tag_option_is_for_integers() {
     assert!(
         msgs.contains(
             &"`R.f`: `json:` tag option `lower` is not one: the options are `string`, a Decimal written as a JSON \
-              string (`json:\"price,string\"`), and `hex`, an `Int`, `U256` or `I256` written as `0x` hex text \
-              (`json:\"gasUsed,hex\"`)"
+              string (`json:\"price,string\"`), and `hex`, an `Int`, `U64`, `U256` or `I256` written as `0x` \
+              hex text (`json:\"gasUsed,hex\"`)"
         ),
         "{msgs:?}"
     );

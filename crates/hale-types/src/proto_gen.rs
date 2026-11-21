@@ -46,6 +46,8 @@ pub enum Scalar {
     Double,
     Int32,
     Int64,
+    /// GH #2121: a `U64`.
+    Uint64,
     Bool,
     String,
     Bytes,
@@ -57,6 +59,7 @@ impl Scalar {
             Scalar::Double => "double",
             Scalar::Int32 => "int32",
             Scalar::Int64 => "int64",
+            Scalar::Uint64 => "uint64",
             Scalar::Bool => "bool",
             Scalar::String => "string",
             Scalar::Bytes => "bytes",
@@ -67,6 +70,7 @@ impl Scalar {
         match self {
             Scalar::Double => 1,
             Scalar::Int64 => 3,
+            Scalar::Uint64 => 4,
             Scalar::Int32 => 5,
             Scalar::Bool => 8,
             Scalar::String => 9,
@@ -243,6 +247,8 @@ fn scalar_for(json: &str, hale_type: &Option<String>) -> Option<Scalar> {
     // option does not apply
     match hale_type.as_deref() {
         Some("U256" | "I256") => return Some(Scalar::String),
+        // GH #2121: a `U64` is a JSON string and a protobuf `uint64`
+        Some("U64") => return Some(Scalar::Uint64),
         Some("Int") => return Some(Scalar::Int64),
         _ => {}
     }

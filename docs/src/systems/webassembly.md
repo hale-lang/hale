@@ -90,7 +90,7 @@ compiler consults, with the reasons it gives.
 | `std::time` | the browser module has no clock of its own: the shim's inline `clock_gettime` writes zero and `sleep`'s `clock_nanosleep` is an import stubbed to 0, so a read is always the epoch and a sleep never waits | a host clock (`performance.now`, `Date.now`) or timer through an `@ffi("js")` host import |
 | `std::ts` | the tree-sitter parser is a native static library the wasm link never reaches | parsing on the host, through an `@ffi("js")` host import |
 
-Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::bytes::builder`, `std::cli`, `std::compress`, `std::crypto`, `std::decimal`, `std::diag`, `std::hex`, `std::io`, `std::iter`, `std::json`, `std::json::Value`, `std::lang`, `std::log`, `std::math`, `std::metrics`, `std::name`, `std::observe`, `std::os`, `std::rand`, `std::regex`, `std::secret`, `std::shm`, `std::source`, `std::str`, `std::tagged`, `std::tar`, `std::test`, `std::text`, `std::text::base64`, `std::u256`, `std::i256`, `std::url`, `std::yaml`.
+Every other namespace is available: `std::api`, `std::bus`, `std::bytes`, `std::bytes::builder`, `std::cli`, `std::compress`, `std::crypto`, `std::decimal`, `std::diag`, `std::hex`, `std::io`, `std::iter`, `std::json`, `std::json::Value`, `std::lang`, `std::log`, `std::math`, `std::metrics`, `std::name`, `std::observe`, `std::os`, `std::rand`, `std::regex`, `std::secret`, `std::shm`, `std::source`, `std::str`, `std::tagged`, `std::tar`, `std::test`, `std::text`, `std::text::base64`, `std::u256`, `std::i256`, `std::u64`, `std::url`, `std::yaml`.
 
 **Placement and the bus.**
 
@@ -133,6 +133,7 @@ target wasm { }
 |---|---|---|
 | `Float` | `number` (`f64`) | Passed directly by value. |
 | `Int` | `number` (`f64`, *not* `BigInt`) | Crosses as an IEEE-754 number so JS handlers require no `Number(x)` cast. Values exceeding $2^{53}$ lose precision; pass 64-bit IDs as `String` or `Bytes`. (`@ffi("c")` retains `i64`.) |
+| `U64` | `number` (`f64`) | Its unsigned value, as an `Int`'s: exact through $2^{53}$. |
 | `String` / `Bytes` | Pointer into linear memory | Automatically decoded/encoded by the generated `.mjs` loader. |
 
 The generated `.mjs` loader provides `console_log` and the `libm` math functions (`std::math`) out of the box. Supply your own `@ffi("js")` imports by passing a factory to `run(glue)`:

@@ -1913,7 +1913,7 @@ fn complete_top_level(
         }
     }
     for prim in [
-        "Int", "Uint", "Float", "Decimal", "String", "Bool", "Time",
+        "Int", "U64", "Float", "Decimal", "U256", "I256", "String", "Bool", "Time",
         "Duration", "Bytes",
     ] {
         if prim.starts_with(partial) {
@@ -2289,7 +2289,7 @@ pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> String {
     use hale_types::stdlib_surface::SigTy::*;
     match t {
         Int => "Int".to_string(),
-        Uint => "Uint".to_string(),
+        U64 => "U64".to_string(),
         Float => "Float".to_string(),
         Bool => "Bool".to_string(),
         Str => "String".to_string(),

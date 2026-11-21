@@ -117,7 +117,7 @@ fn each_hole_is_held_to_the_f_string_rules() {
         .find(|d| d.message.starts_with("a `@display` hole cannot render a value of type `Bytes`"))
         .unwrap_or_else(|| panic!("the hole is refused in the template's words: {ds:?}"));
     assert_eq!(hole.span.slice(src), "{b}");
-    refused("@display(\"{s:x}\") type A { s: String; }", "{s:x}", "hexadecimal formatting applies to `Int`, not `String`");
+    refused("@display(\"{s:x}\") type A { s: String; }", "{s:x}", "hexadecimal formatting applies to `Int` or `U64`, not `String`");
     refused("@display(\"{n:.2}\") type A { n: Int; }", "{n:.2}", "a decimal precision applies to `Float` or `Decimal`");
 }
 

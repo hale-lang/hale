@@ -26,7 +26,7 @@
 //!    mangled — spelling); shared topics should declare one.
 //!  * **canonical shape** — for a payload written as a bare,
 //!    non-generic named struct: the struct's fields in declaration
-//!    order as `<field>:<tag>` joined by `;`. Tags: `i` Int/Uint,
+//!    order as `<field>:<tag>` joined by `;`. Tags: `i` Int, `u64` U64,
 //!    `f` Float, `b` Bool, `d` Decimal (`d18` a `Decimal<18>`: a scale
 //!    other than 9 is part of the tag), `t` Time, `u` Duration,
 //!    `s` String/StringView, `y` Bytes/BytesView/BytesMut,
@@ -617,7 +617,10 @@ impl<'a> Shapes<'a> {
         match ty {
             TypeExpr::Primitive(p, _) => Some(
                 match p {
-                    PrimType::Int | PrimType::Uint => "i",
+                    PrimType::Int => "i",
+                    // GH #2121: a `U64` is its own contract, never an
+                    // `Int`'s `i` (the same 8 bytes, read another way).
+                    PrimType::U64 => "u64",
                     PrimType::Float => "f",
                     PrimType::Bool => "b",
                     // A scale other than the default is part of the
@@ -964,7 +967,7 @@ mod tests {
     #[test]
     fn primitives_render_their_letters_in_both_forms() {
         let (obs, contract, h) = forms(
-            "type P { a: Int; b: Uint; c: Float; d: Bool; e: Decimal; f: Time; g: Duration; h: String; i: Bytes; }",
+            "type P { a: Int; b: Int; c: Float; d: Bool; e: Decimal; f: Time; g: Duration; h: String; i: Bytes; }",
             "P",
         );
         assert_eq!(contract, "a:i;b:i;c:f;d:b;e:d;f:t;g:u;h:s;i:y");
@@ -985,6 +988,18 @@ mod tests {
         assert_eq!((nine, nine_h), (plain, plain_h.clone()), "Decimal<9> is Decimal");
         assert_eq!(wide, "e:d18;f:d0");
         assert_ne!(wide_h, plain_h);
+    }
+
+    /// GH #2121: a `U64` is its own contract: the same 8 bytes as an
+    /// `Int`, read as unsigned, so a publisher of one and a subscriber of
+    /// the other disagree.
+    #[test]
+    fn a_u64_is_its_own_contract() {
+        let (_, unsigned, unsigned_h) = forms("type P { a: U64; b: Int; }", "P");
+        let (_, signed, signed_h) = forms("type P { a: Int; b: Int; }", "P");
+        assert_eq!(unsigned, "a:u64;b:i");
+        assert_eq!(signed, "a:i;b:i");
+        assert_ne!(unsigned_h, signed_h);
     }
 
     /// The unit dialect's scalars: an identity is the `Int` it is, a

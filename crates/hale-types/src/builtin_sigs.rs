@@ -124,11 +124,16 @@ impl BuiltinSig {
             ),
             (Operands::Lengthed, Ty::Array(_, Some(_))) => true,
             (Operands::Printable, t) => printable(t),
-            (Operands::IntOrFloat, Ty::Prim(p)) => matches!(p, PrimType::Int | PrimType::Float),
+            (Operands::IntOrFloat, Ty::Prim(p)) => {
+                // GH #2121: `Float(x)` of a `U64` (`uitofp`); its `Int` is
+                // `U64::to_int(x) or ...`, which can fail
+                matches!(p, PrimType::Int | PrimType::Float) || (self.name == "Float" && *p == PrimType::U64)
+            }
             (Operands::Numeric, Ty::Prim(p)) => {
                 matches!(
                     p,
                     PrimType::Int
+                        | PrimType::U64
                         | PrimType::Float
                         | PrimType::Duration
                         | PrimType::Decimal(_)

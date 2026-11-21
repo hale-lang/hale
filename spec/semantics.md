@@ -560,6 +560,7 @@ into a `Float`, F.23):
 | `Int` (an identity's and a range's are the unit dialect's, spec/units.md) | `+ - * / %`, `& \| ^ << >>`, unary `-` `~`, every comparison |
 | `Float` | `+ - * /`, unary `-`, every comparison |
 | `Decimal<S>` | `+ - * / %`, unary `-`, every comparison (one scale) |
+| `U64` | `+ - * / %` (checked and unsigned: an overflow or a division by zero is a violation), `& \| ^ ~`, `<< >>` by an `Int` count from 0 to 63, every comparison (unsigned); no unary `-`; an integer literal operand is a `U64`, and nothing else mixes in (spec/types.md § U64) |
 | `U256`, `I256` | `+ - * / %` (checked: an overflow or a division by zero is a violation), `& \| ^ ~`, `<< >>` by an `Int` count, unary `-` (an `I256`'s only), every comparison; never mixed with another type (spec/types.md § U256 and I256) |
 | `Duration`, `Time`, a quantity, a point | the unit dialect's algebra (spec/units.md) |
 | `Bool` | `==` `!=`, `&&` `\|\|`, unary `!` |
@@ -3361,8 +3362,9 @@ payload picks the consumer mode:
   field and reading the value by the field's declared type. A field is
   what the api surface's JSON codec carries of one (spec/api.md §
   Codecs): a scalar (`Int` / `Float` / `Bool` / `String` / `Decimal<S>`
-  / `U256` / `I256`, a 256-bit integer as a JSON string of its decimal
-  digits or `0x` hex, or an integer number that fits),
+  / `U64` / `U256` / `I256`, a `U64` or a 256-bit integer as a JSON
+  string of its decimal digits or `0x` hex, or an integer number that
+  fits),
   a scalar of the unit dialect as its `Int`, a `Time` as its RFC 3339
   text, a `Duration` as its nanoseconds, a `std::json::Value` as its
   text, an enum (a payload-free variant as its name in a JSON string,
@@ -3390,11 +3392,11 @@ payload picks the consumer mode:
   name); the options are
   `string`, on a `Decimal<S>` field or a list of them, which `to_json`
   writes as a JSON string of the digits (`"97000.5"`), and `hex` (GH
-  #1934), on an `Int`, `U256` or `I256` field or a list of them, which
+  #1934), on an `Int`, `U64`, `U256` or `I256` field or a list of them, which
   `to_json` writes as `0x` and lowercase hex digits in a JSON string
   (`"0x4dc"`; a negative `Int` as its JSON number) and with which an
-  `Int` field also reads `0x` hex text (a 256-bit field reads decimal or
-  hex text either way); any other option, or an option on a field it is
+  `Int` field also reads `0x` hex text (a `U64` or a 256-bit field reads
+  decimal or hex text either way); any other option, or an option on a field it is
   not for, is refused at the field.
   Unmatched keys (and nested objects/arrays under them)
   are skipped. A record marked `@positional` (`@positional type Candle
@@ -5290,7 +5292,7 @@ Little-endian, nothing between values:
 
 | Value | Wire bytes |
 |---|---|
-| `Int`, `Float`, `Bool`, `Duration`, `Time`, a unit type | 8 bytes |
+| `Int`, `U64`, `Float`, `Bool`, `Duration`, `Time`, a unit type | 8 bytes |
 | `Decimal` | 16 bytes |
 | `U256`, `I256` | 32 bytes |
 | a payload-free enum | its tag, a `u32` (the variant's declaration index) |
@@ -5448,7 +5450,7 @@ Restrictions enforced at typecheck:
   `explicit` — other epochs either don't recur or recur too
   fast for a rate-budget framing.
 - Each named field MUST be declared on the enclosing locus and
-  MUST have numeric type (`Int`, `Uint`, `Float`, `Decimal`).
+  MUST have numeric type (`Int`, `U64`, `Float`, `Decimal`).
   Booleans, strings, and structs are rejected — zero is not a
   meaningful reset value for them.
 

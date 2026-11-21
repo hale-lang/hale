@@ -1,0 +1,213 @@
+// tests/hale/u64_arith_test.hl — `U64` (GH #2121): the 64-bit unsigned
+// integer. Literals typed from the place they flow into (a `let`, an
+// argument, an operator's other side, `min` / `max`, an array, a match
+// pattern), arithmetic at both ends of the range, the forms that wrap
+// (`wrapping_*`) and the forms that fail instead of stopping
+// (`checked_*`, `to_int`, `from_float`, `parse`, the byte readers),
+// unsigned division, remainder, comparison and shifts, bitwise operators,
+// `Float(x)`, and the text: `to_string`, `println`, f-strings, `+` with a
+// `String`, `to_hex`, and a record's `@display` and its default rendering.
+// (An operator that would wrap stops the process instead; those are
+// `u64_violation_test.hl`'s.)
+
+const MAX_TEXT: String = "18446744073709551615";
+
+fn arith_kind(e: ArithError) -> String {
+    return e.kind + " " + e.op;
+}
+
+fn twice(x: U64) -> U64 {
+    return x * 2;
+}
+
+fn literals() {
+    let m: U64 = 18446744073709551615;
+    std::test::assert_eq_str(to_string(m), MAX_TEXT, "the largest literal is 2^64 - 1");
+    std::test::assert(m == U64::max(), "U64::max() is 2^64 - 1");
+    // a literal past `Int`'s max is a `U64` by itself
+    let big = 9223372036854775808;
+    std::test::assert_eq_str(to_string(big), "9223372036854775808", "2^63 is a U64 literal");
+    let hex: U64 = 0xFFFF_FFFF_FFFF_FFFF;
+    std::test::assert(hex == m, "a radix literal is its 64-bit pattern");
+    let small: U64 = 7;
+    std::test::assert_eq_str(to_string(small), "7", "a small literal into a U64");
+    std::test::assert(twice(21) == 42, "an argument literal is a U64");
+    let arr: [U64; 3] = [1, 2, 18446744073709551615];
+    std::test::assert(arr[0] + arr[1] == 3 && arr[2] == m, "an array literal of U64s");
+    let zeros: [U64; 4] = [0; 4];
+    std::test::assert(zeros[3] == 0, "a repeated literal");
+    let mask: U64 = ~0;
+    std::test::assert(mask == m, "~0 is all ones");
+    let picked: U64 = if small > 3 { 100 } else { 200 };
+    std::test::assert(picked == 100, "an if's literal arms");
+    let matched = match small {
+        7 -> 1,
+        18446744073709551615 -> 2,
+        _ -> 3,
+    };
+    std::test::assert_eq_int(matched, 1, "a literal pattern against a U64");
+    std::test::assert(max(small, 10) == 10 && min(small, 10) == 7, "min / max take a literal");
+}
+
+fn edges() {
+    let m = U64::max();
+    std::test::assert_eq_str("" + (m - 1 + 1), MAX_TEXT, "max - 1 + 1 stays in range");
+    std::test::assert(m > 9223372036854775807, "past Int's max orders above it, unsigned");
+    std::test::assert(m / 2 == 9223372036854775807, "unsigned division");
+    std::test::assert(m % 10 == 5, "unsigned remainder");
+    std::test::assert(m >> 63 == 1, "a logical right shift");
+    std::test::assert((1 << 63) == 9223372036854775808, "the top bit");
+    let one: U64 = 1;
+    std::test::assert(one << 63 >> 63 == 1, "shifts drop nothing in range");
+    std::test::assert((m & 0xFF) == 255 && (one | 2) == 3 && (m ^ m) == 0, "bitwise");
+    std::test::assert(abs(m) == m, "abs of a U64 is itself");
+    std::test::assert(U64::from_int(5) + U64::from_int(6) == 11, "from_int");
+}
+
+fn wrapping() {
+    let m = U64::max();
+    std::test::assert(U64::wrapping_add(m, 1) == 0, "max + 1 wraps to 0");
+    std::test::assert(U64::wrapping_sub(0, 1) == m, "0 - 1 wraps to max");
+    std::test::assert(U64::wrapping_mul(1 << 32, 1 << 32) == 0, "2^64 wraps to 0");
+    std::test::assert(U64::wrapping_mul(m, m) == 1, "(2^64 - 1)^2 is 1 mod 2^64");
+    std::test::assert(U64::wrapping_shl(1, 64) == 1, "a shift count is taken modulo 64");
+    std::test::assert(U64::wrapping_shl(1, 65) == 2, "65 is 1 modulo 64");
+    std::test::assert(U64::wrapping_shr(m, 127) == 1, "127 is 63 modulo 64");
+    // FNV-1a over "a": the reason a hash wants wrapping
+    let mut h: U64 = 14695981039346656037;
+    h = h ^ 97;
+    h = U64::wrapping_mul(h, 1099511628211);
+    std::test::assert_eq_str(U64::to_hex(h), "0xaf63dc4c8601ec8c", "FNV-1a of `a`");
+}
+
+fn checked() {
+    let m = U64::max();
+    let over = U64::checked_add(m, 1) or {
+        std::test::assert_eq_str(arith_kind(err), "overflow U64::checked_add", "max + 1 fails");
+        0
+    };
+    std::test::assert(over == 0, "the fallback");
+    let under = U64::checked_sub(0, 1) or {
+        std::test::assert_eq_str(arith_kind(err), "overflow U64::checked_sub", "0 - 1 fails");
+        42
+    };
+    std::test::assert(under == 42, "a U64 has no negative");
+    let big = U64::checked_mul(1 << 32, 1 << 32) or {
+        std::test::assert_eq_str(err.kind, "overflow", "2^32 * 2^32 fails");
+        0
+    };
+    std::test::assert(big == 0, "a product past 64 bits");
+    let ok = U64::checked_mul(1 << 32, 1 << 31) or 0;
+    std::test::assert(ok == 1 << 63, "2^63 is a product that fits");
+    let div0 = U64::checked_div(5, 0) or {
+        std::test::assert_eq_str(err.kind, "division_by_zero", "x / 0 fails");
+        9
+    };
+    std::test::assert(div0 == 9, "the fallback after a division by zero");
+    let fine = U64::checked_add(2, 3) or 0;
+    std::test::assert(fine == 5, "a sum that fits");
+}
+
+fn conversions() {
+    let m = U64::max();
+    let n = U64::to_int(9223372036854775807) or - 1;
+    std::test::assert_eq_int(n, 9223372036854775807, "Int's max converts");
+    let past = U64::to_int(m) or {
+        std::test::assert_eq_str(arith_kind(err), "overflow U64::to_int", "past Int's max fails");
+            -1
+    };
+    std::test::assert_eq_int(past, -1, "the fallback");
+    std::test::assert_eq_int(U64::to_bits(m), -1, "max's bits are Int's -1");
+    std::test::assert(U64::from_bits(-1) == m, "and back");
+    std::test::assert(Float(m) == 18446744073709551616.0, "Float rounds 2^64 - 1 to 2^64");
+    std::test::assert(Float(9007199254740993) == 9007199254740992.0, "exact through 2^53");
+    let f = U64::from_float(12.9) or 0;
+    std::test::assert(f == 12, "from_float truncates");
+    let top = U64::from_float(18446744073709549568.0) or 0;
+    std::test::assert_eq_str(
+        to_string(top),
+        "18446744073709549568",
+        "the largest double below 2^64",
+    );
+    let nope = U64::from_float(-1.0) or 7;
+    std::test::assert(nope == 7, "-1.0 has no U64");
+    let nope2 = U64::from_float(18446744073709551616.0) or 8;
+    std::test::assert(nope2 == 8, "2^64 has none");
+    let nan = U64::from_float(0.0 / 0.0) or 9;
+    std::test::assert(nan == 9, "NaN has none");
+}
+
+fn text_and_bytes() {
+    let m = U64::max();
+    let p = U64::parse(MAX_TEXT) or 0;
+    std::test::assert(p == m, "parse reads max");
+    let h = U64::parse("0xFFffFFffFFffFFff") or 0;
+    std::test::assert(h == m, "parse reads hex of either case");
+    let z = U64::parse("000042") or 0;
+    std::test::assert(z == 42, "leading zeros");
+    for bad in ["18446744073709551616", "-1", "+1", " 1", "1_000", "", "0x", "0x1g", "12a"] {
+        let r = U64::parse(bad) or {
+            std::test::assert_eq_str(err.kind, "u64", "the kind names the type");
+            std::test::assert_eq_str(err.input, bad, "the input is quoted");
+            123
+        };
+        std::test::assert(r == 123, "`" + bad + "` is refused");
+    }
+    std::test::assert_eq_str(U64::to_hex(0), "0x0", "zero's hex");
+    std::test::assert_eq_str(U64::to_hex(255), "0xff", "lowercase, no leading zeros");
+    let be = U64::to_be_bytes(0x0102030405060708);
+    std::test::assert_eq_str(std::hex::encode(be), "0102030405060708", "big-endian bytes");
+    let le = U64::to_le_bytes(0x0102030405060708);
+    std::test::assert_eq_str(std::hex::encode(le), "0807060504030201", "little-endian bytes");
+    let back = U64::from_be_bytes(U64::to_be_bytes(m)) or 0;
+    std::test::assert(back == m, "the big-endian round trip");
+    let back_le = U64::from_le_bytes(le) or 0;
+    std::test::assert(back_le == 0x0102030405060708, "the little-endian round trip");
+    let short = U64::from_be_bytes(std::hex::decode("0102") or std::bytes::from_string("")) or {
+        std::test::assert_eq_str(err.kind, "u64_bytes", "eight bytes or none");
+        std::test::assert_eq_str(err.input, "0102", "the input in hex");
+        5
+    };
+    std::test::assert(short == 5, "two bytes are refused");
+    std::test::assert_eq_str(f"{m}", MAX_TEXT, "an f-string prints unsigned");
+    std::test::assert_eq_str(f"{m:x}", "ffffffffffffffff", "an f-string's hex is the 64 bits");
+    std::test::assert_eq_str(f"[{7:>4}]", "[   7]", "an Int beside it, for the width");
+    let seven: U64 = 7;
+    std::test::assert_eq_str(
+        f"[{seven:4}] [{seven:0>4}]",
+        "[   7] [0007]",
+        "a width pads a U64 as a number",
+    );
+    std::test::assert_eq_str("m=" + m, "m=" + MAX_TEXT, "`+` with a String prints unsigned");
+}
+
+@display("{id} has {n}")
+type Counted {
+    id: String;
+    n: U64;
+}
+
+type Plain {
+    n: U64;
+}
+
+fn rendering() {
+    let c = Counted { id: "x", n: 18446744073709551615 };
+    std::test::assert_eq_str(to_string(c), "x has " + MAX_TEXT, "a @display hole prints unsigned");
+    let p = Plain { n: 9223372036854775808 };
+    std::test::assert_eq_str(
+        to_string(p),
+        "Plain { n: 9223372036854775808 }",
+        "a record's default rendering",
+    );
+}
+
+fn main() {
+    literals();
+    edges();
+    wrapping();
+    checked();
+    conversions();
+    text_and_bytes();
+    rendering();
+}

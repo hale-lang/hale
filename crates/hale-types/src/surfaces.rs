@@ -1417,11 +1417,13 @@ fn json_refusal(
     use crate::topic_identity::TypeClass;
     use hale_syntax::ast::PrimType;
     // a `Decimal<S>` is a JSON number at its scale (spec/api.md § Codecs)
-    // a `U256` / `I256` is a JSON string of its digits (GH #1934)
+    // a `U256` / `I256` is a JSON string of its digits (GH #1934), and so
+    // is a `U64` (GH #2121)
     let carried = |p: PrimType| {
         matches!(
             p,
             PrimType::Int
+                | PrimType::U64
                 | PrimType::Float
                 | PrimType::Bool
                 | PrimType::String
@@ -3139,7 +3141,7 @@ fn tagged_schema(tag: Option<&str>, schema: FieldSchema) -> FieldSchema {
     let string = options.iter().any(|o| o == "string");
     // GH #1934: `json:",hex"` on an `Int` writes `0x` hex text, so its
     // schema is a string naming the scalar, as a quoted Decimal's is (a
-    // `U256` / `I256` is a string either way)
+    // `U64` / `U256` / `I256` is a string either way)
     let hex = options.iter().any(|o| o == "hex");
     if !string && !hex {
         return schema;
@@ -3317,8 +3319,9 @@ impl<'a> Schemas<'a> {
                 FieldSchema::Scalar { json: "number", hale_type: Some(format!("Decimal<{scale}>")), unit: None }
             }
             // GH #1934: a 256-bit integer is a JSON string of its digits
-            // (decimal, or `0x` hex), named so a reader keeps every digit
-            TypeClass::Prim(p @ (PrimType::U256 | PrimType::I256)) => {
+            // (decimal, or `0x` hex), named so a reader keeps every digit;
+            // so is a `U64` (GH #2121), past a JS number's 2^53
+            TypeClass::Prim(p @ (PrimType::U64 | PrimType::U256 | PrimType::I256)) => {
                 FieldSchema::Scalar { json: "string", hale_type: Some(crate::ty::prim_name(p).to_string()), unit: None }
             }
             TypeClass::Prim(p) => {

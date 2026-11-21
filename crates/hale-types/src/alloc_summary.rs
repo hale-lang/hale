@@ -388,7 +388,7 @@ fn retirable_field_ty(ty: &TypeExpr, retirable: &BTreeSet<String>) -> bool {
     match ty {
         TypeExpr::Primitive(
             PrimType::Int
-            | PrimType::Uint
+            | PrimType::U64
             | PrimType::Float
             | PrimType::Decimal(_)
             | PrimType::U256
@@ -4951,6 +4951,7 @@ fn locus_inline_array_fields(l: &LocusDecl) -> BTreeSet<String> {
                         elem.as_ref(),
                         TypeExpr::Primitive(
                             PrimType::Int
+                                | PrimType::U64
                                 | PrimType::Float
                                 | PrimType::Bool
                                 | PrimType::Decimal(_)
@@ -6127,7 +6128,7 @@ impl<'a> Walker<'a> {
             return match te {
                 TypeExpr::Primitive(
                     PrimType::Int
-                    | PrimType::Uint
+                    | PrimType::U64
                     | PrimType::Float
                     | PrimType::Decimal(_)
                     | PrimType::U256

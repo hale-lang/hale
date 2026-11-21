@@ -798,7 +798,7 @@ fn type_decl_size_info(td: &TypeDecl, idx: &Index<'_>) -> TypeSizeInfo {
 fn primitive_size_info(p: PrimType) -> TypeSizeInfo {
     let (size, align) = match p {
         PrimType::Int
-        | PrimType::Uint
+        | PrimType::U64
         | PrimType::Float
         | PrimType::Time
         | PrimType::Duration => (8, 8),
@@ -1096,6 +1096,7 @@ fn literal_storage_size(e: &Expr, idx: &Index<'_>) -> u64 {
     match e {
         Expr::Literal(lit, _) => match lit {
             Literal::Int(_)
+            | Literal::U64(_)
             | Literal::Float(_)
             | Literal::Quantity { .. } => 8,
             Literal::Decimal(_) => 16,

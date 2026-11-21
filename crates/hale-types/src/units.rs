@@ -1582,7 +1582,7 @@ fn builtin_type(name: &str) -> Option<&'static str> {
     if let Some(p) = hale_syntax::parser::primitive_from_name(name) {
         return Some(match p {
             PrimType::Int => "the builtin integer type",
-            PrimType::Uint => "the builtin unsigned integer type",
+            PrimType::U64 => "the builtin 64-bit unsigned integer type",
             PrimType::Float => "the builtin floating-point type",
             PrimType::Decimal(_) => "the builtin decimal type",
             PrimType::U256 => "the builtin 256-bit unsigned integer type",

@@ -3192,7 +3192,13 @@ impl TypeExpr {
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum PrimType {
     Int,
-    Uint,
+    /// `U64` (GH #2121): a 64-bit unsigned integer, `0` through
+    /// `2^64 - 1`, an LLVM `i64` read as unsigned. An integer literal
+    /// whose place is a `U64` is one (range-checked where it is
+    /// written). Arithmetic never wraps: overflow and division by zero
+    /// are a runtime violation, `U64::wrapping_*` wrap modulo 2^64 and
+    /// `U64::checked_*` fail instead.
+    U64,
     Float,
     /// `Decimal<S>`: an i128 mantissa at the scale `S` (`mantissa ×
     /// 10⁻ˢ`), `S` from 0 to `decimal_literal::MAX_SCALE`. The scale is
@@ -3604,6 +3610,7 @@ impl Pattern {
         match self {
             Pattern::Literal(lit, _) => match lit {
                 Literal::Int(n) => n.to_string(),
+                Literal::U64(n) => n.to_string(),
                 Literal::Float(f) if f.fract() == 0.0 && f.is_finite() => format!("{f}.0"),
                 Literal::Float(f) => f.to_string(),
                 Literal::Decimal(d) => format!("{d}d"),
@@ -3941,6 +3948,10 @@ pub enum UnaryOp {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Int(i64),
+    /// GH #2121: a decimal integer literal past `Int`'s max, 2^63
+    /// through 2^64 - 1. Only a `U64` holds it, so it is a `U64` by
+    /// itself; an `Int` literal is one only where its place is.
+    U64(u64),
     Float(f64),
     Decimal(String),
     String(String),

@@ -8401,6 +8401,10 @@ impl Parser {
                 self.bump();
                 Ok(Pattern::Literal(Literal::Int(n), span))
             }
+            TokenKind::U64Lit(n) => {
+                self.bump();
+                Ok(Pattern::Literal(Literal::U64(n), span))
+            }
             TokenKind::FloatLit(f) => {
                 self.bump();
                 Ok(Pattern::Literal(Literal::Float(f), span))
@@ -9176,6 +9180,10 @@ impl Parser {
             TokenKind::IntLit(n) => {
                 self.bump();
                 Ok(Expr::Literal(Literal::Int(n), span))
+            }
+            TokenKind::U64Lit(n) => {
+                self.bump();
+                Ok(Expr::Literal(Literal::U64(n), span))
             }
             TokenKind::FloatLit(f) => {
                 self.bump();
@@ -10087,6 +10095,7 @@ fn literal_prim(e: &Expr) -> Option<PrimType> {
     match e {
         Expr::Literal(lit, _) => match lit {
             Literal::Int(_) => Some(PrimType::Int),
+            Literal::U64(_) => Some(PrimType::U64),
             Literal::Float(_) => Some(PrimType::Float),
             // a literal const has no place to give it a scale: the default
             Literal::Decimal(_) => Some(PrimType::DECIMAL),
@@ -10148,13 +10157,15 @@ fn starts_type_expr(k: &TokenKind) -> bool {
 /// Canonical primitive type names. Recognized in type position;
 /// unreserved elsewhere.
 pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
-    "Int", "Uint", "Float", "Decimal", "U256", "I256", "String", "Bool", "Time",
+    "Int", "U64", "Float", "Decimal", "U256", "I256", "String", "Bool", "Time",
     "Duration", "Bytes", "BytesView", "StringView", "BytesMut",
 ];
 
-/// GH #1934: the `std` namespace a `U256::f` / `I256::f` path names.
+/// GH #1934: the `std` namespace a `U256::f` / `I256::f` path names
+/// (and GH #2121's `U64::f`, `std::u64`).
 pub fn wide_namespace(type_name: &str) -> Option<&'static str> {
     match type_name {
+        "U64" => Some("u64"),
         "U256" => Some("u256"),
         "I256" => Some("i256"),
         _ => None,
@@ -10166,7 +10177,7 @@ pub fn wide_namespace(type_name: &str) -> Option<&'static str> {
 pub fn primitive_from_name(name: &str) -> Option<PrimType> {
     Some(match name {
         "Int" => PrimType::Int,
-        "Uint" => PrimType::Uint,
+        "U64" => PrimType::U64,
         "Float" => PrimType::Float,
         "Decimal" => PrimType::DECIMAL,
         "U256" => PrimType::U256,

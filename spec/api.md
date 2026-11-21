@@ -2510,8 +2510,8 @@ the subscriptions admitted and not ended, over every connection;
 
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
-binding's was: `Int`, `Float`, `Bool`, `String`, `Decimal<S>`, `U256`,
-`I256` and nested structs of the same, with a `json:"key"` tag renaming a
+binding's was: `Int`, `U64`, `Float`, `Bool`, `String`, `Decimal<S>`,
+`U256`, `I256` and nested structs of the same, with a `json:"key"` tag renaming a
 key (the tag's text after a comma is its options: `json:"price,string"`
 and `json:"gasUsed,hex"`, below); a plain alias
 (`type Count = Int;`) is what its chain ends at, and a builtin record
@@ -2604,6 +2604,26 @@ proto3 has no 256-bit integer), and the generated Hale client declares
 the field `U256` / `I256`, the TypeScript and JavaScript clients a
 `string`.
 
+**A `U64`** (GH #2121) crosses JSON as a string too, whatever its
+value: its decimal digits in a JSON string (`"18446744073709551615"`,
+`"7"`), a field, a list's element, an enum's value and a map's value
+alike, or `0x` and its lowercase hex digits under `json:",hex"`
+(`"0xff"`). The decoder reads, whatever the tag says, a JSON string of
+decimal digits or `0x` / `0X` and hex digits of either case, as
+`U64::parse` reads them, and a JSON number that is an integer and fits
+(`255`, `18446744073709551615`); a sign, a fraction or an exponent, a
+value past `2^64 - 1`, a string holding anything else and a bool or an
+object are `wrong_type` for the field. A string every time, not a
+number below `2^53` and a string above it: the generated TypeScript and
+JavaScript clients parse with `JSON.parse`, whose numbers are exact
+only through `2^53`, and a field whose JSON kind changed with its value
+would be a number to one reader and a string to the next; protobuf's
+JSON mapping writes a `uint64` as a string for the same reason. Its
+schema is `{"type": "string", "x-hale-type": "U64"}`; protobuf carries
+it as a `uint64` (the varint of its 64 bits), and the generated Hale
+client declares the field `U64`, the TypeScript and JavaScript clients a
+`string`.
+
 **`json:",hex"` on an `Int`** (GH #1934, JSON-RPC's hex quantities,
 `"gasUsed":"0x4dc"`): the decoder reads, besides the JSON number any
 `Int` field reads, a JSON string of `0x` (or `0X`) and one or more hex
@@ -2619,7 +2639,7 @@ is `{"type": "string", "x-hale-type": "Int"}`, as a quoted Decimal's
 names its scalar; protobuf carries it as the `int64` it is (the option
 is the JSON codec's), and the generated Hale client declares the field
 `Int` with the same tag. The options are `string` and `hex`; `hex` on a
-field that is no `Int`, `U256` or `I256` (or a list of them) is refused
+field that is no `Int`, `U64`, `U256` or `I256` (or a list of them) is refused
 at the field, as is any other option.
 
 **A positional record** (2026-11-14, downstream handoff) is a record

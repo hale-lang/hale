@@ -2735,7 +2735,7 @@ fn check_stdlib_error_shadowing<'u, 's: 'u>(
 fn prim_display(p: PrimType) -> &'static str {
     match p {
         PrimType::Int => "Int",
-        PrimType::Uint => "Uint",
+        PrimType::U64 => "U64",
         PrimType::Float => "Float",
         PrimType::Decimal(s) => crate::ty::decimal_name(s),
         PrimType::U256 => "U256",

@@ -184,7 +184,7 @@ Add `:[[fill]align][width][.precision][kind]` after an interpolated expression t
 | `:<width` / `:^width` / `:>width` | `f"[{n:<6}]"` | `[42    ]` | Explicit left (`<`), center (`^`), or right (`>`) alignment |
 | `:fill>width` | `f"[{n:0>6}]"` | `[000042]` | Custom single-byte fill character (`0`) with alignment |
 | `:.precision` | `f"{r:.2}"` | `3.14` | Fractional digits for `Float` and `Decimal` |
-| `:x` | `f"{n:x}"` | `2a` | Lowercase hexadecimal formatting for `Int` |
+| `:x` | `f"{n:x}"` | `2a` | Lowercase hexadecimal formatting for `Int` or `U64` |
 | `:?` | `f"{m:?}"` | `Money { dollars: 12, … }` | The structural form, past every `@display` template |
 
 Width specifications count bytes and **never truncate**: a value wider than `width` prints all of its characters rather than silently dropping digits.

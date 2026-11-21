@@ -20,7 +20,7 @@
       // END GENERATED KEYWORDS
       literal: "true false nil",
       built_in:
-        "Int Uint Float Decimal Bool String Time Duration Bytes BytesView BytesMut StringView Unit",
+        "Int U64 Float Decimal U256 I256 Bool String Time Duration Bytes BytesView BytesMut StringView Unit",
     };
 
     // A unit name is coloured as a type (GH #1076). No highlighter knows

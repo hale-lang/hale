@@ -1,0 +1,99 @@
+// tests/hale/u64_codec_test.hl — the typed JSON codecs over `U64` (GH
+// #2121; spec/api.md § Codecs). A `U64` is written as a JSON string of its
+// decimal digits (`0x` hex under `json:",hex"`), whatever its value: past
+// 2^53 a JSON number is not exact in a JavaScript reader, and a string is
+// what protobuf's JSON mapping writes for a `uint64`. It reads from a JSON
+// string of decimal digits or `0x` hex, or from a JSON integer that fits.
+// Both codecs (`api_decode` / `api_encode`, `from_json` / `to_json`) and
+// every place a value sits: a field, a list's element, an enum's value, a
+// positional record's column.
+
+type Side = enum { Flat, Long(U64) };
+
+type Stats {
+    seen: U64;
+    mask: U64 `json:",hex"`;
+    side: Side = Side::Flat;
+    recent: bounded[U64; 3];
+    ids: bounded[U64; 2] `json:",hex"`;
+}
+
+@positional
+type Row { at: Int; id: U64; }
+
+const MAX: String = "18446744073709551615";
+
+fn refused(text: String, field: String, what: String) {
+    let s = Stats::api_decode(text) or {
+        std::test::assert_eq_str(err.kind + " " + err.field, "wrong_type " + field, what);
+        return;
+    };
+    std::test::assert(false, what + ": decoded " + Stats::api_encode(s));
+}
+
+fn main() {
+    let s = Stats { seen: U64::max(), mask: 255, side: Side::Long(9223372036854775808) };
+    push(s.recent, 1) or raise;
+    push(s.recent, U64::max()) or raise;
+    push(s.ids, 4096) or raise;
+    let text = Stats::api_encode(s);
+    std::test::assert_eq_str(
+        text,
+        "{\"seen\":\"" + MAX + "\",\"mask\":\"0xff\",\"side\":{\"Long\":\"9223372036854775808\"},"
+            + "\"recent\":[\"1\",\"" + MAX + "\"],\"ids\":[\"0x1000\"]}",
+        "a U64 is a JSON string of its digits, `0x` hex under `,hex`",
+    );
+    let back = Stats::api_decode(text) or raise;
+    std::test::assert(back.seen == U64::max() && back.mask == 255, "the fields round-trip");
+    let r1 = at(back.recent, 1) or 0;
+    std::test::assert(r1 == U64::max(), "a list element round-trips");
+    let i0 = at(back.ids, 0) or 0;
+    std::test::assert(i0 == 4096, "a hex list element round-trips");
+    match back.side {
+        Side::Long(v) -> std::test::assert(v == 9223372036854775808, "an enum's value round-trips"),
+        _ -> std::test::assert(false, "the Long variant"),
+    }
+    std::test::assert_eq_str(Stats::to_json(s), text, "to_json writes what api_encode writes");
+    let again = Stats::from_json(text) or raise;
+    std::test::assert(again.seen == U64::max(), "from_json reads it back");
+
+    // a JSON integer that fits, and hex text where none was asked for
+    let n = Stats::api_decode(
+        "{\"seen\":18446744073709551615,\"mask\":7,\"recent\":[3],\"ids\":[\"5\"]}",
+    ) or raise;
+    std::test::assert(n.seen == U64::max() && n.mask == 7, "integer numbers read");
+    let h = Stats::api_decode(
+        "{\"seen\":\"0XFF\",\"mask\":\"255\",\"recent\":[],\"ids\":[]}",
+    ) or raise;
+    std::test::assert(h.seen == 255 && h.mask == 255, "decimal or hex text either way");
+
+    refused("{\"seen\":-1,\"mask\":0,\"recent\":[],\"ids\":[]}", "seen", "a negative number");
+    refused("{\"seen\":\"-1\",\"mask\":0,\"recent\":[],\"ids\":[]}", "seen", "a negative string");
+    refused("{\"seen\":1.5,\"mask\":0,\"recent\":[],\"ids\":[]}", "seen", "a fraction");
+    refused("{\"seen\":1e3,\"mask\":0,\"recent\":[],\"ids\":[]}", "seen", "an exponent");
+    refused(
+        "{\"seen\":\"18446744073709551616\",\"mask\":0,\"recent\":[],\"ids\":[]}",
+        "seen",
+        "past 2^64 - 1",
+    );
+    refused(
+        "{\"seen\":18446744073709551616,\"mask\":0,\"recent\":[],\"ids\":[]}",
+        "seen",
+        "a number past 2^64 - 1",
+    );
+    refused("{\"seen\":\" 1\",\"mask\":0,\"recent\":[],\"ids\":[]}", "seen", "a space");
+    refused("{\"seen\":\"\",\"mask\":0,\"recent\":[],\"ids\":[]}", "seen", "empty text");
+    refused("{\"seen\":true,\"mask\":0,\"recent\":[],\"ids\":[]}", "seen", "a bool");
+    refused(
+        "{\"seen\":1,\"mask\":0,\"recent\":[\"x\"],\"ids\":[]}",
+        "recent",
+        "a list element that is no number",
+    );
+
+    // a positional record's column
+    let row = Row { at: 3, id: U64::max() };
+    let rt = Row::api_encode(row);
+    std::test::assert_eq_str(rt, "[3,\"" + MAX + "\"]", "a positional column");
+    let rb = Row::api_decode(rt) or raise;
+    std::test::assert(rb.id == U64::max() && rb.at == 3, "read back");
+}

@@ -22,10 +22,11 @@ pub const MAX_DEPTH: u32 = 16;
 
 /// The primitives that render: text and the scalars. `Bytes` and its
 /// views are binary, and the useful rendering (hex, a length, a text
-/// decode) is the author's choice; `Uint` has no representation.
+/// decode) is the author's choice.
 pub const PRINTABLE_PRIMS: &[PrimType] = &[
     PrimType::String,
     PrimType::Int,
+    PrimType::U64,
     PrimType::Bool,
     PrimType::Float,
     PrimType::DECIMAL,
@@ -39,7 +40,7 @@ pub const PRINTABLE_PRIMS: &[PrimType] = &[
 /// The element types a fixed array or a `bounded` renders with: the
 /// scalars, whose storage is inline where the renderer walks it.
 pub const SEQUENCE_ELEMENT_PRIMS: &[PrimType] =
-    &[PrimType::Int, PrimType::Float, PrimType::Bool, PrimType::DECIMAL, PrimType::Duration];
+    &[PrimType::Int, PrimType::U64, PrimType::Float, PrimType::Bool, PrimType::DECIMAL, PrimType::Duration];
 
 /// `p`, with a `Decimal` of any scale as plain `Decimal`: every scale
 /// prints (its digits at its scale).

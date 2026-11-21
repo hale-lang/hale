@@ -62,7 +62,7 @@ const PROBES: &[&str] = &[
 fn sig_ty(t: &SigTy) -> String {
     match t {
         SigTy::Int => "Int".into(),
-        SigTy::Uint => "Uint".into(),
+        SigTy::U64 => "U64".into(),
         SigTy::Float => "Float".into(),
         SigTy::Bool => "Bool".into(),
         SigTy::Str => "Str".into(),

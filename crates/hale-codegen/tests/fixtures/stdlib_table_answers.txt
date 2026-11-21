@@ -181,6 +181,31 @@ ns std::u256 open_prefixes=[]
   to_be_bytes pure
   to_hex pure
   to_int pure
+ns std::u64 open_prefixes=[]
+  __from_float pure
+  __parse pure
+  __parses pure
+  checked_add pure
+  checked_div pure
+  checked_mul pure
+  checked_sub pure
+  from_be_bytes pure
+  from_bits pure
+  from_float pure
+  from_int pure
+  from_le_bytes pure
+  max pure
+  parse pure
+  to_be_bytes pure
+  to_bits pure
+  to_hex pure
+  to_int pure
+  to_le_bytes pure
+  wrapping_add pure
+  wrapping_mul pure
+  wrapping_shl pure
+  wrapping_shr pure
+  wrapping_sub pure
 ns std::diag open_prefixes=[]
   heap_alloc_count syscall
   syscall_count syscall
@@ -1381,6 +1406,30 @@ std::u256::parse | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=fa
 std::u256::to_be_bytes | lookup=u256@2 | locus=false | effects=pure | sig=(U256) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_be_bytes
 std::u256::to_hex | lookup=u256@2 | locus=false | effects=pure | sig=(U256) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=to_hex
 std::u256::to_int | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=to_int
+std::u64::__from_float | lookup=u64@2 | locus=false | effects=pure | sig=(Float) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=__from_float
+std::u64::__parse | lookup=u64@2 | locus=false | effects=pure | sig=(Str) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=__parse
+std::u64::__parses | lookup=u64@2 | locus=false | effects=pure | sig=(Str) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=__parses
+std::u64::checked_add | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
+std::u64::checked_div | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
+std::u64::checked_mul | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::u64::checked_sub | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::u64::from_be_bytes | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=from_be_bytes
+std::u64::from_bits | lookup=u64@2 | locus=false | effects=pure | sig=(Int) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=from_bits
+std::u64::from_float | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=from_float
+std::u64::from_int | lookup=u64@2 | locus=false | effects=pure | sig=(Int) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=from_int
+std::u64::from_le_bytes | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=from_le_bytes
+std::u64::max | lookup=u64@2 | locus=false | effects=pure | sig=() -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=-
+std::u64::parse | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=parse
+std::u64::to_be_bytes | lookup=u64@2 | locus=false | effects=pure | sig=(U64) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_be_bytes
+std::u64::to_bits | lookup=u64@2 | locus=false | effects=pure | sig=(U64) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=to_bits
+std::u64::to_hex | lookup=u64@2 | locus=false | effects=pure | sig=(U64) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=to_hex
+std::u64::to_int | lookup=u64@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=to_int
+std::u64::to_le_bytes | lookup=u64@2 | locus=false | effects=pure | sig=(U64) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_le_bytes
+std::u64::wrapping_add | lookup=u64@2 | locus=false | effects=pure | sig=(U64, U64) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_add
+std::u64::wrapping_mul | lookup=u64@2 | locus=false | effects=pure | sig=(U64, U64) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_mul
+std::u64::wrapping_shl | lookup=u64@2 | locus=false | effects=pure | sig=(U64, Int) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_shl
+std::u64::wrapping_shr | lookup=u64@2 | locus=false | effects=pure | sig=(U64, Int) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_shr
+std::u64::wrapping_sub | lookup=u64@2 | locus=false | effects=pure | sig=(U64, U64) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_sub
 std::url::decode | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=decode
 std::url::decode_query | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=decode_query
 std::url::encode | lookup=url@2 | locus=false | effects=pure | sig=(Str) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=encode

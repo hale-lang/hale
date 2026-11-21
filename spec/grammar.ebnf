@@ -1168,7 +1168,8 @@ bounded_type      = "bounded" , "[" , type_expr , ";" , INT_LIT , "]" ;
    ordinary identifiers and may be used as stdlib namespaces.
    See F.15 in decisions.md. *)
 primitive_type    = "Int"
-                  | "Uint"
+                  | "U64"           (* GH #2121: 64-bit unsigned integer; U64::f in
+                                       expression position names std::u64::f *)
                   | "Float"
                   | "Decimal" , [ "<" , INT_LIT , ">" ]
                                     (* Decimal<S>: the scale, 0..=18, is

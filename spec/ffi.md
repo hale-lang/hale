@@ -80,6 +80,7 @@ matching C-ABI representation at the call boundary:
 | `String` | `ptr` | `const char *` | NUL-terminated. Caller owns; callee MUST NOT retain past the call. A `String` returned to Hale is a value: Hale may measure it once and remember its length, so C must not rewrite the bytes of a String it returned while Hale holds it (a buffer the next call reuses, such as `sqlite3_column_text`'s, is cloned at once with `std::str::clone`). A `StringView` does **not** implicitly coerce to a `String` parameter — it isn't NUL-terminated, so a `char*`-expecting callee would `strlen` past its end. Pass a view as a `StringView` parameter (→ `lotus_view_t`, length-carrying) or materialize it first via `std::str::clone`. |
 | `Bytes` | `ptr` | `void *` (header) | Points at Hale's `[int64 len][payload]` header — callee uses `lotus_bytes_len(p)` / `lotus_bytes_data(p)` (declared in `lotus_arena.h`) to inspect. Caller owns. |
 | `BytesView` / `StringView` | `{ ptr, i64 }` (struct by value) | `lotus_view_t` | 16-byte F.30b view layout. C glue MAY use `lotus_view_data` to recover the payload pointer + length. |
+| `U64` | `i64` | `uint64_t` | GH #2121: its 64 bits in the register an `i64` takes, either way; a value past `2^63 - 1` crosses as itself, never a negative. At `@ffi("js")` it is a JS `number`, as an `Int` is (below). |
 | `Duration` / `Time` | `i64` | `int64_t` | Both are 64-bit nanosecond counts under the hood. |
 | `()` (unit) | `void` | `void` | Return-position only — declared as `-> ()` or omitted entirely. Empty-tuple return type accepted but normalized to `()`. |
 | User struct (`type T { ... }`) | `ptr` | `const T *` (param) / `T *out` (sret return) | Passed by pointer at the boundary; struct returns use a hidden sret first arg (see User-type structs section below). Layout match is the library author's responsibility. |
@@ -89,8 +90,6 @@ Reserved at Stage 1 (typecheck rejects with a clear diagnostic):
 - `Decimal` — i128 mantissa with platform-variable ABI. Marshal as
   `Int` (raw mantissa) or `Float` (lossy conversion) at the
   Hale side; the wrapper handles the scale.
-- `Uint` — Hale-internal type; declare as `Int` at the FFI
-  signature.
 - `U256` / `I256` (GH #1934) — an i256 has no portable C mapping;
   pass its 32 big-endian bytes (`U256::to_be_bytes`) as `Bytes`.
 - Projections / fixed-size arrays / tuples — no portable C struct
@@ -555,7 +554,8 @@ they marshal as **f64 (JS `number`), not i64 (which crosses as a JS
 `BigInt`)** — the host handler receives a plain number, with no
 `Number(x)` dance, and an `Int`-returning host import accepts a plain
 JS number back (the runtime `sitofp`s before the call and `fptosi`s the
-return). The trade-off is f64's 53-bit integer range: an `Int` whose
+return). A `U64` (GH #2121) crosses the same way, as the number of its
+unsigned value (`uitofp` before the call, `fptoui` of the return). The trade-off is f64's 53-bit integer range: an `Int` whose
 magnitude exceeds 2^53 loses precision across this boundary — pass such
 values as a `String`/`Bytes` payload instead. (This is **only**
 `@ffi("js")`. `@ffi("c")` keeps i64 — on wasm those resolve to linked

@@ -17,12 +17,12 @@ fn main() {
 
 | Category | Operators | Supported Types | Behavior & Notes |
 |---|---|---|---|
-| Arithmetic | `+`, `-`, `*`, `/` | `Int`, `Float`, `Decimal`, `U256`, `I256`, `Duration` (restricted) | Integer `/` truncates toward zero; `String` also supports `+`; a 256-bit integer's overflow stops the process |
-| Remainder | `%` | `Int`, `Decimal`, `U256`, `I256` | Not defined on `Float` |
-| Equality | `==`, `!=` | `Int`, `Float`, `Decimal`, `U256`, `I256`, `Bool`, `String`, `Duration`, `Time`, `enum`, `distinct Int` | Not defined on structs, tuples, or arrays (compare field by field) |
-| Ordering | `<`, `<=`, `>`, `>=` | `Int`, `Float`, `Decimal`, `U256`, `I256`, `String`, `Duration`, `Time` | Does not chain; write `a < b && b < c` |
+| Arithmetic | `+`, `-`, `*`, `/` | `Int`, `U64`, `Float`, `Decimal`, `U256`, `I256`, `Duration` (restricted) | Integer `/` truncates toward zero; `String` also supports `+`; a `U64`'s or a 256-bit integer's overflow stops the process |
+| Remainder | `%` | `Int`, `U64`, `Decimal`, `U256`, `I256` | Not defined on `Float` |
+| Equality | `==`, `!=` | `Int`, `U64`, `Float`, `Decimal`, `U256`, `I256`, `Bool`, `String`, `Duration`, `Time`, `enum`, `distinct Int` | Not defined on structs, tuples, or arrays (compare field by field) |
+| Ordering | `<`, `<=`, `>`, `>=` | `Int`, `U64`, `Float`, `Decimal`, `U256`, `I256`, `String`, `Duration`, `Time` | Does not chain; write `a < b && b < c` |
 | Logical | `&&`, `\|\|`, `!` | `Bool` | `&&` and `\|\|` short-circuit |
-| Bitwise | `&`, `\|`, `^`, `<<`, `>>`, `~` | `Int`, `U256`, `I256` | Bitwise AND, OR, XOR, shifts (by an `Int` count), and NOT |
+| Bitwise | `&`, `\|`, `^`, `<<`, `>>`, `~` | `Int`, `U64`, `U256`, `I256` | Bitwise AND, OR, XOR, shifts (by an `Int` count), and NOT |
 
 ```hale,fragment
 let a = 7 + 3;                         // 10
@@ -42,6 +42,7 @@ let masked = (a << 2) & 0xFF;          // bitwise operations on Int
 | Type | Representation | Implicit Conversions | Primary Use Case |
 |---|---|---|---|
 | `Int` | 64-bit signed integer (`i64`) | Widens to `Float` in unambiguous contexts | Counts, indices, bitwise logic |
+| `U64` | 64-bit unsigned integer, `0` to `2^64 - 1` | None (`U64::from_int(n)`); an integer literal takes it from its place | Hashes, counters past `2^63`, `uint64` IDs and protocol fields |
 | `Float` | 64-bit IEEE-754 double (`f64`) | None | Scientific math, ratios, physical measurements |
 | `Decimal` (`Decimal<9>`) | 128-bit fixed-point, 9 fractional places | Widens to `Decimal<S>` where `S > 9` via `.rescale(S)` | General exact decimal arithmetic |
 | `Decimal<S>` (`S` in `0..=18`) | 128-bit fixed-point, `S` fractional places | None (distinct per scale `S`) | Currency (`Decimal<2>`), high-precision tokens (`Decimal<18>`) |
@@ -129,6 +130,40 @@ Printing a `Decimal<S>` trims trailing fractional zeros (`12.50d` prints as `12.
 | `std::decimal::from_int(n)` | `(Int) -> Decimal<9>` | Exact conversion from `Int` (chain `.rescale(S)` for other scales) |
 | `std::decimal::from_float(x)` | `(Float) -> Decimal<9> fallible(...)` | Converts `Float` rounded half-away-from-zero at the 9th place; fails on `NaN`, `Inf`, or `\|x\| > ~1.7e29` |
 | `std::decimal::to_float(d)` | `(Decimal<S>) -> Float` | Converts `Decimal` to closest IEEE-754 `Float` |
+
+## Unsigned 64-bit Integers (`U64`)
+
+`U64` holds `0` through `2^64 - 1`: a hash, a sequence number that runs past `2^63`, an identifier or a protocol field another system hands out as a `uint64`. It is the same 8 bytes as an `Int`, read as unsigned. An integer literal is a `U64` wherever its place is one, so there is no conversion to write for one:
+
+```hale
+fn fnv1a(text: String) -> U64 {
+    let bytes = std::bytes::from_string(text);
+    let mut h: U64 = 14695981039346656037;              // a literal past Int's max
+    let mut i = 0;
+    while i < len(bytes) {
+        h = h ^ U64::from_int(std::bytes::read_u8(bytes, i) or 0);
+        h = U64::wrapping_mul(h, 1099511628211);         // a hash wants wrapping
+        i = i + 1;
+    }
+    return h;
+}
+
+fn main() {
+    let seq: U64 = 18446744073709551615;                // 2^64 - 1
+    let next = U64::checked_add(seq, 1) or 0;           // overflow fails into the `or`
+    println(fnv1a("a"), " ", next, " ", seq / 2, " ", seq >> 60);
+    let n = U64::to_int(seq) or -1;                     // past Int's max: -1
+    let f = Float(seq);                                 // the nearest double
+}
+```
+
+- **Literals.** An integer literal is a `U64` where its place is: a `let` ascription, an argument, a return, a field, the other side of an operator, `min` / `max`, an array, a match arm or pattern. A decimal literal past `Int`'s max (`9223372036854775808` and up) is a `U64` by itself and is refused anywhere else; past `2^64 - 1` it does not lex. A negative literal where a `U64` is expected is refused where it is written.
+- **Arithmetic never wraps unless you ask.** `+ - *` past either end and `/` or `%` by zero stop the process with a violation, as a `U256` does, where an `Int` would wrap. `U64::wrapping_add`, `wrapping_sub` and `wrapping_mul` wrap modulo `2^64`; `U64::checked_add`, `checked_sub`, `checked_mul` and `checked_div` fail into an `or` (`ArithError`).
+- **Unsigned all the way.** `/`, `%`, the comparisons, `min` and `max` treat the value as unsigned, and `>>` fills with zeros. There is no unary `-`.
+- **Bits.** `& | ^ ~` are bitwise; `x << n` and `x >> n` shift by an `Int` count from 0 to 63, and any other count stops the process. `U64::wrapping_shl` / `wrapping_shr` take the count modulo 64.
+- **No mixing.** A `U64` never mixes with an `Int`, a `Float` or another width: write `U64::from_int(n)` (a negative `n` stops the process), `U64::to_int(x) or ...`, `Float(x)`, `U64::from_float(f) or ...`. `U64::from_bits(n)` / `to_bits(x)` reinterpret the 64 bits. The check names the conversion.
+- **Text and bytes.** `to_string(x)`, `println`, f-strings and `+` with a `String` print unsigned decimal; `U64::to_hex(x)` is `0x` and lowercase digits; `U64::parse` reads either; `to_be_bytes` / `to_le_bytes` and `from_be_bytes` / `from_le_bytes` are its 8 bytes.
+- **Where it goes.** Record and locus fields, `bounded` lists, fixed arrays, enum payloads, hashmap cells, `Box<U64>`, bus payloads, `@ffi("c")` (a `uint64_t`), and the JSON codecs, which always write a JSON string (see [JSON Encoding & Decoding](../everyday/json.md)); protobuf carries a `uint64`. A unit-dialect scalar (`quantity`, `distinct`, a range) counts an `Int`, not a `U64`.
 
 ## 256-bit Integers (`U256` and `I256`)
 

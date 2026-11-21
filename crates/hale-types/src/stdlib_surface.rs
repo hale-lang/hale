@@ -43,7 +43,7 @@ use crate::ty::Ty;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigTy {
     Int,
-    Uint,
+    U64,
     Float,
     Bool,
     Str,
@@ -69,7 +69,7 @@ impl SigTy {
     pub fn to_ty(self) -> Ty {
         match self {
             SigTy::Int => Ty::Prim(PrimType::Int),
-            SigTy::Uint => Ty::Prim(PrimType::Uint),
+            SigTy::U64 => Ty::Prim(PrimType::U64),
             SigTy::Float => Ty::Prim(PrimType::Float),
             SigTy::Bool => Ty::Prim(PrimType::Bool),
             SigTy::Str => Ty::Prim(PrimType::String),
@@ -93,7 +93,8 @@ impl SigTy {
     ///   windows; readers accept all three (raw `_raw` siblings).
     /// - Str accepts StringView (unpack_view_if_needed at every
     ///   String-arg position).
-    /// - Float accepts Int/Uint (math fns sitofp-coerce).
+    /// - Float accepts Int (math fns sitofp-coerce); a `U64` converts
+    ///   by `Float(x)`, never at an argument.
     pub fn accepts(self, got: &Ty) -> bool {
         if matches!(got, Ty::Unknown) || self == SigTy::Any {
             return true;
@@ -113,9 +114,7 @@ impl SigTy {
             ) => true,
             (
                 SigTy::Float,
-                Ty::Prim(
-                    PrimType::Float | PrimType::Int | PrimType::Uint,
-                ),
+                Ty::Prim(PrimType::Float | PrimType::Int),
             ) => true,
             // A `Decimal` parameter reads every scale: the lowering
             // takes the scale from the argument's type
@@ -836,6 +835,39 @@ pub const SURFACES: &[NsSurface] = &[
             row!("to_be_bytes", PURE, [U256] -> Bytes, Intrinsic(U256ToBeBytes)),
             row!("to_hex", PURE, [U256] -> Str, Intrinsic(U256ToHex)),
             row!("to_int", PURE, _, Renamed),
+        ],
+        open_prefixes: &[],
+    },
+    // GH #2121: the 64-bit unsigned integer. `U64::f` is the spelling
+    // (the parser reads it as `std::u64::f`). What can fail is a Hale
+    // body (`u64.hl`) over the intrinsics, which cannot.
+    NsSurface {
+        ns: &["u64"],
+        fns: &[
+            row!("__from_float", PURE, [Float] -> U64, Intrinsic(U64FromFloatRaw)),
+            row!("__parse", PURE, [Str] -> U64, Intrinsic(U64ParseRaw)),
+            row!("__parses", PURE, [Str] -> Bool, Intrinsic(U64ParsesRaw)),
+            row!("checked_add", PURE, _, Renamed),
+            row!("checked_div", PURE, _, Renamed),
+            row!("checked_mul", PURE, _, Renamed),
+            row!("checked_sub", PURE, _, Renamed),
+            row!("from_be_bytes", PURE, _, Renamed),
+            row!("from_bits", PURE, [Int] -> U64, Intrinsic(U64FromBits)),
+            row!("from_float", PURE, _, Renamed),
+            row!("from_int", PURE, [Int] -> U64, Intrinsic(U64FromInt)),
+            row!("from_le_bytes", PURE, _, Renamed),
+            row!("max", PURE, [] -> U64, Intrinsic(U64Max)),
+            row!("parse", PURE, _, Renamed),
+            row!("to_be_bytes", PURE, [U64] -> Bytes, Intrinsic(U64ToBeBytes)),
+            row!("to_bits", PURE, [U64] -> Int, Intrinsic(U64ToBits)),
+            row!("to_hex", PURE, [U64] -> Str, Intrinsic(U64ToHex)),
+            row!("to_int", PURE, _, Renamed),
+            row!("to_le_bytes", PURE, [U64] -> Bytes, Intrinsic(U64ToLeBytes)),
+            row!("wrapping_add", PURE, [U64, U64] -> U64, Intrinsic(U64WrappingAdd)),
+            row!("wrapping_mul", PURE, [U64, U64] -> U64, Intrinsic(U64WrappingMul)),
+            row!("wrapping_shl", PURE, [U64, Int] -> U64, Intrinsic(U64WrappingShl)),
+            row!("wrapping_shr", PURE, [U64, Int] -> U64, Intrinsic(U64WrappingShr)),
+            row!("wrapping_sub", PURE, [U64, U64] -> U64, Intrinsic(U64WrappingSub)),
         ],
         open_prefixes: &[],
     },
@@ -1850,6 +1882,21 @@ pub enum IntrinsicId {
     U256Max,
     U256ToBeBytes,
     U256ToHex,
+    U64FromFloatRaw,
+    U64ParseRaw,
+    U64ParsesRaw,
+    U64FromBits,
+    U64FromInt,
+    U64Max,
+    U64ToBeBytes,
+    U64ToBits,
+    U64ToHex,
+    U64ToLeBytes,
+    U64WrappingAdd,
+    U64WrappingMul,
+    U64WrappingShl,
+    U64WrappingShr,
+    U64WrappingSub,
     DiagHeapAllocCount,
     DiagSyscallCount,
     EnvArg,

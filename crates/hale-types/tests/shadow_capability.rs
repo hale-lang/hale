@@ -88,7 +88,7 @@ fn programs() -> Vec<hale_corpus::Program> {
     // spelling, in each direction and position.
     for (class, ty) in [
         ("decimal", "Decimal"),
-        ("uint", "Uint"),
+        ("u64", "U64"),
         ("bounded", "bounded[Int; 4]"),
         ("array", "[Int; 4]"),
         ("tuple", "(Int, Int)"),

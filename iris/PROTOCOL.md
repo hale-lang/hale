@@ -315,7 +315,8 @@ ManifestEntry (32 B):
   shape = for a payload written as a bare, non-generic
     named struct: the struct's fields in declaration order
     as "<field>:<tag>" joined by ";". Tags:
-      i  Int/Uint        f  Float       b  Bool
+      i  Int             f  Float       b  Bool
+      u64  U64
       d  Decimal         t  Time        u  Duration
       s  String/StringView
       y  Bytes/BytesView/BytesMut

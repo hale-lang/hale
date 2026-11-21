@@ -56,6 +56,10 @@ pub enum TokenKind {
     // Identifiers and literals
     Ident(String),
     IntLit(i64),
+    /// GH #2121: a decimal integer literal past `Int`'s max, 2^63
+    /// through 2^64 - 1: a `U64` (`Literal::U64`). A radix literal keeps
+    /// its bit pattern in an `IntLit`, as it always has.
+    U64Lit(u64),
     FloatLit(f64),
     /// Decimal literal carries the raw text (without the `d` suffix).
     DecimalLit(String),
@@ -114,7 +118,7 @@ pub enum TokenKind {
     Interface,
 
     // (Primitive type names are not keywords. They are predefined
-    // identifiers — `Int`, `Uint`, `Float`, `Decimal`, `String`,
+    // identifiers — `Int`, `U64`, `Float`, `Decimal`, `String`,
     // `Bool`, `Time`, `Duration`, `Bytes` — recognized in type
     // position by the parser. Lowercase forms have no language
     // meaning and may be used as ordinary identifiers / namespaces
@@ -603,10 +607,22 @@ impl<'a> Lexer<'a> {
             })?;
             Ok(Token::new(TokenKind::FloatLit(v), span))
         } else {
-            let v: i64 = num_text.parse().map_err(|_| {
-                Diag::lex(span, format!("invalid integer literal: {}", num_text))
+            if let Ok(v) = num_text.parse::<i64>() {
+                return Ok(Token::new(TokenKind::IntLit(v), span));
+            }
+            // GH #2121: past `Int`'s max and within 2^64 - 1, a `U64`
+            // literal; past 2^64 - 1, nothing holds it.
+            let v: u64 = num_text.parse().map_err(|_| {
+                Diag::lex(
+                    span,
+                    format!(
+                        "integer literal {} is past the largest integer, 2^64 - 1 \
+                         (18446744073709551615, a `U64`'s max)",
+                        num_text
+                    ),
+                )
             })?;
-            Ok(Token::new(TokenKind::IntLit(v), span))
+            Ok(Token::new(TokenKind::U64Lit(v), span))
         }
     }
 
