@@ -137,6 +137,7 @@ pub fn inline_array_scalar(p: PrimType) -> bool {
     matches!(
         p,
         PrimType::Int
+            | PrimType::U64
             | PrimType::Float
             | PrimType::Bool
             | PrimType::Decimal(_)
@@ -149,7 +150,7 @@ pub fn inline_array_scalar(p: PrimType) -> bool {
 pub fn prim_name(p: PrimType) -> &'static str {
     match p {
         PrimType::Int => "Int",
-        PrimType::Uint => "Uint",
+        PrimType::U64 => "U64",
         PrimType::Float => "Float",
         PrimType::Decimal(scale) => decimal_name(scale),
         PrimType::U256 => "U256",
@@ -231,10 +232,10 @@ pub fn prim_of_mangle_token(tok: &str) -> Option<PrimType> {
 ///
 /// Four of those (`Bytes`, `BytesView`, `BytesMut`, `StringView`) are
 /// ordinary field types everywhere else in the language, so they got
-/// tokens. `Uint` could not: it has no codegen representation in ANY
-/// storage position (spec/types.md — parser-recognized, lowering
-/// pending), so there is no monomorph to name and the checker refuses
-/// the instantiation at its span instead.
+/// tokens. The reserved `Uint` had no codegen representation in any
+/// storage position, so the checker refused the instantiation at its
+/// span instead; GH #2121 replaced it with `U64`, which has one (an
+/// `i64`), and every primitive now names a monomorph.
 ///
 /// Both layers read THIS table — codegen for the token
 /// ([`generic_arg_mangle_token`]) and the checker for the refusal
@@ -242,6 +243,7 @@ pub fn prim_of_mangle_token(tok: &str) -> Option<PrimType> {
 /// `BARE_BUILTIN_CALLEES` did before it was gated in both directions.
 pub const GENERIC_ARG_PRIMS: &[PrimType] = &[
     PrimType::Int,
+    PrimType::U64,
     PrimType::Float,
     PrimType::Bool,
     PrimType::String,
@@ -265,6 +267,7 @@ pub const GENERIC_ARG_PRIMS: &[PrimType] = &[
 pub fn generic_arg_mangle_token(p: PrimType) -> Option<&'static str> {
     match p {
         PrimType::Int
+        | PrimType::U64
         | PrimType::Float
         | PrimType::Bool
         | PrimType::String
@@ -279,10 +282,6 @@ pub fn generic_arg_mangle_token(p: PrimType) -> Option<&'static str> {
         // Every scale is its own monomorph (`Box<Decimal<18>>` is
         // `Box_Decimal18`); the default scale keeps the name it had.
         PrimType::Decimal(scale) => Some(decimal_mangle_token(scale)),
-        // No storage representation at all (spec/types.md), so there
-        // is nothing to mangle. Add it to `GENERIC_ARG_PRIMS` the day
-        // `Uint` lowers.
-        PrimType::Uint => None,
     }
 }
 
@@ -311,7 +310,7 @@ pub fn generic_arg_refusal(p: PrimType) -> String {
 /// Form K (2026-05-20): does `ty` have a fixed, statically-known
 /// memory layout suitable for zero-copy bus payload routing?
 ///
-/// True iff every leaf is a fixed-size primitive (Int, Uint,
+/// True iff every leaf is a fixed-size primitive (Int, U64,
 /// Float, Decimal, Bool, Time, Duration), Unit, or a named struct
 /// whose every field is flat-shapeable.
 ///
@@ -346,7 +345,7 @@ fn is_flat_shapeable_inner(
     match ty {
         Ty::Prim(p) => match p {
             PrimType::Int
-            | PrimType::Uint
+            | PrimType::U64
             | PrimType::Float
             | PrimType::Decimal(_)
             | PrimType::U256
@@ -368,7 +367,7 @@ fn is_flat_shapeable_inner(
             elem.as_ref(),
             Ty::Prim(
                 PrimType::Int
-                    | PrimType::Uint
+                    | PrimType::U64
                     | PrimType::Float
                     | PrimType::Bool
                     | PrimType::Decimal(_)
@@ -392,6 +391,7 @@ fn is_flat_shapeable_inner(
             elem.as_ref(),
             Ty::Prim(
                 PrimType::Int
+                    | PrimType::U64
                     | PrimType::Float
                     | PrimType::Bool
                     | PrimType::Decimal(_)

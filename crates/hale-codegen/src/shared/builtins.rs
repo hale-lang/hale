@@ -1903,6 +1903,34 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.module
             .add_function("lotus_wide_from_be_bytes", i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
 
+        // GH #2121: U64, by value as the i64 that holds its bits.
+        // declare void @lotus_u64_violation(i32 what) noreturn cold
+        let u64_violation = self.module.add_function(
+            "lotus_u64_violation",
+            self.context.void_type().fn_type(&[i32_t_local.into()], false),
+            None,
+        );
+        for attr in ["noreturn", "cold"] {
+            u64_violation.add_attribute(
+                inkwell::attributes::AttributeLoc::Function,
+                self.context.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id(attr), 0),
+            );
+        }
+        // declare ptr @lotus_u64_to_string(ptr arena, i64 v)
+        // declare ptr @lotus_u64_to_hex(ptr arena, i64 v)
+        let u64_text_ty = ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);
+        self.module.add_function("lotus_u64_to_string", u64_text_ty, None);
+        self.module.add_function("lotus_u64_to_hex", u64_text_ty, None);
+        // declare ptr @lotus_u64_to_bytes(ptr arena, i64 v, i32 big)
+        self.module.add_function(
+            "lotus_u64_to_bytes",
+            ptr_t.fn_type(&[ptr_t.into(), i64_t.into(), i32_t_local.into()], false),
+            None,
+        );
+        // declare i64 @lotus_u64_parse(ptr s, ptr out)
+        self.module
+            .add_function("lotus_u64_parse", i64_t.fn_type(&[ptr_t.into(), ptr_t.into()], false), None);
+
         // GH #230 item 2: fixed-places decimal formatting.
         // declare ptr @lotus_decimal_format(i64 hi, i64 lo, i64 scale, i64 places)
         let dec_format_ty = ptr_t.fn_type(

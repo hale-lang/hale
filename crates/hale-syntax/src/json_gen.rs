@@ -53,6 +53,10 @@ enum ScalarTy {
     Str,
     /// `Decimal<S>`, by its scale.
     Decimal(u8),
+    /// GH #2121: `U64`, in JSON as `U256` is (a string of its digits, or
+    /// `0x` hex; read from a JSON integer that fits too), and on the
+    /// protobuf wire a `uint64` varint.
+    U64,
     /// GH #1934: `U256` and `I256`, read from a JSON string of decimal
     /// digits or `0x` hex (or a JSON integer that fits) and written as a
     /// JSON string, decimal or, under `json:",hex"`, `0x` hex.
@@ -68,6 +72,7 @@ impl ScalarTy {
             ScalarTy::Bool => "Bool".into(),
             ScalarTy::Str => "String".into(),
             ScalarTy::Decimal(s) => format!("Decimal<{s}>"),
+            ScalarTy::U64 => "U64".into(),
             ScalarTy::U256 => "U256".into(),
             ScalarTy::I256 => "I256".into(),
         }
@@ -75,6 +80,7 @@ impl ScalarTy {
     /// The `std` namespace of a 256-bit integer's functions.
     fn wide_ns(self) -> Option<&'static str> {
         match self {
+            ScalarTy::U64 => Some("u64"),
             ScalarTy::U256 => Some("u256"),
             ScalarTy::I256 => Some("i256"),
             _ => None,
@@ -87,6 +93,7 @@ impl ScalarTy {
             ScalarTy::Bool => "false",
             ScalarTy::Str => "\"\"",
             ScalarTy::Decimal(_) => "0d",
+            ScalarTy::U64 => "std::u64::from_int(0)",
             ScalarTy::U256 => "std::u256::from_int(0)",
             ScalarTy::I256 => "std::i256::from_int(0)",
         }
@@ -608,6 +615,7 @@ fn scalar_of(te: &TypeExpr) -> Option<ScalarTy> {
         TypeExpr::Primitive(PrimType::Bool, _) => Some(ScalarTy::Bool),
         TypeExpr::Primitive(PrimType::String, _) => Some(ScalarTy::Str),
         TypeExpr::Primitive(PrimType::Decimal(s), _) => Some(ScalarTy::Decimal(*s)),
+        TypeExpr::Primitive(PrimType::U64, _) => Some(ScalarTy::U64),
         TypeExpr::Primitive(PrimType::U256, _) => Some(ScalarTy::U256),
         TypeExpr::Primitive(PrimType::I256, _) => Some(ScalarTy::I256),
         _ => None,
@@ -948,6 +956,7 @@ fn scalar_value_expr(s: ScalarTy) -> &'static str {
         // Read strictly in either mode (`strict_scalar_value_expr`).
         ScalarTy::Decimal(_) => "std::str::range_parse_decimal(__s, __vs, __ve) or 0d",
         // Read by `wide_read` in either mode; never reached.
+        ScalarTy::U64 => "std::u64::from_int(0)",
         ScalarTy::U256 => "std::u256::from_int(0)",
         ScalarTy::I256 => "std::i256::from_int(0)",
     }
@@ -1092,7 +1101,7 @@ fn strict_scalar_value_expr(s: ScalarTy, key: &str) -> String {
         ),
         // Handled as a statement by the caller; never reached.
         ScalarTy::Bool => format!("std::str::range_eq(__s, __vs, __ve, \"true\") /* {} */", key),
-        ScalarTy::U256 | ScalarTy::I256 => scalar_value_expr(s).to_string(),
+        ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256 => scalar_value_expr(s).to_string(),
         ScalarTy::Str => "std::json::unescape_string(__s[(__vs + 1)..(__ve - 1)])".to_string(),
     }
 }
@@ -1299,7 +1308,7 @@ fn field_read(t: &JsonType, f: &JsonField, prefix: &str, strict: bool, rows: &Ro
             FieldKind::Scalar(ScalarTy::Str) => "__c0 == 34",
             // a number, or (GH #1934) a string of digits or hex
             FieldKind::Scalar(ScalarTy::Int) if f.hex => "__c0 == 45 || (__c0 >= 48 && __c0 <= 57) || __c0 == 34",
-            FieldKind::Scalar(ScalarTy::U256 | ScalarTy::I256) => "__c0 == 45 || (__c0 >= 48 && __c0 <= 57) || __c0 == 34",
+            FieldKind::Scalar(ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256) => "__c0 == 45 || (__c0 >= 48 && __c0 <= 57) || __c0 == 34",
             FieldKind::Scalar(ScalarTy::Int) | FieldKind::Scalar(ScalarTy::Float) => {
                 "__c0 == 45 || (__c0 >= 48 && __c0 <= 57)"
             }
@@ -1356,7 +1365,7 @@ fn field_read(t: &JsonType, f: &JsonField, prefix: &str, strict: bool, rows: &Ro
         )),
         // GH #1934: a 256-bit integer from a string (decimal or hex) or an
         // integer number; an `Int` under `json:",hex"` from `0x` text too
-        FieldKind::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256)) => b.push_str(&wide_read(
+        FieldKind::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256)) => b.push_str(&wide_read(
             w.wide_ns().expect("a 256-bit integer"),
             "__s",
             "__vs",
@@ -1708,7 +1717,7 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, ro
         Elem::Scalar(ScalarTy::Str, _) => "__e0 == 34",
         // a number, or (GH #1934) a string of digits or hex
         Elem::Scalar(ScalarTy::Int, _) if hex => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57) || __e0 == 34",
-        Elem::Scalar(ScalarTy::U256 | ScalarTy::I256, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57) || __e0 == 34",
+        Elem::Scalar(ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57) || __e0 == 34",
         Elem::Scalar(ScalarTy::Int, _) | Elem::Scalar(ScalarTy::Float, _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57)",
         // a number, or a string holding one
         Elem::Scalar(ScalarTy::Decimal(_), _) => "__e0 == 45 || (__e0 >= 48 && __e0 <= 57) || __e0 == 34",
@@ -1730,7 +1739,7 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, ro
         Elem::Scalar(ScalarTy::Str, _) => {
             b.push_str(&format!("{ind}let __ev = std::json::unescape_string({src}[(__es + 1)..(__ee - 1)]);\n"));
         }
-        Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => {
+        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), _) => {
             let ns = w.wide_ns().expect("a 256-bit integer");
             b.push_str(&wide_read(ns, src, "__es", "__ee", key, &format!("let __ev: {} =", w.type_name()), ind));
         }
@@ -2054,7 +2063,7 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             // GH #1934: a 256-bit integer is a JSON string, its decimal
             // digits or (`json:",hex"`) its `0x` hex; an `Int` under
             // `json:",hex"` its `0x` hex (a negative one a JSON number)
-            FieldKind::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256)) => wide_text(*w, &format!("__v.{}", f.name), f.hex),
+            FieldKind::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256)) => wide_text(*w, &format!("__v.{}", f.name), f.hex),
             FieldKind::Scalar(ScalarTy::Int) if f.hex => match &f.conv {
                 Some(c) => format!("__json_int_hex_text({})", c.to_int(&format!("__v.{}", f.name))),
                 None => format!("__json_int_hex_text(__v.{})", f.name),
@@ -2141,7 +2150,7 @@ fn close_tracked(t: &JsonType, f: &JsonField, prefix: &str) -> String {
 fn elem_bind(elem: &Elem, elem_ty: &str, ind: &str) -> String {
     match elem {
         Elem::Scalar(_, Some(_))
-        | Elem::Scalar(ScalarTy::Decimal(_) | ScalarTy::U256 | ScalarTy::I256, _)
+        | Elem::Scalar(ScalarTy::Decimal(_) | ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256, _)
         | Elem::Time => {
             format!("{ind}let __xe: {elem_ty} = __x;\n")
         }
@@ -2177,7 +2186,7 @@ fn wide_text(w: ScalarTy, v: &str, hex: bool) -> String {
 fn json_elem_write_q(elem: &Elem, v: &str, fn_prefix: &str, quoted: bool, hex: bool) -> String {
     match elem {
         Elem::Scalar(ScalarTy::Decimal(_), None) if quoted => quoted_text(&format!("to_string({v})")),
-        Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => wide_text(*w, v, hex),
+        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), _) => wide_text(*w, v, hex),
         Elem::Scalar(ScalarTy::Int, Some(c)) if hex => format!("__json_int_hex_text({})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Int, None) if hex => format!("__json_int_hex_text({v})"),
         _ => json_elem_write(elem, v, fn_prefix),
@@ -2187,7 +2196,7 @@ fn json_elem_write_q(elem: &Elem, v: &str, fn_prefix: &str, quoted: bool, hex: b
 fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
     match elem {
         Elem::Scalar(ScalarTy::Str, _) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
-        Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => wide_text(*w, v, false),
+        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), _) => wide_text(*w, v, false),
         Elem::Scalar(_, Some(c)) => format!("to_string({})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Float, None) => format!("{FLOAT_TEXT}({v})"),
         Elem::Scalar(_, None) => format!("to_string({v})"),
@@ -2340,6 +2349,9 @@ fn generate_pb_parser_src(t: &JsonType) -> String {
                     b.push_str(&format!("            __f_{} = {value} != 0;\n", f.name));
                 } else if matches!(f.kind, FieldKind::Time) {
                     b.push_str(&format!("            __f_{} = std::time::from_nanos({value});\n", f.name));
+                } else if matches!(f.kind, FieldKind::Scalar(ScalarTy::U64)) {
+                    // GH #2121: a `uint64` varint is its 64 bits
+                    b.push_str(&format!("            __f_{} = std::u64::from_bits({value});\n", f.name));
                 } else if matches!(f.kind, FieldKind::Enum { .. }) {
                     b.push_str(&format!("            __n_{} = {value};\n", f.name));
                 } else {
@@ -2510,6 +2522,7 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
             b.push_str(&format!("{ind}__p = __ee;\n"));
             match (s, conv) {
                 (ScalarTy::Bool, _) => b.push_str(&format!("{ind}let __ev = __ei != 0;\n")),
+                (ScalarTy::U64, _) => b.push_str(&format!("{ind}let __ev = std::u64::from_bits(__ei);\n")),
                 (_, Some(c)) => b.push_str(&format!("{ind}let __ev = {};\n", c.from_int("__ei", key))),
                 (_, None) => b.push_str(&format!("{ind}let __ev = __ei;\n")),
             }
@@ -2579,6 +2592,8 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
             FieldKind::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256)) => {
                 format!("__api_pb_put_str({}, {})", f.pb_no, wide_pb_text(*w, &v, f.hex))
             }
+            // GH #2121: a `uint64` varint of its 64 bits
+            FieldKind::Scalar(ScalarTy::U64) => format!("__api_pb_put_int({}, std::u64::to_bits({v}))", f.pb_no),
             FieldKind::Scalar(ScalarTy::Int) => match &f.conv {
                 Some(c) => format!("__api_pb_put_int({}, {})", f.pb_no, c.to_int(&v)),
                 None => format!("__api_pb_put_int({}, {v})", f.pb_no),
@@ -2649,6 +2664,7 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
         Elem::Scalar(ScalarTy::Bool, _) => format!("__api_pb_put_bool({no}, {v})"),
         Elem::Scalar(ScalarTy::Int, Some(c)) => format!("__api_pb_put_int({no}, {})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Int, None) => format!("__api_pb_put_int({no}, {v})"),
+        Elem::Scalar(ScalarTy::U64, _) => format!("__api_pb_put_int({no}, std::u64::to_bits({v}))"),
         Elem::Scalar(ScalarTy::Decimal(_), _) => format!("__api_pb_put_str({no}, to_string({v}))"),
         Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => format!("__api_pb_put_str({no}, {})", wide_pb_text(*w, v, false)),
         Elem::Time => format!("__api_pb_put_int({no}, std::time::nanos({v}))"),

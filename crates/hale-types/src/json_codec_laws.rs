@@ -206,14 +206,14 @@ pub fn json_tag_laws(programs: &[&Program]) -> Vec<Diag> {
                         // and chain values
                         "hex" => {
                             let integer = |te: &TypeExpr| {
-                                matches!(te, TypeExpr::Primitive(PrimType::Int | PrimType::U256 | PrimType::I256, _))
+                                matches!(te, TypeExpr::Primitive(PrimType::Int | PrimType::U64 | PrimType::U256 | PrimType::I256, _))
                             };
                             if !of(&integer) {
                                 diags.push(Diag::ty(
                                     f.span,
                                     format!(
                                         "{at}: `json:` tag option `hex` writes an integer as `0x` hex text, and the field \
-                                         is `{}`: it is for an `Int`, `U256` or `I256` field or a list of them",
+                                         is `{}`: it is for an `Int`, `U64`, `U256` or `I256` field or a list of them",
                                         crate::surfaces::type_text(&f.ty)
                                     ),
                                 ));
@@ -224,8 +224,8 @@ pub fn json_tag_laws(programs: &[&Program]) -> Vec<Diag> {
                                 f.span,
                                 format!(
                                     "{at}: `json:` tag option `{opt}` is not one: the options are `string`, a Decimal \
-                                     written as a JSON string (`json:\"price,string\"`), and `hex`, an `Int`, `U256` \
-                                     or `I256` written as `0x` hex text (`json:\"gasUsed,hex\"`)"
+                                     written as a JSON string (`json:\"price,string\"`), and `hex`, an `Int`, `U64`, \
+                                     `U256` or `I256` written as `0x` hex text (`json:\"gasUsed,hex\"`)"
                                 ),
                             ));
                         }

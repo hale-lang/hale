@@ -109,7 +109,7 @@ fn type_descriptor(ty: &TypeExpr) -> String {
         use hale_syntax::ast::PrimType as P;
         match p {
             P::Int => "Int",
-            P::Uint => "Uint",
+            P::U64 => "U64",
             P::Float => "Float",
             P::Bool => "Bool",
             P::Decimal(s) => crate::ty::decimal_name(*s),
@@ -449,7 +449,7 @@ pub fn derive_application_model_over(
             TypeExpr::Primitive(prim, _) => {
                 use hale_syntax::ast::PrimType;
                 match prim {
-                    PrimType::Int | PrimType::Uint => "Int",
+                    PrimType::Int => "Int",
                     PrimType::Bool => "Bool",
                     PrimType::Time => "Time",
                     PrimType::Duration => "Duration",

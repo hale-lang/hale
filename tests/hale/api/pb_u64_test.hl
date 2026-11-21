@@ -1,0 +1,92 @@
+// A `U64` crosses the protobuf codec as a `uint64` (GH #2121; spec/api.md
+// § Codecs, § gRPC): a varint of its 64 bits, so a value past 2^63 is the
+// ten-byte varint a protobuf reader reads as that unsigned number, never a
+// negative `int64`. JSON in, protobuf through, JSON out gives back the same
+// text, for a field, a list's elements and an enum's value; and the bytes
+// of the top value are the ones a protobuf writer gives it. This program
+// names no port: the serve site is in a method nothing calls, which is all
+// the compiler needs to write the codecs.
+
+type Side = enum { Flat, Long(U64) };
+
+type Wide {
+    seen: U64;
+    recent: bounded[U64; 3];
+    side: Side = Side::Flat;
+    note: String = "";
+}
+
+api PbU64 {
+    rpc Probe::wide;
+}
+
+locus Probe {
+    fn wide(w: Wide) -> Wide { return w; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(
+            PbU64,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Wide(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Wide(__api_pb_encode_Wide(v)) or {
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Wide(back), json, what);
+    }
+
+    run() {
+        self.round(
+            "{\"seen\":\"18446744073709551615\",\"recent\":[\"0\",\"9223372036854775808\",\"1\"],"
+                + "\"side\":{\"Long\":\"18446744073709551614\"},\"note\":\"x\"}",
+            "the top of the range, in a field, a list and an enum",
+        );
+        self.round("{\"seen\":\"0\",\"recent\":[],\"side\":\"Flat\",\"note\":\"\"}", "zero");
+
+        // field 1, varint: tag 0x08, then 2^64 - 1 as ten bytes
+        let m = __api_pb_encode_Wide(Wide { seen: U64::max() });
+        std::test::assert_eq_str(
+            std::hex::encode(std::bytes::slice(m, 0, 11)),
+            "08ffffffffffffffffff01",
+            "a uint64 varint of all 64 bits",
+        );
+        // and a protobuf writer's bytes read back as the unsigned value
+        let w = __api_pb_decode_Wide(
+            std::hex::decode("088080808080808080800122017a") or std::bytes::from_string(""),
+        ) or {
+            std::test::assert(false, "a writer's message: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(w.seen == 9223372036854775808, "2^63 from its varint");
+        std::test::assert_eq_str(w.note, "z", "the field after it");
+    }
+}
+
+fn main() { Desk { }; }

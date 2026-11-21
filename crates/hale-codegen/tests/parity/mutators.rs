@@ -817,7 +817,7 @@ struct Elem {
 }
 
 /// The element types a probe can carry: the primitives the corpus
-/// steers around least (Decimal, U256, String), a payload enum, and the
+/// steers around least (Decimal, U256, U64, String), a payload enum, and the
 /// program's own records and enums, valued from a literal the program
 /// writes.
 fn elem_types(src: &str, program: &Program) -> Vec<Elem> {
@@ -830,6 +830,10 @@ fn elem_types(src: &str, program: &Program) -> Vec<Elem> {
         Elem { ty: "Decimal<2>".into(), value: "2.50d".into(), decls: vec![] },
         Elem { ty: "U256".into(), value: "U256::from_int(7)".into(), decls: vec![] },
         Elem { ty: "I256".into(), value: "I256::from_int(-7)".into(), decls: vec![] },
+        // GH #2121: a literal past `Int`'s max is a `U64` by itself; a small
+        // one is one only where its place is
+        Elem { ty: "U64".into(), value: "18446744073709551615".into(), decls: vec![] },
+        Elem { ty: "U64".into(), value: "7".into(), decls: vec![] },
         Elem {
             ty: "__PgPay".into(),
             value: "__PgPay::Two(3, \"x\")".into(),

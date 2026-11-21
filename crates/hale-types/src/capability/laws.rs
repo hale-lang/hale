@@ -464,6 +464,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("time_rfc3339.hl", &["time"]),
         ("str_helpers.hl", &["str"]),
         ("net.hl", &["net"]),
+        ("u64.hl", &["u64"]),
     ];
     // Codegen's native stdlib modules, by the namespace each lowers.
     const CG: &[(&str, &[&str])] = &[
@@ -496,6 +497,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("text.rs", &["text"]),
         ("time.rs", &["time"]),
         ("wide.rs", &["u256", "i256"]),
+        ("u64.rs", &["u64"]),
     ];
     let m = derive_capability_matrix();
     let has_row = |ns: &str| m.behaviours.iter().any(|r| r.capability == Capability::StdNamespace(leak(ns)));
@@ -556,7 +558,7 @@ fn the_tables_have_the_reviewed_shape() {
         .filter(|(_, _, b)| !b.is_lower())
         .map(|(c, cap, _)| format!("{} × {}", cap.label(), c.name()))
         .collect();
-    assert_eq!((m.behaviours.len(), std), (114, 55), "behaviour rows (all, std::)");
+    assert_eq!((m.behaviours.len(), std), (115, 56), "behaviour rows (all, std::)");
     assert_eq!(m.invocations.len(), 3);
     assert_eq!(m.obligations.len(), 10);
     // On wasm32: 19 namespaces (the 11 browser-unavailable, `std::net`'s
@@ -564,7 +566,8 @@ fn the_tables_have_the_reviewed_shape() {
     // `[ffi] link`, `@export locus` with `run()`, ProcessSignals, and
     // T2's pinned threads, pools, `async_io` and the three transports;
     // on both POSIX columns the export-only module, `--wrap-main` and
-    // T5's `@ffi("js")`; `async_io` on musl; 10 FFI type classes × 2 ABIs
-    // × 3 targets (`U256` / `I256`'s, GH #1934, the tenth).
-    assert_eq!(rejects.len(), 95, "{}", rejects.join("\n"));
+    // T5's `@ffi("js")`; `async_io` on musl; 9 FFI type classes × 2 ABIs
+    // × 3 targets (`U256` / `I256`'s, GH #1934; the refused `Uint`'s
+    // class is `U64`'s since GH #2121, which crosses both ABIs).
+    assert_eq!(rejects.len(), 89, "{}", rejects.join("\n"));
 }

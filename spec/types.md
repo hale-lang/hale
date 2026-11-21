@@ -10,7 +10,7 @@ document tells you what's *meaningfully* valid.
 | Type | Repr (v0 codegen) | Notes |
 |---|---|---|
 | `Int` | i64 | Signed; default for integer literals |
-| `Uint` | i64 | Unsigned at the type level; codegen lowers as i64. Parser-recognized; full lowering pending a workload that exercises the unsigned-arithmetic distinction. |
+| `U64` | i64 | A 64-bit unsigned integer, `0` through `2^64 - 1` (GH #2121): the same 8 bytes as an `Int`, read as unsigned. An integer literal whose place is a `U64` is one, and a decimal literal past `Int`'s max is one by itself (range-checked where it is written). `+ - * / %` never wrap: an overflow or a division by zero is a runtime violation; `U64::wrapping_*` wrap modulo 2^64 and `U64::checked_*` fail instead. Unsigned division, comparison and `>>`. Never mixes with `Int` or another type implicitly ([§ U64](#u64--a-64-bit-unsigned-integer)). Replaces the reserved `Uint`, which the checker refused. |
 | `Float` | f64 | IEEE 754 double; default for float literals |
 | `Decimal<S>`, `Decimal` | i128 | Fixed point: an i128 mantissa at the scale `S` (`mantissa × 10^-S`), `S` an integer literal from 0 to 18 that is **part of the type**; plain `Decimal` is `Decimal<9>`, the same type (2026-10-12, [§ Decimal<S>](#decimals--the-scale-is-part-of-the-type)). Every scale is the one 16-byte, 16-aligned layout. Distinct from `Float` at the type level; suffix `d` on literals (`1.50d`). A literal holds no more places than the scale of the place it flows into (a check error at the literal otherwise, never a truncation); `+ - %` are exact, `*` and `/` truncate toward zero at the scale; two scales never mix, and `d.rescale(T)` converts. Real arbitrary-precision deferred. |
 | `U256`, `I256` | i256 | The 256-bit integers (GH #1934), unsigned and two's complement signed: 32 bytes at the target's i256 alignment (16 on x86-64 and aarch64). No literal: `U256::from_int(n)`, `U256::parse(s) or ...` (decimal or `0x` hex), `U256::from_be_bytes(b) or ...` (32 bytes) make one. `+ - * / %` never wrap: an overflow or a division by zero is a runtime violation, and `U256::checked_*` / `mul_div` fail instead. Never mixes with `Int` or another type implicitly ([§ U256 and I256](#u256-and-i256--256-bit-integers)). |
@@ -40,10 +40,11 @@ type set above carries an additional axis of distinction at the
 `@ffi("c")` boundary: which types have a stable C-ABI mapping.
 `Int` / `Float` / `Bool` / `Duration` / `Time` / `String` /
 `Bytes` / `BytesView` / `StringView` may appear in `@ffi`
-parameter and return positions; `Decimal` (any scale) / `Uint` /
-`U256` / `I256` are typecheck-rejected (platform-variable ABI or
-Hale-internal; a 256-bit integer crosses as its 32 big-endian bytes,
-`U256::to_be_bytes`).
+parameter and return positions, and so may `U64` (a C `uint64_t`;
+a JS `number` at `@ffi("js")`, as an `Int` is);
+`Decimal` (any scale) / `U256` / `I256` are typecheck-rejected
+(platform-variable ABI; a 256-bit integer crosses as its 32 big-endian
+bytes, `U256::to_be_bytes`).
 See [`spec/ffi.md`](./ffi.md) for the full marshalling table and
 the lifetime contract.
 
@@ -313,6 +314,134 @@ spec/model.md § The shape of a type), the JSON and protobuf codecs
 (spec/api.md § Codecs: a JSON string of its digits, decimal or `0x`
 hex). It is no `Numeric` generic bound's argument, no routing key and
 no `@ffi` parameter.
+
+## U64 — a 64-bit unsigned integer
+
+`U64` is an unsigned 64-bit integer, `0` through `2^64 - 1`
+(18446744073709551615; GH #2121): a hash, a counter or a sequence
+number that runs past `2^63`, an identifier or a protocol field a
+foreign system hands out as a `uint64`. It is a primitive lowered to an
+LLVM `i64` read as unsigned: the same 8 bytes, at the same alignment, as
+an `Int` in a record, a locus, a `bounded` slot, a fixed array (inline),
+an enum's payload and the bus wire. It replaces the reserved `Uint`,
+which the parser read and the checker refused.
+
+**Literals take the type of their place.** An integer literal whose
+place is a `U64` is one: a `let` ascription, an argument, a `return` or
+a fn body's tail, a record or locus field (and its default), an
+assignment, the other operand of an arithmetic, bit or comparison
+operator, the other argument of `min` / `max`, an array literal's
+element type (and `[v; N]`), a `bounded` push, a block, an `if` or a
+`match` whose values are such literals beside a `U64`, an `or`'s
+fallback, and a match pattern against a `U64`. So is an operator over
+such literals (`let top: U64 = 1 << 63;`, the shift's count an `Int`;
+`let mask: U64 = ~0;`). The checker records the literal's type, and
+lowering lays it out from that record. A decimal literal past `Int`'s
+max, `2^63` through `2^64 - 1`, is a `U64` by itself (`let m =
+18446744073709551615;`), and anywhere a `U64` is not expected it is a
+check error at the literal:
+
+```text
+type error: integer literal 9223372036854775808 is past `Int`'s max (9223372036854775807): only a `U64` holds it, and its place is `Int`: give the place the type `U64`
+```
+
+A literal past `2^64 - 1` is a lex error at the literal. A radix
+literal (`0xFFFF_FFFF_FFFF_FFFF`) is its 64-bit pattern, as it is for an
+`Int`. A `U64` is never negative: `-5` (any `-`) where a `U64` is
+expected is a check error at it, never a wrapped value ("\`-5\` cannot
+be a \`U64\`: a \`U64\` is 0 through 2^64 - 1 (18446744073709551615) and
+has no unary \`-\`; write the value itself, or keep it an \`Int\`").
+
+**Functions.** `U64::f` in expression position names the function `f`
+of `std::u64` (spec/stdlib.md):
+
+| Call | Type | What |
+|---|---|---|
+| `U64::from_int(n)` | `U64` | an `Int`, exactly; a negative `n` is a violation |
+| `U64::max()` | `U64` | `2^64 - 1` |
+| `U64::to_int(x) or ...` | `fallible(ArithError)` | the `Int`, when `x` is at most `2^63 - 1` |
+| `U64::from_bits(n)`, `U64::to_bits(x)` | `U64` / `Int` | the same 64 bits read as the other type (`-1` is `U64::max()`): never fails |
+| `Float(x)` | `Float` | the nearest double (`uitofp`): exact through `2^53` |
+| `U64::from_float(f) or ...` | `fallible(ArithError)` | `f` truncated toward zero, when that is in range; NaN, an infinity, `-1.0` or less and `2^64` or more fail |
+| `U64::parse(s) or ...` | `fallible(ParseError)` | decimal digits, or `0x` / `0X` and hex digits of either case; leading zeros are accepted. A sign, a space, `_`, no digits or a value past `2^64 - 1` is `ParseError { kind: "u64", input: s }` |
+| `U64::from_be_bytes(b) or ...`, `U64::from_le_bytes(b) or ...` | `fallible(ParseError)` | exactly 8 bytes, big- or little-endian; any other length is `ParseError { kind: "u64_bytes", input: <b in hex> }` |
+| `U64::to_be_bytes(x)`, `U64::to_le_bytes(x)` | `Bytes` | its 8 bytes |
+| `to_string(x)`, `println`, `f"{x}"`, `+` with a `String`, a `@display` hole | `String` | decimal digits, unsigned |
+| `U64::to_hex(x)` | `String` | `0x` and the lowercase hex digits, none leading (`0x0` for zero) |
+| `U64::checked_add / checked_sub / checked_mul / checked_div(a, b) or ...` | `fallible(ArithError)` | the operator, failing where it would stop the process |
+| `U64::wrapping_add / wrapping_sub / wrapping_mul(a, b)` | `U64` | the operator modulo `2^64`, for hashes and bit work |
+| `U64::wrapping_shl / wrapping_shr(x, n)` | `U64` | the shift by `n` modulo 64 (`n` an `Int`) |
+
+**Arithmetic never wraps unless asked.** `Int` arithmetic wraps (two's
+complement); a `U64`'s follows F.46's rule for the 256-bit integers
+instead: `+`, `-` and `*` past either end, and `/` or `%` by zero, are a
+runtime violation where they happen, the process printing what
+happened and exiting 1 (`violation: U64 \`+\` overflows: the result is
+outside U64's range, 0 through 2^64 - 1 (U64::checked_add fails
+instead, and U64::wrapping_add wraps)`). Overflow is detected with
+`llvm.uadd` / `usub` / `umul.with.overflow`. `U64::wrapping_*` wrap and
+`U64::checked_*` fail into an `or` (`ArithError { kind, op }`, `kind`
+`overflow` or `division_by_zero`, `op` the call). `/` and `%` are
+unsigned (`udiv`, `urem`), the comparisons order unsigned (`icmp u*`),
+`min` and `max` take two `U64`s (or one and a literal), and `abs(x)` is
+`x`. A `U64` has no unary `-`.
+
+**Bits.** `&`, `|`, `^` and `~` are bitwise. `x << n` and `x >> n` shift
+by an `Int` count `n`; `>>` fills with zeros (`lshr`). A count outside 0
+through 63 is a violation (`violation: U64 shift by a count outside 0
+through 63`), where a `U256`'s count of 256 or more shifts every bit
+out: a 64-bit shift by 64 or more is undefined in C and a panic in Rust,
+and answering it with zero would hide the bug the count is. The
+`wrapping_shl` / `wrapping_shr` calls take the count modulo 64, as a
+hash wants.
+
+**No implicit mixing.** A `U64` mixes with nothing else: an operator
+over a `U64` and a non-literal `Int` (or a `Float`, a `Decimal`, a
+256-bit integer) is refused naming the conversion ("binary op: \`U64\`
+and \`Int\` do not mix: a \`U64\` never converts implicitly; make the
+\`Int\` a \`U64\` with \`U64::from_int(n)\`, or the \`U64\` an \`Int\`
+with \`U64::to_int(x) or ...\`"), and so is a binding, an argument or a
+return of the wrong one ("let \`c\`: expected \`U64\`, got \`Int\`: a
+\`U64\` never converts implicitly; write \`U64::from_int(n)\`"). `Int(x)`
+of a `U64` is refused for `U64::to_int(x) or ...`, which can fail.
+
+**Where it goes.** A record or locus field, a `bounded[U64; N]` buffer,
+a fixed array (inline), an enum's payload, a hashmap cell's field, a
+generic argument (`Box<U64>`), a fn's parameter and return, a bus
+payload (its 8 bytes; a topic's contract shape tags it `u64`, never an
+`Int`'s `i`, spec/model.md § The shape of a type), an `@ffi("c")`
+parameter or return (a C `uint64_t`; at `@ffi("js")` the JS `number` of
+its unsigned value, `uitofp` / `fptoui`, exact through `2^53` as an
+`Int`'s is; spec/ffi.md), and the JSON and
+protobuf codecs (spec/api.md § Codecs):
+
+- **JSON: always a string** of its decimal digits (`0x` hex under
+  `json:",hex"`), whatever its value, and read back from a string of
+  decimal or `0x` hex digits or from a JSON integer that fits. A JSON
+  number is exact only through `2^53` in a JavaScript reader, which is
+  what the generated TypeScript and JavaScript clients parse with, so a
+  number would be right for small values and silently wrong for large
+  ones; a string is what protobuf's JSON mapping writes for a `uint64`,
+  and what the codecs already write for the integer past a number's
+  reach, `U256`. The schema is `{"type": "string", "x-hale-type":
+  "U64"}`, so a generated client holds a `string` (the TypeScript one)
+  or a `U64` (the Hale one).
+- **Protobuf: a `uint64`**, the varint of its 64 bits.
+
+It is no routing key,
+no `Numeric` generic bound's argument and no accumulator's element
+(`sum(self.x)`). The unit dialect's scalars count an `Int`
+(spec/units.md), so `quantity U64 in …`, `distinct U64` and `U64 {
+range: … }` are refused at the type, naming `Int`: a scalar's
+representation, its range checks and its conversions are an `Int`'s,
+signed, and admitting a `U64` there is its own change.
+
+**Postgres** has no unsigned integer column: `bigint` stops at `2^63 -
+1`. A `U64` is stored in a `numeric(20)` column (twenty digits hold
+`2^64 - 1` exactly), passed and read as its decimal text (`to_string(x)`
+in, `U64::parse(s) or ...` out), as a text-format driver such as pond's
+`pq` binds every parameter. Hale has no column mapping of its own to
+refuse a `bigint` at.
 
 ## Scalar types (GH #1076)
 
@@ -2117,7 +2246,7 @@ in declaration order, joined by `_` (`Template_Arg1_Arg2`:
 `Box_Pair_Int_Bool`). The primitive vocabulary is:
 
 ```
-Int  Float  Bool  String  Duration  Decimal  U256  I256  Time
+Int  U64  Float  Bool  String  Duration  Decimal  U256  I256  Time
 Bytes  BytesView  BytesMut  StringView
 ```
 
@@ -2125,18 +2254,11 @@ Bytes  BytesView  BytesMut  StringView
 `Decimal<S>` without the brackets (`Box<Decimal<18>>` is
 `Box_Decimal18`), and plain `Decimal`'s (`Decimal<9>`) is `Decimal`.
 
-`Uint` is the one primitive that may NOT be a generic argument: it
-is parser-recognized with no codegen representation in any storage
-position (see the table at the top of this document), so there is
-no monomorph to name. `hale check` refuses the instantiation at the
-argument's span and names the supported set:
-
-```
-main.hl:6:12: type error: `Uint` cannot be a generic argument: no
-monomorph name exists for it (supported: Int / Float / Bool /
-String / Duration / Decimal / U256 / I256 / Time / Bytes / BytesView
-/ BytesMut / StringView)
-```
+Every primitive is a generic argument (`Box<U64>` is the monomorph
+`Box_U64`). Until GH #2121 one was not: the reserved `Uint` had no
+codegen representation in any storage position, so `hale check`
+refused it as an argument at its span; `U64`, which replaced it, has
+one.
 
 A non-primitive argument is a single-segment named type (a user
 `type`, or another generic instantiation, which mangles

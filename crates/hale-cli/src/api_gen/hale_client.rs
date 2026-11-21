@@ -26,9 +26,10 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         // a `Decimal<S>` is a number named with its scale (`x-hale-type`),
         // and the client holds it at that scale, every digit kept
         FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => Ok(t.clone()),
-        // GH #1934: a 256-bit integer, and an `Int` written as `0x` hex
-        // (`json:",hex"`), are JSON strings naming their scalar
-        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if matches!(t.as_str(), "U256" | "I256" | "Int") => {
+        // GH #1934: a 256-bit integer, a `U64` (GH #2121), and an `Int`
+        // written as `0x` hex (`json:",hex"`), are JSON strings naming
+        // their scalar
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if matches!(t.as_str(), "U64" | "U256" | "I256" | "Int") => {
             Ok(t.clone())
         }
         FieldSchema::Scalar { json, .. } => Ok(match *json {
@@ -58,7 +59,7 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
 fn encode(f: &FieldSchema, value: &str, what: &str) -> Result<String, String> {
     match f {
         // GH #1934: a 256-bit integer is a JSON string of its digits
-        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if t == "U256" || t == "I256" => {
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if matches!(t.as_str(), "U64" | "U256" | "I256") => {
             Ok(format!("api_str(to_string({value}))"))
         }
         FieldSchema::Scalar { json, .. } => Ok(match *json {
@@ -97,7 +98,7 @@ fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &dyn Fn(&str) -> St
             )
         }
         // GH #1934: a 256-bit integer from its text, decimal or hex
-        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if t == "U256" || t == "I256" => {
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if matches!(t.as_str(), "U64" | "U256" | "I256") => {
             format!(
                 "let {var} = {t}::parse(api_scalar_str({json})) or {{ {} }};\n",
                 fail("err.kind + \": \" + err.input")
@@ -202,7 +203,7 @@ fn buildable_empty(model: &ClientModel, name: &str, seen: &mut BTreeSet<String>)
 fn default_of(model: &ClientModel, f: &FieldSchema) -> Option<String> {
     match f {
         FieldSchema::Scalar { hale_type: Some(t), .. } if t.starts_with("Decimal<") => Some("0d".to_string()),
-        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if t == "U256" || t == "I256" => {
+        FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if matches!(t.as_str(), "U64" | "U256" | "I256") => {
             Some(format!("{t}::from_int(0)"))
         }
         FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if t == "Int" => Some("0".to_string()),

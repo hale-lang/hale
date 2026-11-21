@@ -229,22 +229,22 @@ fn the_vocabulary_partitions_every_primitive_the_parser_spells() {
     let all: BTreeSet<&str> =
         hale_syntax::parser::PRIMITIVE_TYPE_NAMES.iter().copied().collect();
     let refused: Vec<&&str> = all.difference(&supported).collect();
-    // `Uint` is the whole of the refused set: parser-recognized with
-    // no codegen representation in ANY storage position
-    // (spec/types.md), so there is no monomorph to name. Anything else
-    // arriving here is a primitive nobody decided about.
-    assert_eq!(
-        refused,
-        vec![&"Uint"],
-        "the refused set is supposed to be exactly `Uint`; the \
-         vocabulary and the primitive spellings have drifted"
+    // Every primitive the parser spells is a generic argument. The one
+    // refused until GH #2121, the reserved `Uint`, had no codegen
+    // representation in any storage position; `U64` replaced it, and has
+    // one. Anything arriving here is a primitive nobody decided about.
+    assert!(
+        refused.is_empty(),
+        "every primitive the parser spells is supposed to name a monomorph; the \
+         vocabulary and the primitive spellings have drifted: {:?}",
+        refused
     );
-    // And the refusal names the supported set, so an author reading it
-    // learns what to write instead.
+    // The refusal the check keeps for the next primitive with no storage
+    // names the supported set, so an author reading it learns what to
+    // write instead.
     let msg = hale_types::ty::generic_arg_refusal(
-        hale_syntax::ast::PrimType::Uint,
+        hale_syntax::ast::PrimType::U64,
     );
-    assert!(msg.contains("`Uint`"), "the refusal must name it: {}", msg);
     for name in &supported {
         assert!(
             msg.contains(*name),

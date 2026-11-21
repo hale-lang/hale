@@ -37772,3 +37772,96 @@ int64_t lotus_wide_from_be_bytes(void *b, uint64_t *out) {
     }
     return 0;
 }
+
+/* GH #2121: U64, a 64-bit unsigned integer, passed by value as the
+ * i64 that holds its bits. Its operators are checked in the generated
+ * code, which calls `lotus_u64_violation` when one would wrap; these are
+ * its text and bytes. 64-bit arithmetic only, so wasm32 needs no libcall. */
+void lotus_u64_violation(int32_t what) {
+    switch (what) {
+    case 0: case 1: case 2: {
+        static const char *ops[] = {"+", "-", "*"};
+        static const char *checked[] = {"checked_add", "checked_sub", "checked_mul"};
+        fprintf(stderr,
+                "violation: U64 `%s` overflows: the result is outside U64's range, 0 through 2^64 - 1 "
+                "(U64::%s fails instead, and U64::wrapping_%s wraps)\n",
+                ops[what], checked[what], checked[what] + 8);
+        break;
+    }
+    case 3:
+        fprintf(stderr, "violation: U64 division by zero (U64::checked_div fails instead of stopping)\n");
+        break;
+    case 4:
+        fprintf(stderr, "violation: U64 remainder by zero\n");
+        break;
+    case 5:
+        fprintf(stderr, "violation: U64::from_int of a negative Int: a U64 is 0 through 2^64 - 1\n");
+        break;
+    case 6:
+        fprintf(stderr,
+                "violation: U64 shift by a count outside 0 through 63 "
+                "(U64::wrapping_shl / wrapping_shr take the count modulo 64)\n");
+        break;
+    default:
+        fprintf(stderr, "violation: U64 arithmetic\n");
+        break;
+    }
+    fflush(stderr);
+    exit(1);
+}
+
+/* The decimal digits of `v`, unsigned. */
+char *lotus_u64_to_string(lotus_arena_t *a, int64_t v) {
+    char *out = (char *)lotus_arena_alloc(a, 24, 1);
+    if (!out) return NULL;
+    snprintf(out, 24, "%llu", (unsigned long long)(uint64_t)v);
+    return out;
+}
+
+/* `0x` and the lowercase hex digits of `v`, none leading (`0x0`). */
+char *lotus_u64_to_hex(lotus_arena_t *a, int64_t v) {
+    char *out = (char *)lotus_arena_alloc(a, 24, 1);
+    if (!out) return NULL;
+    snprintf(out, 24, "0x%llx", (unsigned long long)(uint64_t)v);
+    return out;
+}
+
+/* The 8 bytes of `v`, big-endian when `big`, little-endian otherwise. */
+void *lotus_u64_to_bytes(lotus_arena_t *a, int64_t v, int32_t big) {
+    void *blob = lotus_bytes_create(a, 8);
+    if (!blob) return NULL;
+    unsigned char *b = (unsigned char *)lotus_bytes_data(blob);
+    uint64_t u = (uint64_t)v;
+    for (int i = 0; i < 8; i++) {
+        int shift = big ? 56 - 8 * i : 8 * i;
+        b[i] = (unsigned char)((u >> shift) & 0xff);
+    }
+    return blob;
+}
+
+/* `s` read as a U64 into `out`: decimal digits, or `0x` / `0X` and hex
+ * digits of either case; nothing else (no sign, space, `_`, or empty
+ * digits). Leading zeros are accepted. 0 when it reads and fits, 1
+ * otherwise (`out` untouched). */
+int64_t lotus_u64_parse(const char *s, int64_t *out) {
+    if (!s) return 1;
+    uint64_t base = 10;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+        base = 16;
+        s += 2;
+    }
+    if (!*s) return 1;
+    uint64_t v = 0;
+    for (; *s; s++) {
+        char c = *s;
+        uint64_t d;
+        if (c >= '0' && c <= '9') d = (uint64_t)(c - '0');
+        else if (base == 16 && c >= 'a' && c <= 'f') d = (uint64_t)(c - 'a' + 10);
+        else if (base == 16 && c >= 'A' && c <= 'F') d = (uint64_t)(c - 'A' + 10);
+        else return 1;
+        if (v > (UINT64_MAX - d) / base) return 1;
+        v = v * base + d;
+    }
+    *out = (int64_t)v;
+    return 0;
+}

@@ -699,6 +699,10 @@ fn per_target_moves() {
 /// 4 verdicts where it read 2 and `dna/host/verb` 1462 where it read 1478 —
 /// sites the old model judged in their locus that a scratch-local fn's
 /// return now reclaims, and in-loop sites of fns now freeing at return.
+/// GH #2121's `u64_arith_test`, `u64_codec_test` and `u64_violation_test`
+/// are new targets on those columns alone: tags of values their fns hand
+/// back, and their codecs' and helpers' fns freeing at return; no leak
+/// site goes or appears.
 const PINNED: &[&str] = &[
     "crates/hale-codegen/tests/fixtures/examples/09-functions: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
     "crates/hale-codegen/tests/fixtures/examples/23-ranges: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
@@ -790,4 +794,7 @@ const PINNED: &[&str] = &[
     "tests/hale/string_len_test.hl: 2 go, 0 appear; dump 5 tags, 3 reclaim, 2 verdicts",
     "tests/hale/tail_value_returns_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
     "tests/hale/text_receiver_calls_test.hl: 0 go, 0 appear; dump 2 tags, 1 reclaim, 0 verdicts",
+    "tests/hale/u64_arith_test.hl: 0 go, 0 appear; dump 2 tags, 2 reclaim, 0 verdicts",
+    "tests/hale/u64_codec_test.hl: 0 go, 0 appear; dump 2 tags, 4 reclaim, 0 verdicts",
+    "tests/hale/u64_violation_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
 ];

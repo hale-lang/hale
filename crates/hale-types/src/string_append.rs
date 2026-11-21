@@ -448,7 +448,7 @@ pub fn call_keeps_no_argument(callee: &Expr) -> bool {
                 && matches!(
                     sig.ret,
                     SigTy::Int
-                        | SigTy::Uint
+                        | SigTy::U64
                         | SigTy::Float
                         | SigTy::Bool
                         | SigTy::Decimal

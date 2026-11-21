@@ -76,6 +76,12 @@ use crate::stdlib::time::TimeStdlib;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CodegenTy {
     Int,
+    /// `U64` (GH #2121): an LLVM `i64` read as unsigned, the same 8
+    /// bytes as an `Int` in every layout. Its operators are unsigned
+    /// (`udiv`, `urem`, `icmp u*`, `lshr`, `uitofp`) and checked: an
+    /// overflow, a division by zero or a shift by 64 or more calls
+    /// `lotus_u64_violation`.
+    U64,
     Float,
     Bool,
     String,
@@ -227,6 +233,7 @@ impl std::fmt::Display for CodegenTy {
         let list = |tys: &[CodegenTy]| tys.iter().map(|t| t.to_string()).collect::<Vec<_>>().join(", ");
         match self {
             CodegenTy::Int => f.write_str("Int"),
+            CodegenTy::U64 => f.write_str("U64"),
             CodegenTy::Float => f.write_str("Float"),
             CodegenTy::Bool => f.write_str("Bool"),
             CodegenTy::String => f.write_str("String"),
@@ -15000,7 +15007,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .context
                     .ptr_type(AddressSpace::default())
                     .fn_type(&llvm_param_tys, false),
-                Some(CodegenTy::Int) | Some(CodegenTy::Duration) | Some(CodegenTy::Time) => self
+                Some(CodegenTy::Int) | Some(CodegenTy::U64) | Some(CodegenTy::Duration) | Some(CodegenTy::Time) => self
                     .context
                     .i64_type()
                     .fn_type(&llvm_param_tys, false),
@@ -15645,10 +15652,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // `@ffi("js")`: i64-class scalars cross as f64 (JS number),
             // not i64 (BigInt). The call site sitofp's before the call.
-            CodegenTy::Int | CodegenTy::Duration if is_js => {
+            // GH #2121: a `U64` crosses as a JS number too, `uitofp` /
+            // `fptoui` at the call
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration if is_js => {
                 Ok(self.context.f64_type().into())
             }
+            // GH #2121: a `U64` is a C `uint64_t`, the same register
             CodegenTy::Int
+            | CodegenTy::U64
             | CodegenTy::Duration
             | CodegenTy::Time => Ok(self.context.i64_type().into()),
             CodegenTy::Float => Ok(self.context.f64_type().into()),
@@ -15721,10 +15732,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match ty {
             // `@ffi("js")`: i64-class scalars return as f64 (JS number);
             // the call site fptosi's the result back to i64.
-            CodegenTy::Int | CodegenTy::Duration if is_js => {
+            // GH #2121: a `U64` crosses as a JS number too, `uitofp` /
+            // `fptoui` at the call
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration if is_js => {
                 Ok(self.context.f64_type().into())
             }
+            // GH #2121: a `U64` is a C `uint64_t`, the same register
             CodegenTy::Int
+            | CodegenTy::U64
             | CodegenTy::Duration
             | CodegenTy::Time => Ok(self.context.i64_type().into()),
             CodegenTy::Float => Ok(self.context.f64_type().into()),
@@ -16356,6 +16371,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // live in the source's storage directly; no separate
             // heap-pointer to anchor.
             CodegenTy::Int
+            | CodegenTy::U64
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -16585,6 +16601,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         !matches!(
             ty,
             CodegenTy::Int
+                | CodegenTy::U64
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Decimal(_)
@@ -16996,7 +17013,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (i, arg) in args.iter().enumerate() {
             let (val, val_ty) = self.lower_expr(arg, scope)?;
             let expected = &sig.params[i];
-            if &val_ty != expected {
+            if &val_ty != expected && !int_literal_as_u64(&val_ty, expected) {
                 return Err(CodegenError::Unsupported(format!(
                     "@ffi fn `{}` arg {}: expected {}, got {}",
                     name, i, expected, val_ty
@@ -17004,6 +17021,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             let coerced: inkwell::values::BasicValueEnum<'ctx> =
                 match expected {
+                    // GH #2121: a `U64` as the JS number of its unsigned
+                    // value (exact through 2^53, as an `Int`'s is)
+                    CodegenTy::U64 if sig.ffi_js => self.u64_to_float(val.into_int_value())?,
                     CodegenTy::Int | CodegenTy::Duration if sig.ffi_js => {
                         // `@ffi("js")`: marshal the i64 as f64 (JS
                         // number) so the host handler doesn't receive
@@ -17098,6 +17118,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         ))
                     })?;
                 let coerced = match &ret_ty {
+                    // GH #2121: a JS number back to a `U64` (`fptoui`)
+                    CodegenTy::U64 if sig.ffi_js => self
+                        .builder
+                        .build_float_to_unsigned_int(raw.into_float_value(), self.context.i64_type(), "ffi.js.f64.to_u64")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into(),
                     CodegenTy::Int | CodegenTy::Duration if sig.ffi_js => {
                         // `@ffi("js")` returned an f64 (JS number);
                         // narrow back to i64 (round toward zero).
@@ -17520,7 +17546,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (i, a) in args.iter().enumerate() {
             let want = self.type_expr_to_codegen_ty(&fd.params[i].ty)?;
             let (v, got) = self.lower_expr(a, scope)?;
-            let v = if got != want {
+            let v = if got != want && !int_literal_as_u64(&got, &want) {
                 if view_coerces_to(&got, &want) {
                     self.unpack_view_if_needed(v, &got)?
                 } else if let (CodegenTy::LocusRef(l), CodegenTy::Interface(i)) = (&got, &want) {
@@ -18569,6 +18595,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let mappable = matches!(
                 fty,
                 CodegenTy::Int
+                    | CodegenTy::U64
                     | CodegenTy::Float
                     | CodegenTy::Bool
                     | CodegenTy::Decimal(_)
@@ -21455,6 +21482,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 Ok((res.into(), self.call_result(call)?))
             }
+            // GH #2121: `uitofp`, exact through 2^53
+            CodegenTy::U64 => {
+                let res = self.u64_to_float(v.into_int_value())?;
+                Ok((res, self.call_result(call)?))
+            }
             other => Err(CodegenError::Unsupported(format!(
                 "`Float(...)` cast not supported for argument type \
                  {} (only Int → Float widening and Float identity \
@@ -21521,14 +21553,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // representations (downstream handoff: `min` of two `Millis`
         // was refused by the check as not numeric).
         let one_count = crate::conversion::is_quantity_repr(&at) && crate::conversion::is_quantity_repr(&bt);
-        if at != bt && !one_count {
+        // GH #2121: an integer literal beside a `U64` is one (the checker
+        // typed it so; the same i64 either way)
+        let at = if at == CodegenTy::Int && bt == CodegenTy::U64 { CodegenTy::U64 } else { at };
+        if at != bt && !one_count && !(at == CodegenTy::U64 && bt == CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
                 "`{}`: operand types must match; got {} and {}",
                 name, at, bt
             )));
         }
         match at {
-            CodegenTy::U256 | CodegenTy::I256 => {
+            // GH #2121: a `U64` orders unsigned, as a `U256` does
+            CodegenTy::U64 | CodegenTy::U256 | CodegenTy::I256 => {
                 let signed = matches!(at, CodegenTy::I256);
                 let pred = match (name, signed) {
                     ("min", true) => inkwell::IntPredicate::SLT,
@@ -21601,6 +21637,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         result: CodegenTy,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match ty {
+            // GH #2121: a `U64` is its own magnitude
+            CodegenTy::U64 => Ok((v, ty.clone())),
             CodegenTy::U256 | CodegenTy::I256 => self.lower_wide_abs(v.into_int_value(), ty),
             CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 // m48: Decimal lives in i128 so the int-abs path
@@ -21728,6 +21766,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match ty {
             CodegenTy::String => PrintShape::Prim(PrimType::String),
             CodegenTy::Int => PrintShape::Prim(PrimType::Int),
+            CodegenTy::U64 => PrintShape::Prim(PrimType::U64),
             CodegenTy::Bool => PrintShape::Prim(PrimType::Bool),
             CodegenTy::Float => PrintShape::Prim(PrimType::Float),
             CodegenTy::Decimal(s) => PrintShape::Prim(PrimType::Decimal(*s)),
@@ -21897,6 +21936,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(res)
             }
             CodegenTy::U256 | CodegenTy::I256 => self.wide_to_string(v.into_int_value(), matches!(ty, CodegenTy::I256)),
+            // GH #2121: unsigned decimal digits
+            CodegenTy::U64 => self.u64_to_string(v.into_int_value()),
             CodegenTy::Decimal(dec_scale) => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let i128_v = v.into_int_value();
@@ -22373,6 +22414,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let numeric = matches!(
                 ty,
                 CodegenTy::Int
+                    | CodegenTy::U64
                     | CodegenTy::Float
                     | CodegenTy::Decimal(_)
                     | CodegenTy::U256
@@ -22842,7 +22884,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match ty {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal(_) => self
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal(_) => self
                 .builder
                 .build_int_compare(
                     inkwell::IntPredicate::EQ,
@@ -25569,7 +25611,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     (v, got_ty)
                 };
-                if got_ty != declared_ty {
+                if got_ty != declared_ty && !int_literal_as_u64(&got_ty, &declared_ty) {
                     return Err(CodegenError::Unsupported(format!(
                         "return type mismatch: declared {}, got {}",
                         declared_ty, got_ty
@@ -25653,7 +25695,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // reused across iterations matches the dynamic-alloca
         // shape semantically while not growing the frame.
         let llvm_ty: inkwell::types::BasicTypeEnum = match ty {
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => {
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration | CodegenTy::Time => {
                 self.context.i64_type().into()
             }
             CodegenTy::Bounded(_, _) => {
@@ -25761,6 +25803,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         matches!(
             t,
             CodegenTy::Int
+                | CodegenTy::U64
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Duration
@@ -26087,6 +26130,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )
             })?;
             return Ok((i128_const(self.context, m).into(), want.clone()));
+        }
+        // GH #2121: an integer literal matched against a `U64` is one (the
+        // check held the pattern to the scrutinee's type)
+        if let (Literal::Int(n), CodegenTy::U64) = (lit, want) {
+            return Ok((self.context.i64_type().const_int(*n as u64, false).into(), CodegenTy::U64));
         }
         self.lower_expr(&Expr::Literal(lit.clone(), span), scope)
     }
@@ -26564,7 +26612,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             Expr::Literal(Literal::Int(n), _) => {
                 let v = self.context.i64_type().const_int(*n as u64, true);
-                Ok((v.into(), CodegenTy::Int))
+                // GH #2121: a literal whose place is a `U64` is one, as
+                // the checker's row of it says
+                let ty = match self.ty_at(e) {
+                    Some(CodegenTy::U64) => CodegenTy::U64,
+                    _ => CodegenTy::Int,
+                };
+                Ok((v.into(), ty))
+            }
+            // GH #2121: past `Int`'s max, a `U64` by itself
+            Expr::Literal(Literal::U64(n), _) => {
+                let v = self.context.i64_type().const_int(*n, false);
+                Ok((v.into(), CodegenTy::U64))
             }
             Expr::Literal(Literal::Float(f), _) => {
                 let v = self.context.f64_type().const_float(*f);
@@ -28575,6 +28634,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(lt, CodegenTy::U256 | CodegenTy::I256) {
             return self.lower_wide_shift(*op, lv.into_int_value(), rv.into_int_value(), &lt);
         }
+        // GH #2121: a `U64` shifts by an `Int` count, and an integer
+        // literal beside one is a `U64` (the checker typed it so; where
+        // its row is read, both sides are `U64` already, and where it is
+        // not, as in a monomorph's walk, the `Int` is that literal).
+        if lt == CodegenTy::U64 || rt == CodegenTy::U64 {
+            if matches!(op, BinOp::Shl | BinOp::Shr) && lt == CodegenTy::U64 {
+                return self.lower_u64_shift(*op, lv.into_int_value(), rv.into_int_value());
+            }
+            if matches!((&lt, &rt), (CodegenTy::U64 | CodegenTy::Int, CodegenTy::U64 | CodegenTy::Int)) {
+                return self.lower_u64_binop(*op, lv.into_int_value(), rv.into_int_value());
+            }
+        }
         if lt != rt {
             return Err(CodegenError::Unsupported(format!(
                 "binary op operands of mixed types {} and {}",
@@ -28597,6 +28668,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1934: the 256-bit integers' checked operators.
         if matches!(ty, CodegenTy::U256 | CodegenTy::I256) && !matches!(op, BinOp::Shl | BinOp::Shr) {
             return self.lower_wide_binop(op, lv.into_int_value(), rv.into_int_value(), ty);
+        }
+        // GH #2121: a `U64`'s checked, unsigned operators.
+        if *ty == CodegenTy::U64 {
+            return self.lower_u64_binop(op, lv.into_int_value(), rv.into_int_value());
         }
         match (op, ty_owned) {
             (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Int) => {
@@ -29047,6 +29122,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             (UnaryOp::BitNot, t @ (CodegenTy::U256 | CodegenTy::I256)) => {
                 self.lower_wide_bitnot(v.into_int_value(), &t)
             }
+            // GH #2121: `~` of a `U64` (it has no `-`)
+            (UnaryOp::BitNot, CodegenTy::U64) => self.lower_u64_bitnot(v.into_int_value()),
             (UnaryOp::Neg, t @ CodegenTy::Decimal(_)) => {
                 // m48: Decimal lives in i128; negate via subtract
                 // from i128 zero, mirroring Int's neg lowering.
@@ -29154,6 +29231,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     if let Some(unit) = self.printed_unit(a) {
                         format.push_str(&escape_format(&unit));
                     }
+                }
+                // GH #2121: a `U64`'s decimal digits, unsigned
+                CodegenTy::U64 => {
+                    format.push_str("%llu");
+                    printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
                 }
                 CodegenTy::Float | CodegenTy::U256 | CodegenTy::I256 => {
                     // the text `to_string` gives, the shortest that reads
@@ -30231,6 +30313,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::U256Max
             | Id::U256ToBeBytes
             | Id::U256ToHex => self.lower_std_wide(id, args, scope),
+            // GH #2121: the 64-bit unsigned integer's native functions.
+            Id::U64FromFloatRaw
+            | Id::U64ParseRaw
+            | Id::U64ParsesRaw
+            | Id::U64FromBits
+            | Id::U64FromInt
+            | Id::U64Max
+            | Id::U64ToBeBytes
+            | Id::U64ToBits
+            | Id::U64ToHex
+            | Id::U64ToLeBytes
+            | Id::U64WrappingAdd
+            | Id::U64WrappingMul
+            | Id::U64WrappingShl
+            | Id::U64WrappingShr
+            | Id::U64WrappingSub => self.lower_std_u64(id, args, scope),
             Id::DecimalFormat => self.lower_std_decimal_format(args, scope),
             Id::DecimalFromInt => self.lower_std_decimal_from_int(args, scope),
             // 2026-06-13 — test-time gate counters (#7): read-only
@@ -31622,6 +31720,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::U256Max
             | Id::U256ToBeBytes
             | Id::U256ToHex
+            | Id::U64FromFloatRaw
+            | Id::U64ParseRaw
+            | Id::U64ParsesRaw
+            | Id::U64FromBits
+            | Id::U64FromInt
+            | Id::U64Max
+            | Id::U64ToBeBytes
+            | Id::U64ToBits
+            | Id::U64ToHex
+            | Id::U64ToLeBytes
+            | Id::U64WrappingAdd
+            | Id::U64WrappingMul
+            | Id::U64WrappingShl
+            | Id::U64WrappingShr
+            | Id::U64WrappingSub
             | Id::DiagHeapAllocCount
             | Id::DiagSyscallCount
             | Id::EnvArg
@@ -36090,7 +36203,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (i, a) in args.iter().enumerate() {
             let want = self.type_expr_to_codegen_ty(&fd.params[i].ty)?;
             let (v, got) = self.lower_expr(a, scope)?;
-            let v = if got != want {
+            let v = if got != want && !int_literal_as_u64(&got, &want) {
                 if view_coerces_to(&got, &want) {
                     self.unpack_view_if_needed(v, &got)?
                 } else if let (CodegenTy::LocusRef(l), CodegenTy::Interface(i)) = (&got, &want) {
@@ -38922,7 +39035,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the owner's arena; an inline scalar slot is one plain store
         // and is let through, as the checker lets it through
         let scalar = match &slot_ty {
-            CodegenTy::Int | CodegenTy::Float | CodegenTy::Bool | CodegenTy::Duration | CodegenTy::Time => true,
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Float | CodegenTy::Bool | CodegenTy::Duration | CodegenTy::Time => true,
             CodegenTy::Decimal(_) | CodegenTy::U256 | CodegenTy::I256 => true,
             CodegenTy::Enum(_) => !self.self_field_type_retires(&slot_ty),
             _ => false,
@@ -40064,6 +40177,8 @@ pub(crate) fn param_value(e: &Expr, ascribed: Option<&TypeExpr>) -> Result<Param
     match e {
         Expr::Literal(Literal::String(s), _) => Ok(ParamValue::String(s.clone())),
         Expr::Literal(Literal::Int(n), _) => Ok(ParamValue::Int(*n)),
+        // GH #2121: a `U64` past `Int`'s max, its 64 bits
+        Expr::Literal(Literal::U64(n), _) => Ok(ParamValue::Int(*n as i64)),
         Expr::Literal(Literal::Float(f), _) => Ok(ParamValue::Float(*f)),
         Expr::Literal(Literal::Bool(b), _) => Ok(ParamValue::Bool(*b)),
         // GH #1076 (U4): a literal of the stdlib's time catalogue is the
@@ -40247,6 +40362,14 @@ pub(crate) fn i128_const<'ctx>(
 /// Decimal at i128 takes 16 bytes; everything else (Int/Float/
 /// String-ptr/Bool/Duration/Time/LocusRef/TypeRef/Array/Tuple/
 /// Enum-as-pointer/Enum-as-i32) round-trips at 8.
+/// GH #2121: a value lowered as an `Int` into a place declared `U64`: an
+/// integer literal the check typed a `U64` (it refuses every other `Int`
+/// there) where lowering read no row of it (a default lowered from its
+/// constant, a monomorph's walk). The same i64 either way.
+pub(crate) fn int_literal_as_u64(got: &CodegenTy, want: &CodegenTy) -> bool {
+    matches!((got, want), (CodegenTy::Int, CodegenTy::U64))
+}
+
 pub(crate) fn codegen_ty_size_bytes<'ctx>(
     _ctx: &'ctx inkwell::context::Context,
     t: &CodegenTy,

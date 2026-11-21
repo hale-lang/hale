@@ -309,7 +309,7 @@ wordings are the compiler's.
 
 12. **No declaration takes a builtin type's name.** A type position
     reads a primitive's name (`hale_syntax::parser::primitive_from_name`:
-    `Int`, `Uint`, `Float`, `Decimal`, `String`, `StringView`, `Bool`,
+    `Int`, `U64`, `Float`, `Decimal`, `String`, `StringView`, `Bool`,
     `Duration`, `Time`, `Bytes`, `BytesView`, `BytesMut`) before any
     declaration, so a quantity, a point, an identity or a range of that
     name could never be named, and neither may a `unit` or a scalar take

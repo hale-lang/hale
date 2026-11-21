@@ -1,0 +1,81 @@
+// std::u64 (GH #2121): what a 64-bit unsigned integer's calls do that
+// can fail. The operators stop the process on an overflow or a division
+// by zero (a violation, never a wrapped value); `U64::wrapping_*` wrap
+// modulo 2^64, and these are the forms that fail instead, with an
+// `ArithError { kind, op }` (`kind` `overflow` or `division_by_zero`)
+// or, for text and bytes that do not read, a `ParseError`. Each is a
+// short body over the intrinsics, which cannot fail.
+
+/// `s` as a U64: decimal digits, or `0x` / `0X` and hex digits of either
+/// case. Anything else (a sign, a space, `_`, no digits) or a value past
+/// 2^64 - 1 is `ParseError { kind: "u64", input: s }`.
+fn __std_u64_parse(s: String) -> U64 fallible(ParseError) {
+    if !std::u64::__parses(s) {
+        fail ParseError { kind: "u64", input: s };
+    }
+    return std::u64::__parse(s);
+}
+
+/// The U64 the 8 big-endian bytes `b` spell. Any other length is
+/// `ParseError { kind: "u64_bytes", input: <b in hex> }`.
+fn __std_u64_from_be_bytes(b: Bytes) -> U64 fallible(ParseError) {
+    if len(b) != 8 {
+        fail ParseError { kind: "u64_bytes", input: std::hex::encode(b) };
+    }
+    return std::u64::from_bits(std::bytes::read_u64_be(b, 0) or 0);
+}
+
+/// The U64 the 8 little-endian bytes `b` spell. Any other length is
+/// `ParseError { kind: "u64_bytes", input: <b in hex> }`.
+fn __std_u64_from_le_bytes(b: Bytes) -> U64 fallible(ParseError) {
+    if len(b) != 8 {
+        fail ParseError { kind: "u64_bytes", input: std::hex::encode(b) };
+    }
+    return std::u64::from_bits(std::bytes::read_u64_le(b, 0) or 0);
+}
+
+/// `x` as an Int, when it is at most 2^63 - 1.
+fn __std_u64_to_int(x: U64) -> Int fallible(ArithError) {
+    if x > 9223372036854775807 {
+        fail ArithError { kind: "overflow", op: "U64::to_int" };
+    }
+    return std::u64::to_bits(x);
+}
+
+/// `f` truncated toward zero, when that is 0 through 2^64 - 1; NaN,
+/// an infinity, -1 or less, and 2^64 or more fail.
+fn __std_u64_from_float(f: Float) -> U64 fallible(ArithError) {
+    if !(f > -1.0 && f < 18446744073709551616.0) {
+        fail ArithError { kind: "overflow", op: "U64::from_float" };
+    }
+    return std::u64::__from_float(f);
+}
+
+fn __std_u64_checked_add(a: U64, b: U64) -> U64 fallible(ArithError) {
+    let r = std::u64::wrapping_add(a, b);
+    if r < a {
+        fail ArithError { kind: "overflow", op: "U64::checked_add" };
+    }
+    return r;
+}
+
+fn __std_u64_checked_sub(a: U64, b: U64) -> U64 fallible(ArithError) {
+    if b > a {
+        fail ArithError { kind: "overflow", op: "U64::checked_sub" };
+    }
+    return a - b;
+}
+
+fn __std_u64_checked_mul(a: U64, b: U64) -> U64 fallible(ArithError) {
+    if a != 0 && b > std::u64::max() / a {
+        fail ArithError { kind: "overflow", op: "U64::checked_mul" };
+    }
+    return a * b;
+}
+
+fn __std_u64_checked_div(a: U64, b: U64) -> U64 fallible(ArithError) {
+    if b == 0 {
+        fail ArithError { kind: "division_by_zero", op: "U64::checked_div" };
+    }
+    return a / b;
+}

@@ -399,6 +399,19 @@ enum Operator {
 fn wide_conversion_hint(want: &Ty, got: &Ty) -> String {
     let wide = |t: &Ty| matches!(t, Ty::Prim(PrimType::U256 | PrimType::I256));
     match (want, got) {
+        // GH #2121: a `U64` converts to and from an `Int` by name.
+        (Ty::Prim(PrimType::U64), Ty::Prim(PrimType::Int)) => {
+            ": a `U64` never converts implicitly; write `U64::from_int(n)`".to_string()
+        }
+        (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::U64)) => {
+            ": a `U64` never converts implicitly; write `U64::to_int(x) or ...`".to_string()
+        }
+        (Ty::Prim(PrimType::Float), Ty::Prim(PrimType::U64)) => {
+            ": a `U64` never converts implicitly; write `Float(x)`".to_string()
+        }
+        (Ty::Prim(PrimType::U64), Ty::Prim(PrimType::Float)) => {
+            ": a `U64` never converts implicitly; write `U64::from_float(f) or ...`".to_string()
+        }
         (w, Ty::Prim(PrimType::Int)) if wide(w) => {
             let n = w.display();
             format!(": a 256-bit integer never converts implicitly; write `{n}::from_int(n)`")
@@ -425,6 +438,8 @@ enum OperandClass {
     Decimal,
     /// GH #1934: `U256` (false) or `I256` (true).
     Wide(bool),
+    /// GH #2121: `U64`.
+    U64,
     Bool,
     String,
     Enum,
@@ -1402,6 +1417,7 @@ fn walk_bundle(
         array_elements: std::collections::HashMap::new(),
         decimal_literals: Vec::new(),
         decimal_scales: std::collections::HashMap::new(),
+        u64_negations: std::collections::HashSet::new(),
     };
     let mut reported: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
     for (key, program) in &bundle.programs {
@@ -8340,7 +8356,7 @@ impl<'a> StoreDecls<'a> {
         match t {
             TypeExpr::Primitive(p, _) => matches!(
                 p,
-                PrimType::Int | PrimType::Uint | PrimType::Float | PrimType::Decimal(_) | PrimType::Bool
+                PrimType::Int | PrimType::U64 | PrimType::Float | PrimType::Decimal(_) | PrimType::Bool
                     | PrimType::U256 | PrimType::I256 | PrimType::Time | PrimType::Duration
             ),
             TypeExpr::Named { .. } => match self.named(t).and_then(|n| self.types.get(n)).map(|d| &d.body) {
@@ -11669,6 +11685,9 @@ struct Checker<'a> {
     /// walked again after it took one (an argument is walked more than
     /// once), and every walk is the one literal.
     decimal_scales: std::collections::HashMap<(usize, usize), u8>,
+    /// GH #2121: the negations refused as a `U64`, by span: a value is
+    /// walked more than once, and each is refused once.
+    u64_negations: std::collections::HashSet<(usize, usize)>,
 }
 
 /// A Decimal literal awaiting its scale's judgment (`Decimal<S>`).
@@ -11865,14 +11884,18 @@ impl<'a> Checker<'a> {
                 let got = self.check_expr(&c.value);
                 // `Decimal<S>`: a scale-less Decimal initializer takes the
                 // ascription's scale; two scales are refused there.
-                if self.decimal_flow(&want, &got, &c.value).is_none() && !want.assignable_from(&got) {
+                if self.decimal_flow(&want, &got, &c.value).is_none()
+                    && self.u64_flow(&want, &got, &c.value).is_none()
+                    && !want.assignable_from(&got)
+                {
                     self.diags.push(Diag::ty(
                         c.value.span(),
                         format!(
-                            "const `{}`: expected `{}`, got `{}`",
+                            "const `{}`: expected `{}`, got `{}`{}",
                             c.name.name,
                             want.display(),
-                            got.display()
+                            got.display(),
+                            wide_conversion_hint(&want, &got)
                         ),
                     ));
                 }
@@ -15789,7 +15812,7 @@ impl<'a> Checker<'a> {
                         let is_numeric = matches!(
                             &p.ty,
                             Ty::Prim(PrimType::Int)
-                                | Ty::Prim(PrimType::Uint)
+                                | Ty::Prim(PrimType::U64)
                                 | Ty::Prim(PrimType::Float)
                                 | Ty::Prim(PrimType::Decimal(_))
                         );
@@ -15800,7 +15823,7 @@ impl<'a> Checker<'a> {
                                     "closure `{}`: `resets_per_epoch(...)` \
                                      field `{}` has non-numeric type `{}`. \
                                      The reset hook zeros the field, which \
-                                     only makes sense for Int / Uint / \
+                                     only makes sense for Int / U64 / \
                                      Float / Decimal counters.",
                                     cd.name.name,
                                     f.name,
@@ -17929,6 +17952,36 @@ impl<'a> Checker<'a> {
                     _ => (then_ty, else_ty),
                 }
             }
+            // GH #2121: an integer literal arm beside a `U64` one is a `U64`
+            (Ty::Prim(PrimType::U64), Ty::Prim(PrimType::Int), Some(else_branch))
+            | (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::U64), Some(else_branch)) => {
+                let else_value: Expr = match else_branch {
+                    ElseBranch::Else(blk) => Expr::Block(blk.clone()),
+                    ElseBranch::ElseIf(nested) => Expr::If(Box::new(nested.clone())),
+                };
+                let then_value = Expr::Block(stmt.then_block.clone());
+                let u64_ty = Ty::Prim(PrimType::U64);
+                // judged on the copies, adopted on the program's own nodes
+                // (a literal's row is keyed by its node)
+                if then_ty == u64_ty && Self::u64_adoptable(&else_value) {
+                    match else_branch {
+                        ElseBranch::Else(blk) => {
+                            if let Some(t) = blk.tail.as_deref() {
+                                self.adopt_u64(t);
+                            }
+                        }
+                        ElseBranch::ElseIf(nested) => self.adopt_if_u64(nested),
+                    }
+                    (u64_ty.clone(), u64_ty)
+                } else if else_ty == u64_ty && Self::u64_adoptable(&then_value) {
+                    if let Some(t) = stmt.then_block.tail.as_deref() {
+                        self.adopt_u64(t);
+                    }
+                    (u64_ty.clone(), u64_ty)
+                } else {
+                    (then_ty, else_ty)
+                }
+            }
             _ => (then_ty, else_ty),
         };
         if then_ty.display() != else_ty.display()
@@ -18168,6 +18221,14 @@ impl<'a> Checker<'a> {
                         } else if matches!((prev, &arm_ty), (Ty::Prim(PrimType::Decimal(_)), Ty::Prim(PrimType::Decimal(_)))) {
                             // `Decimal<S>`: joined below, once every arm
                             // is typed.
+                        } else if matches!(
+                            (prev, &arm_ty),
+                            (Ty::Prim(PrimType::U64), Ty::Prim(PrimType::Int))
+                                | (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::U64))
+                        ) {
+                            // GH #2121: an integer literal arm beside a
+                            // `U64` one is a `U64`; joined below.
+                            joined = Some(Ty::Prim(PrimType::U64));
                         } else if arm_ty != Ty::Unknown && arm_ty != *prev {
                             mismatched = true;
                             let message = if matches!(stmt.form, MatchForm::IfLet | MatchForm::IfLetElse) {
@@ -18193,6 +18254,34 @@ impl<'a> Checker<'a> {
         }
         if as_expr && matches!(joined, Some(Ty::Prim(PrimType::Decimal(_)))) {
             joined = Some(self.join_decimal_arms(stmt, &arm_tys, joined.take().expect("a Decimal")));
+        }
+        // GH #2121: a match whose arms are `U64`s and integer literals is a
+        // `U64`; an `Int` arm that is no literal is the mismatch.
+        // Adopted on the arms as written (`written`): a literal's row is keyed
+        // by its node, and `stmt` is a copy when an arm writes `.Variant`.
+        if as_expr && !mismatched && joined == Some(Ty::Prim(PrimType::U64)) {
+            for (arm, t) in written.arms.iter().zip(&arm_tys) {
+                if *t != Ty::Prim(PrimType::Int) {
+                    continue;
+                }
+                let value = match &arm.body {
+                    MatchArmBody::Expr(e) => Some(e),
+                    MatchArmBody::Block(b) => b.tail.as_deref(),
+                };
+                match value {
+                    Some(e) if Self::u64_adoptable(e) => self.adopt_u64(e),
+                    _ => {
+                        mismatched = true;
+                        self.diags.push(Diag::ty(
+                            stmt.span,
+                            "match expression arms have mismatched types: `U64` vs `Int`: a `U64` never converts \
+                             implicitly; write `U64::from_int(n)`"
+                                .to_string(),
+                        ));
+                        break;
+                    }
+                }
+            }
         }
         self.warn_redundant_alternatives(&stmt.arms, written);
         if matches!(stmt.form, MatchForm::Let | MatchForm::LetElse) {
@@ -20803,6 +20892,11 @@ impl<'a> Checker<'a> {
         if let Some(handled) = self.decimal_flow(want, got, value) {
             return handled;
         }
+        // GH #2121: an `Int` literal into a `U64` place is a `U64`; a
+        // literal past `Int`'s max is one anywhere else.
+        if let Some(handled) = self.u64_flow(want, got, value) {
+            return handled;
+        }
         // GH #1076 (U3): a value counted in a denomination no declaration
         // names, meeting a place the checker has no type for (a generic
         // field of a literal, a parameter it cannot see), has nothing to
@@ -22034,7 +22128,17 @@ impl<'a> Checker<'a> {
         }
         match t {
             Ty::Prim(
-                P::Int | P::Float | P::Bool | P::Decimal(_) | P::U256 | P::I256 | P::Duration | P::Time | P::String | P::Bytes,
+                P::Int
+                | P::U64
+                | P::Float
+                | P::Bool
+                | P::Decimal(_)
+                | P::U256
+                | P::I256
+                | P::Duration
+                | P::Time
+                | P::String
+                | P::Bytes,
             ) => None,
             Ty::Prim(p) => Some(format!("`{}` is not an element type", crate::ty::prim_name(*p))),
             Ty::Tuple(_) => Some("a tuple".into()),
@@ -22107,9 +22211,11 @@ impl<'a> Checker<'a> {
     /// at build, because minting `Box_Bytes` is codegen's business
     /// and the checker had no opinion about which arguments it can
     /// mint. Four of the five missing primitives got tokens
-    /// ([`crate::ty::GENERIC_ARG_PRIMS`]); `Uint` has no storage
-    /// representation to name at all, so it is refused HERE, at the
-    /// instantiation's span, with the supported set named.
+    /// ([`crate::ty::GENERIC_ARG_PRIMS`]); the fifth, the reserved
+    /// `Uint`, had no storage representation to name, so it was refused
+    /// HERE, at the instantiation's span, with the supported set named.
+    /// GH #2121 replaced it with `U64`, which has a token, so no
+    /// primitive is refused today; the check stays for the next one.
     ///
     /// Deliberately NOT gated on `strict_idents`, unlike its caller:
     /// this asks what a `PrimType` is, which the parser has already
@@ -22137,7 +22243,7 @@ impl<'a> Checker<'a> {
                         }
                     }
                     // A nested instantiation carries its own
-                    // arguments: `Box<Box<Uint>>` is the same refusal.
+                    // arguments: a nested refusal is the same refusal.
                     self.check_generic_arg_vocabulary(arg);
                 }
             }
@@ -24043,6 +24149,194 @@ impl<'a> Checker<'a> {
         tys
     }
 
+    /// GH #2121: whether `e` is an integer the place it flows into types:
+    /// an `Int` literal (its digits, or a radix literal's 64-bit pattern),
+    /// `-` or `~` of one, an arithmetic or bit operator over two of them
+    /// (a shift's count stays an `Int`), and a block, an `if` or a `match`
+    /// whose every value is one. A `U64` place takes it as a `U64`.
+    fn u64_adoptable(e: &Expr) -> bool {
+        match e {
+            Expr::Literal(Literal::Int(_), _) => true,
+            Expr::Unary { op: UnaryOp::Neg | UnaryOp::BitNot, operand, .. } => Self::u64_adoptable(operand),
+            Expr::Binary { op: BinOp::Shl | BinOp::Shr, left, right, .. } => {
+                Self::u64_adoptable(left) && matches!(right.as_ref(), Expr::Literal(Literal::Int(_), _))
+            }
+            Expr::Binary {
+                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor,
+                left,
+                right,
+                ..
+            } => Self::u64_adoptable(left) && Self::u64_adoptable(right),
+            Expr::Block(b) => b.tail.as_deref().is_some_and(Self::u64_adoptable),
+            Expr::If(i) => Self::if_u64_adoptable(i),
+            Expr::Match(m) => {
+                !m.arms.is_empty()
+                    && m.arms.iter().all(|a| match &a.body {
+                        MatchArmBody::Expr(e) => Self::u64_adoptable(e),
+                        MatchArmBody::Block(b) => b.tail.as_deref().is_some_and(Self::u64_adoptable),
+                    })
+            }
+            _ => false,
+        }
+    }
+
+    fn if_u64_adoptable(i: &IfStmt) -> bool {
+        i.then_block.tail.as_deref().is_some_and(Self::u64_adoptable)
+            && match i.else_block.as_deref() {
+                Some(ElseBranch::Else(b)) => b.tail.as_deref().is_some_and(Self::u64_adoptable),
+                Some(ElseBranch::ElseIf(nested)) => Self::if_u64_adoptable(nested),
+                None => false,
+            }
+    }
+
+    /// GH #2121: type the `u64_adoptable` `e` a `U64`. Each literal's row
+    /// says so, so lowering lays it out as one (an `i64` either way; what
+    /// the row decides is the operators and the printing over it). A `U64`
+    /// is never negative, so `-` is refused where it is written: `-5`
+    /// into a `U64` place is a check error at the literal, never a wrap.
+    fn adopt_u64(&mut self, e: &Expr) {
+        let u64_ty = Ty::Prim(PrimType::U64);
+        match e {
+            Expr::Literal(Literal::Int(_), _) => {
+                if self.records_views() {
+                    self.views.note_expr(e, u64_ty);
+                } else if let Some(scope) = self.expr_scope() {
+                    self.typed.scoped_expr(self.body, &scope, e, u64_ty);
+                }
+            }
+            Expr::Unary { op: UnaryOp::Neg, operand, span } => {
+                let judged = (span.start.as_usize(), span.end.as_usize());
+                if self.u64_negations.insert(judged) {
+                    let text = match operand.as_ref() {
+                        Expr::Literal(Literal::Int(n), _) => format!("`-{n}`"),
+                        _ => "a negated value".to_string(),
+                    };
+                    self.diags.push(Diag::ty(
+                        *span,
+                        format!(
+                            "{text} cannot be a `U64`: a `U64` is 0 through 2^64 - 1 (18446744073709551615) and has \
+                             no unary `-`; write the value itself, or keep it an `Int`"
+                        ),
+                    ));
+                }
+                self.adopt_u64(operand);
+            }
+            Expr::Unary { operand, .. } => self.adopt_u64(operand),
+            Expr::Binary { op: BinOp::Shl | BinOp::Shr, left, .. } => self.adopt_u64(left),
+            Expr::Binary { left, right, .. } => {
+                self.adopt_u64(left);
+                self.adopt_u64(right);
+            }
+            Expr::Block(b) => {
+                if let Some(t) = b.tail.as_deref() {
+                    self.adopt_u64(t);
+                }
+            }
+            Expr::If(i) => self.adopt_if_u64(i),
+            Expr::Match(m) => {
+                for arm in &m.arms {
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => self.adopt_u64(e),
+                        MatchArmBody::Block(b) => {
+                            if let Some(t) = b.tail.as_deref() {
+                                self.adopt_u64(t);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn adopt_if_u64(&mut self, i: &IfStmt) {
+        if let Some(t) = i.then_block.tail.as_deref() {
+            self.adopt_u64(t);
+        }
+        match i.else_block.as_deref() {
+            Some(ElseBranch::Else(b)) => {
+                if let Some(t) = b.tail.as_deref() {
+                    self.adopt_u64(t);
+                }
+            }
+            Some(ElseBranch::ElseIf(nested)) => self.adopt_if_u64(nested),
+            None => {}
+        }
+    }
+
+    /// GH #2121: a value of `got`, the expression `value`, into a place of
+    /// `want`, when either is a `U64`. An integer literal (`u64_adoptable`)
+    /// into a `U64` is one, as is an array literal of them into an array
+    /// of `U64`; a literal past `Int`'s max into any other place is
+    /// refused naming the range. `None` leaves the pair to the general
+    /// rule (which refuses `Int` into `U64` and back, naming the
+    /// conversion).
+    fn u64_flow(&mut self, want: &Ty, got: &Ty, value: &Expr) -> Option<bool> {
+        let u64_ty = Ty::Prim(PrimType::U64);
+        let want_u64 = self.through_aliases(want.clone()) == u64_ty;
+        if want_u64 && matches!(got, Ty::Prim(PrimType::Int)) && Self::u64_adoptable(value) {
+            self.adopt_u64(value);
+            return Some(true);
+        }
+        if !want_u64 && !matches!(want, Ty::Unknown) {
+            if let Expr::Literal(Literal::U64(n), span) = value {
+                self.diags.push(Diag::ty(
+                    *span,
+                    format!(
+                        "integer literal {n} is past `Int`'s max (9223372036854775807): only a `U64` holds it, \
+                         and its place is `{}`: give the place the type `U64`",
+                        want.display()
+                    ),
+                ));
+                return Some(true);
+            }
+        }
+        // `[1, 2]` / `[0; 4]` into `[U64; N]` (or a `bounded`, whose
+        // literal flows element by element where it is judged)
+        if let Ty::Array(we, wn) = want {
+            if self.through_aliases((**we).clone()) == u64_ty {
+                match value {
+                    Expr::Array(elems, _) if wn.is_none_or(|n| n == elems.len() as u64) => {
+                        if elems.iter().any(Self::u64_adoptable) {
+                            let mut all = true;
+                            for e in elems {
+                                if Self::u64_adoptable(e) {
+                                    self.adopt_u64(e);
+                                } else {
+                                    let t = self.view_expr_ty(e);
+                                    all &= t == u64_ty || matches!(t, Ty::Unknown);
+                                }
+                            }
+                            return Some(all);
+                        }
+                    }
+                    Expr::ArrayRepeat { val, count, .. } if wn.is_none_or(|n| n == *count) && Self::u64_adoptable(val) => {
+                        self.adopt_u64(val);
+                        return Some(true);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        None
+    }
+
+    /// GH #2121: `min(x, 0)` / `max(x, 1)` over a `U64`: an integer
+    /// literal operand is a `U64`, as an operator's is.
+    fn adopt_operand_u64(&mut self, args: &[Expr], mut tys: Vec<Ty>) -> Vec<Ty> {
+        let u64_ty = Ty::Prim(PrimType::U64);
+        if !tys.contains(&u64_ty) {
+            return tys;
+        }
+        for (a, t) in args.iter().zip(tys.iter_mut()) {
+            if matches!(t, Ty::Prim(PrimType::Int)) && Self::u64_adoptable(a) {
+                self.adopt_u64(a);
+                *t = u64_ty.clone();
+            }
+        }
+        tys
+    }
+
     /// The refusal of a Decimal of one scale where another is expected.
     fn decimal_scales_differ(got: &Ty, want: &Ty) -> String {
         let to = match want {
@@ -24728,6 +25022,21 @@ impl<'a> Checker<'a> {
                                     if matches!(repr, Ty::Prim(PrimType::Int | PrimType::Float) | Ty::Unknown) {
                                         continue;
                                     }
+                                    // GH #2121: a `U64`'s `Float` is exact up to
+                                    // 2^53 and rounds past it; its `Int` can
+                                    // overflow, so it is a call that can fail.
+                                    if matches!(repr, Ty::Prim(PrimType::U64)) {
+                                        if id.name == "Float" {
+                                            continue;
+                                        }
+                                        self.diags.push(Diag::ty(
+                                            a.span(),
+                                            "`Int(…)` of a `U64` is not a cast: a `U64` past 2^63 - 1 has no `Int`, so \
+                                             the conversion can fail: write `U64::to_int(x) or ...`"
+                                                .to_string(),
+                                        ));
+                                        continue;
+                                    }
                                     let way = match &repr {
                                         Ty::Prim(PrimType::Bool) => "a `Bool` is no number: write \
                                              `if b { 1 } else { 0 }`"
@@ -24780,6 +25089,7 @@ impl<'a> Checker<'a> {
                                             at,
                                             Ty::Prim(
                                                 PrimType::Int
+                                                    | PrimType::U64
                                                     | PrimType::Float
                                                     | PrimType::Duration
                                                     | PrimType::Decimal(_)
@@ -24791,7 +25101,7 @@ impl<'a> Checker<'a> {
                                             self.diags.push(Diag::ty(
                                                 a.span(),
                                                 format!(
-                                                    "`{}` takes numeric operands (Int / Float / \
+                                                    "`{}` takes numeric operands (Int / U64 / Float / \
                                                      Duration / Decimal / U256 / I256), got `{}`",
                                                     id.name,
                                                     at.display()
@@ -24934,6 +25244,7 @@ impl<'a> Checker<'a> {
                                     );
                                     if !widen_ok
                                         && self.decimal_flow(&elem, &xt, x).is_none()
+                                        && self.u64_flow(&elem, &xt, x).is_none()
                                         && !elem.assignable_from(&xt)
                                     {
                                         self.diags.push(Diag::ty(
@@ -24991,6 +25302,7 @@ impl<'a> Checker<'a> {
                                         // takes the bounded element's scale.
                                         if !widen_ok
                                             && self.decimal_flow(&elem, &xt, x).is_none()
+                                        && self.u64_flow(&elem, &xt, x).is_none()
                                             && !elem.assignable_from(&xt)
                                         {
                                             self.diags.push(Diag::ty(
@@ -25591,7 +25903,8 @@ impl<'a> Checker<'a> {
                         // `Decimal<S>`: `min(d, 0d)`, a scale-less operand
                         // takes the other's scale.
                         let arg_tys = if matches!(id.name.as_str(), "min" | "max") {
-                            self.adopt_operand_decimal_scale(args, arg_tys.clone())
+                            let tys = self.adopt_operand_decimal_scale(args, arg_tys.clone());
+                            self.adopt_operand_u64(args, tys)
                         } else {
                             arg_tys.clone()
                         };
@@ -27475,13 +27788,15 @@ impl<'a> Checker<'a> {
             Ty::Prim(PrimType::Float | PrimType::Decimal(_)) | Ty::Unknown
         );
         // `?` (RFC #2035) takes any printable value, checked above.
+        // GH #2121: a `U64`'s hex is its 64 bits', which is what an
+        // `Int`'s rendering prints too (unsigned)
         if matches!(spec.kind, SpecKind::HexLower | SpecKind::HexUpper)
-            && !matches!(vt, Ty::Prim(PrimType::Int) | Ty::Unknown)
+            && !matches!(vt, Ty::Prim(PrimType::Int | PrimType::U64) | Ty::Unknown)
         {
             self.diags.push(Diag::ty(
                 args[0].span(),
                 format!(
-                    "hexadecimal formatting applies to `Int`, not \
+                    "hexadecimal formatting applies to `Int` or `U64`, not \
                      `{}` — drop the `x`, or convert first",
                     vt.display()
                 ),
@@ -27612,7 +27927,7 @@ impl<'a> Checker<'a> {
                     .map(|why| format!("component {}: {}", i, why))
             }),
             Ty::Array(elem, Some(_)) | Ty::Bounded(elem, _) => Some(format!(
-                "`{}` renders only with scalar elements (Int, Float, \
+                "`{}` renders only with scalar elements (Int, U64, Float, \
                  Bool, Decimal, Duration), and its element type is \
                  `{}`",
                 t.display(),
@@ -27688,6 +28003,83 @@ impl<'a> Checker<'a> {
         Some(if compared { Ty::Prim(PrimType::Bool) } else { Ty::Unknown })
     }
 
+    /// GH #2121: a binary operator with a `U64` operand, when the general
+    /// rule would not answer it: a shift's count is an `Int`; an integer
+    /// literal operand is a `U64` (`x + 1`, `x < 10`); any other mix with
+    /// a different type is refused naming the conversion. `None` leaves
+    /// the operator to the general rule (two `U64`s).
+    fn u64_binop(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span, operands: (&Expr, &Expr)) -> Option<Ty> {
+        use BinOp::*;
+        let u64_ty = Ty::Prim(PrimType::U64);
+        let is_u64 = |t: &Ty| *t == u64_ty;
+        if !is_u64(lt) && !is_u64(rt) {
+            return None;
+        }
+        if matches!(op, Shl | Shr) && is_u64(lt) {
+            if !matches!(rt, Ty::Prim(PrimType::Int) | Ty::Unknown) {
+                self.diags.push(Diag::ty(
+                    span,
+                    format!(
+                        "`{}`: a `U64` shifts by an `Int` count, not a `{}`",
+                        crate::unit_quantities::op_symbol(op),
+                        rt.display()
+                    ),
+                ));
+            }
+            return Some(u64_ty);
+        }
+        // a shift's count is an `Int`, whatever is shifted
+        if matches!(op, Shl | Shr) && is_u64(rt) {
+            self.diags.push(Diag::ty(
+                span,
+                format!(
+                    "`{}`: a shift's count is an `Int`, not a `U64`; write `U64::to_int(n) or ...`",
+                    crate::unit_quantities::op_symbol(op)
+                ),
+            ));
+            return Some(Ty::Unknown);
+        }
+        if lt == rt || matches!(lt, Ty::Unknown) || matches!(rt, Ty::Unknown) || matches!(op, And | Or) {
+            return None;
+        }
+        let compared = matches!(op, Eq | NotEq | Lt | Gt | LtEq | GtEq);
+        let int = |t: &Ty| matches!(t, Ty::Prim(PrimType::Int));
+        let adopted = if is_u64(lt) && int(rt) && Self::u64_adoptable(operands.1) {
+            Some(operands.1)
+        } else if is_u64(rt) && int(lt) && Self::u64_adoptable(operands.0) {
+            Some(operands.0)
+        } else {
+            None
+        };
+        if let Some(lit) = adopted {
+            self.adopt_u64(lit);
+            if let Some(why) = self.operator_refusal(Operator::Binary(op), &u64_ty) {
+                self.diags.push(Diag::ty(span, why));
+                return Some(if compared { Ty::Prim(PrimType::Bool) } else { Ty::Unknown });
+            }
+            return Some(if compared { Ty::Prim(PrimType::Bool) } else { u64_ty });
+        }
+        let other = if is_u64(lt) { rt } else { lt };
+        let hint = match other {
+            Ty::Prim(PrimType::Int) => {
+                "make the `Int` a `U64` with `U64::from_int(n)`, or the `U64` an `Int` with `U64::to_int(x) or ...`"
+                    .to_string()
+            }
+            Ty::Prim(PrimType::Float) => "make the `U64` a `Float` with `Float(x)`".to_string(),
+            Ty::Prim(PrimType::String) if matches!(op, Add) => return None,
+            _ => "convert the other operand to a `U64` explicitly".to_string(),
+        };
+        self.diags.push(Diag::ty(
+            span,
+            format!(
+                "binary op: `{}` and `{}` do not mix: a `U64` never converts implicitly; {hint}",
+                lt.display(),
+                rt.display()
+            ),
+        ));
+        Some(if compared { Ty::Prim(PrimType::Bool) } else { Ty::Unknown })
+    }
+
     fn binop_ty(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span, operands: (&Expr, &Expr)) -> Ty {
         use BinOp::*;
         // Ergonomics arc: `String + <printable>` and the symmetric
@@ -27709,6 +28101,11 @@ impl<'a> Checker<'a> {
         // GH #1934: a 256-bit integer shifts by an `Int` count, and mixes
         // with nothing else: no `Int`, `Decimal` or `Float` operand
         // converts implicitly, in either direction.
+        // GH #2121: a `U64` shifts by an `Int` count, takes an integer
+        // literal as a `U64`, and mixes with nothing else.
+        if let Some(t) = self.u64_binop(op, lt, rt, span, operands) {
+            return t;
+        }
         if let Some(t) = self.wide_binop(op, lt, rt, span) {
             return t;
         }
@@ -27878,6 +28275,11 @@ impl<'a> Checker<'a> {
                     other => lit_ty(other),
                 };
                 let (Some(want), Some(have)) = (self.pattern_repr(scrut), self.pattern_repr(&got)) else { return };
+                // GH #2121: an integer literal matched against a `U64` is
+                // one (its digits, or a radix literal's bit pattern)
+                if want == "U64" && matches!(lit, Literal::Int(_)) {
+                    return;
+                }
                 if want != have {
                     self.diags.push(Diag::ty(
                         *span,
@@ -28035,6 +28437,7 @@ impl<'a> Checker<'a> {
             Ty::Prim(PrimType::Int) => OperandClass::Int,
             Ty::Prim(PrimType::Float) => OperandClass::Float,
             Ty::Prim(PrimType::Decimal(_)) => OperandClass::Decimal,
+            Ty::Prim(PrimType::U64) => OperandClass::U64,
             Ty::Prim(PrimType::U256) => OperandClass::Wide(false),
             Ty::Prim(PrimType::I256) => OperandClass::Wide(true),
             Ty::Prim(PrimType::Bool) => OperandClass::Bool,
@@ -28150,6 +28553,9 @@ impl<'a> Checker<'a> {
             // GH #1934: an Int's operators, unary `-` only where there is
             // a sign.
             (Operator::Binary(b), OperandClass::Wide(_)) => !matches!(b, And | Or),
+            // GH #2121: an Int's operators, and no sign to negate.
+            (Operator::Binary(b), OperandClass::U64) => !matches!(b, And | Or),
+            (Operator::Unary(u), OperandClass::U64) => matches!(u, UnaryOp::BitNot),
             (Operator::Unary(u), OperandClass::Wide(signed)) => match u {
                 UnaryOp::Neg => signed,
                 UnaryOp::BitNot => true,
@@ -28196,6 +28602,10 @@ impl<'a> Checker<'a> {
             OperandClass::Wide(false) => {
                 "a `U256` has `+ - * / %`, `& | ^ ~`, `<<` and `>>` by an `Int` count, and the comparisons; \
                  it has no sign to negate (`I256` does)"
+            }
+            OperandClass::U64 => {
+                "a `U64` has `+ - * / %`, `& | ^ ~`, `<<` and `>>` by an `Int` count, and the comparisons; \
+                 it is never negative, so it has no unary `-`"
             }
             OperandClass::Wide(true) => "an `I256` has `+ - * / %`, unary `-`, `& | ^ ~`, `<< >>`, and the comparisons",
             OperandClass::Bool => "a `Bool` has `==`, `!=`, `&&`, `||` and `!`",
@@ -29158,6 +29568,8 @@ impl<'a> Checker<'a> {
 fn lit_ty(lit: &Literal) -> Ty {
     match lit {
         Literal::Int(_) => Ty::Prim(PrimType::Int),
+        // GH #2121: past `Int`'s max, only a `U64` holds it.
+        Literal::U64(_) => Ty::Prim(PrimType::U64),
         Literal::Float(_) => Ty::Prim(PrimType::Float),
         Literal::Decimal(_) => Ty::Prim(PrimType::DECIMAL),
         Literal::String(_) => Ty::Prim(PrimType::String),

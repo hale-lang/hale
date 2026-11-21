@@ -210,6 +210,7 @@ fn prim_zero(p: PrimType) -> Option<String> {
     Some(
         match p {
             PrimType::Int => "0",
+            PrimType::U64 => "std::u64::from_int(0)",
             PrimType::Float => "0.0",
             PrimType::Bool => "false",
             PrimType::String => "\"\"",

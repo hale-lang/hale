@@ -476,6 +476,7 @@ fn is_wordlike(kind: &TokenKind) -> bool {
         kind,
         Ident(_)
             | IntLit(_)
+            | U64Lit(_)
             | FloatLit(_)
             | DecimalLit(_)
             | StringLit(_)
@@ -531,6 +532,7 @@ fn ends_operand(kind: &TokenKind) -> bool {
         kind,
         Ident(_)
             | IntLit(_)
+            | U64Lit(_)
             | FloatLit(_)
             | DecimalLit(_)
             | StringLit(_)

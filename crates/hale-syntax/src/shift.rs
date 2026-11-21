@@ -742,7 +742,7 @@ impl Shift for PrimType {
     fn shift(&mut self, _: Move) {
         match self {
             PrimType::Int
-            | PrimType::Uint
+            | PrimType::U64
             | PrimType::Float
             | PrimType::Decimal(_)
             | PrimType::U256
@@ -946,6 +946,7 @@ impl Shift for Literal {
     fn shift(&mut self, d: Move) {
         match self {
             Literal::Int(x) => x.shift(d),
+            Literal::U64(_) => {}
             Literal::Float(x) => x.shift(d),
             Literal::Decimal(x) => x.shift(d),
             Literal::String(x) => x.shift(d),

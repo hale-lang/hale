@@ -5,7 +5,7 @@
 //! helper like `fn f(i: Int) -> Int { return i + 1; }` was classified
 //! allocating and paid a per-call scratch-arena malloc/free (~10× the cost
 //! of the same body using `*`). It's now seeded with the fn's numeric
-//! params and classifies `Int/Uint/Float/Duration + …` as non-allocating.
+//! params and classifies `Int/U64/Float/Duration + …` as non-allocating.
 //!
 //! These tests pin the CORRECTNESS boundary the optimization must respect:
 //! a numeric-Add helper computes correctly (and is cheap), and — critically

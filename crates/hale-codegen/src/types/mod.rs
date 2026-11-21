@@ -40,6 +40,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     e,
                     CodegenTy::Enum(_)
                         | CodegenTy::Int
+                        | CodegenTy::U64
                         | CodegenTy::Float
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)
@@ -63,6 +64,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             TypeExpr::Primitive(p, _) => match p {
                 PrimType::Int => Ok(CodegenTy::Int),
+                PrimType::U64 => Ok(CodegenTy::U64),
                 PrimType::Float => Ok(CodegenTy::Float),
                 PrimType::Bool => Ok(CodegenTy::Bool),
                 PrimType::String => Ok(CodegenTy::String),
@@ -75,10 +77,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 PrimType::BytesView => Ok(CodegenTy::BytesView),
                 PrimType::BytesMut => Ok(CodegenTy::BytesMut),
                 PrimType::StringView => Ok(CodegenTy::StringView),
-                other => Err(CodegenError::Unsupported(format!(
-                    "type primitive `{}` in signature",
-                    hale_types::ty::prim_name(*other)
-                ))),
             },
             TypeExpr::Named { path, generic_args, .. }
                 if generic_args.is_empty() && path.segments.len() == 1 =>
@@ -727,7 +725,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // arrays — never a loaded first-class value).
                 self.context.ptr_type(AddressSpace::default()).into()
             }
-            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => {
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration | CodegenTy::Time => {
                 // GH #607: Time is i64 nanoseconds since the epoch.
                 self.context.i64_type().into()
             }
@@ -818,6 +816,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Array(elem, n) => {
                 let prim = match elem.as_ref() {
                     CodegenTy::Int => Some(PrimType::Int),
+                    CodegenTy::U64 => Some(PrimType::U64),
                     CodegenTy::Float => Some(PrimType::Float),
                     CodegenTy::Bool => Some(PrimType::Bool),
                     CodegenTy::Decimal(s) => Some(PrimType::Decimal(*s)),
@@ -1081,7 +1080,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             } else {
                 (val, val_ty)
             };
-            if val_ty != declared_ty {
+            if val_ty != declared_ty && !crate::codegen::int_literal_as_u64(&val_ty, &declared_ty) {
                 return Err(CodegenError::Unsupported(format!(
                     "type `{}` field `{}` type mismatch: declared {}, \
                      got {}",
@@ -1371,6 +1370,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // rejected at lowering, so no deep-copy path exists.
             CodegenTy::Bounded(_, _) => false,
             CodegenTy::Int
+            | CodegenTy::U64
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)

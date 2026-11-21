@@ -317,7 +317,8 @@ Both forms tag a field the same way when its type is flat:
 
 | field type | tag |
 |---|---|
-| `Int`, `Uint`, an identity, a range (`spec/units.md`) | `i` |
+| `Int`, an identity, a range (`spec/units.md`) | `i` |
+| `U64` | `u64` (GH #2121: the same 8 bytes as an `Int`, read as unsigned, so its own contract) |
 | `Float` | `f` |
 | `Bool` | `b` |
 | `Decimal` (`Decimal<9>`) | `d` |

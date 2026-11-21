@@ -1509,7 +1509,7 @@ fn signature_text(path: &str) -> String {
     use hale_types::stdlib_surface::SigTy;
     let t = |s: &SigTy| match s {
         SigTy::Int => "Int".to_string(),
-        SigTy::Uint => "Uint".to_string(),
+        SigTy::U64 => "U64".to_string(),
         SigTy::Float => "Float".to_string(),
         SigTy::Bool => "Bool".to_string(),
         SigTy::Str => "String".to_string(),

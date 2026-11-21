@@ -4489,6 +4489,71 @@ classifier of a call by its callee (the summaries, the effects, the
 capability uses, lowering) would need the same rule twice; rewriting the
 call once keeps one.
 
+### F.60 — `U64` is checked like a 256-bit integer, typed from its literals' places
+
+**Status: accepted and implemented (2026-11-21; GH #2121).**
+
+**Problem.** A program that holds a hash, a counter past `2^63`, or a
+`uint64` a foreign system hands out had no type for it: `Int` is signed
+and wraps, and the reserved `Uint` was a name the parser read and the
+checker refused, with no representation behind it.
+
+**Decision.** `U64` is a primitive, `0` through `2^64 - 1`, the same
+8 bytes as an `Int` read as unsigned, and `Uint` is gone. Its arithmetic
+follows F.46, not `Int`: `+ - *` past either end and `/` or `%` by zero
+are a runtime violation; `U64::wrapping_add` / `wrapping_sub` /
+`wrapping_mul` (and `wrapping_shl` / `wrapping_shr`, the count modulo 64)
+wrap modulo `2^64` for hashes and bit work, and `U64::checked_*` fail
+into an `or`. Division, remainder, comparison and `>>` are unsigned. It
+never converts implicitly, to or from `Int` or any other type; the check
+names the conversion (`U64::from_int(n)`, `U64::to_int(x) or ...`,
+`Float(x)`, `U64::from_float(f) or ...`).
+
+Where this decision chose (spec/types.md § U64):
+
+- **Literals are typed from their place.** An integer literal whose
+  place is a `U64` (a binding, an argument, a return, a field, an
+  operator's other operand, `min` / `max`, an array, a match arm or
+  pattern, an `or`'s fallback) is a `U64`, its type recorded by the
+  check for lowering to lay out. A decimal literal past `Int`'s max is a
+  `U64` by itself and a check error in any other place; one past
+  `2^64 - 1` is a lex error; a negative one into a `U64` is a check
+  error at it. So `let x: U64 = 18446744073709551615;` and `x + 1` need
+  no conversion call, and no literal wraps.
+- **A shift count outside 0 through 63 is a violation.** A `U256`'s
+  count of 256 or more shifts every bit out; a 64-bit shift by 64 or
+  more is undefined in C and a panic in Rust, and a silent zero would
+  hide the bug the count is. `wrapping_shl` / `wrapping_shr` are the
+  forms that take the count modulo 64.
+- **JSON is always a string** of its digits (`0x` hex under
+  `json:",hex"`), read from a string or from a JSON integer that fits,
+  schema `{"type": "string", "x-hale-type": "U64"}`; protobuf is a
+  `uint64`. The generated TypeScript and JavaScript clients parse with
+  `JSON.parse`, exact only through `2^53`; protobuf's JSON mapping writes
+  a `uint64` as a string; and the codecs already write the other integer
+  past a number's reach, `U256`, as one.
+- **Postgres has no column for it**: a `U64` is stored as `numeric(20)`
+  through its decimal text. Hale has no column mapping to refuse a
+  `bigint` at.
+- **The unit dialect's scalars stay over `Int`**: `quantity U64 in …`,
+  `distinct U64` and a range over `U64` are refused at the type, as a
+  `Decimal` base is. A scalar's representation, range checks and
+  conversions are signed `Int` arithmetic, and admitting a `U64` base is
+  a change to that machinery, not to this type.
+- **`@ffi("c")` carries it as a `uint64_t`**, and `@ffi("js")` as the
+  JS number of its unsigned value, as it carries an `Int` (the FFI set
+  does not vary by ABI).
+
+**Considered and rejected.** *Wrapping, as `Int` does*: the issue's
+decision; a wrapped counter or balance is a wrong one, silently, and the
+programs that want modulo arithmetic say so with `wrapping_*`. *A JSON
+number at or below `2^53` and a string above it*: a field whose JSON
+kind depends on its value is a number to one reader and a string to the
+next. *A literal suffix (`5u64`)*: a unit may be named `u64`, as F.46
+found for `u256`; typing a literal from its place needs no new syntax.
+*`U8` / `U16` / `U32` now*: `Int { range: 0..256 }` covers the small
+cases.
+
 ## Deferred & future work
 
 ### semantics — What's deferred

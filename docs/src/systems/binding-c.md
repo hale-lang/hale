@@ -35,6 +35,7 @@ Only portable ABI types may cross an `@ffi("c")` boundary:
 | Hale Type | C ABI Representation | Notes |
 |---|---|---|
 | `Int` | `int64_t` | Signed 64-bit integer. |
+| `U64` | `uint64_t` | Unsigned 64-bit integer. |
 | `Float` | `double` | IEEE-754 64-bit floating point. |
 | `Bool` | `int32_t` | `0` for `false`, `1` for `true`. |
 | `Duration` / `Time` | `int64_t` | Signed 64-bit nanoseconds. |
@@ -44,7 +45,7 @@ Only portable ABI types may cross an `@ffi("c")` boundary:
 | `()` | `void` | Valid as a return type only. |
 
 > [!WARNING]
-> `Decimal`, `Uint`, and fixed-size arrays (`[T; N]`) are rejected on `@ffi("c")` signatures at compile time. Pass numeric components or `Bytes` buffers instead.
+> `Decimal`, `U256` / `I256`, and fixed-size arrays (`[T; N]`) are rejected on `@ffi("c")` signatures at compile time. Pass numeric components or `Bytes` buffers instead.
 
 ## Compiling C Glue and Linking Libraries
 

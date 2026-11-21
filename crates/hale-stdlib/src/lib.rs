@@ -300,6 +300,11 @@ pub const AP_SOURCE: &str = concat!(
     // std::net::resolve (GH #1908): a fn over one native primitive and
     // io_tcp.hl's IoError. Last, so no other file's spans move.
     include_str!("../hl/net.hl"),
+    "\n",
+    // std::u64 (GH #2121): the calls of the 64-bit unsigned integer
+    // that can fail, over native primitives. Last, so no other file's
+    // spans move.
+    include_str!("../hl/u64.hl"),
 );
 
 /// `std::law`: the standard constitutions, loaded only when a program
@@ -357,6 +362,7 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("time_rfc3339.hl", include_str!("../hl/time_rfc3339.hl")),
     ("str_helpers.hl", include_str!("../hl/str_helpers.hl")),
     ("net.hl", include_str!("../hl/net.hl")),
+    ("u64.hl", include_str!("../hl/u64.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -515,6 +521,16 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "i256", "mul_div"], "__std_i256_mul_div"),
     (&["std", "i256", "parse"], "__std_i256_parse"),
     (&["std", "i256", "to_int"], "__std_i256_to_int"),
+    // std::u64 (u64.hl, GH #2121): the calls that fail.
+    (&["std", "u64", "checked_add"], "__std_u64_checked_add"),
+    (&["std", "u64", "checked_div"], "__std_u64_checked_div"),
+    (&["std", "u64", "checked_mul"], "__std_u64_checked_mul"),
+    (&["std", "u64", "checked_sub"], "__std_u64_checked_sub"),
+    (&["std", "u64", "from_be_bytes"], "__std_u64_from_be_bytes"),
+    (&["std", "u64", "from_float"], "__std_u64_from_float"),
+    (&["std", "u64", "from_le_bytes"], "__std_u64_from_le_bytes"),
+    (&["std", "u64", "parse"], "__std_u64_parse"),
+    (&["std", "u64", "to_int"], "__std_u64_to_int"),
     // std::rand::Rng (rand.hl): the seeded generator.
     (&["std", "rand", "Rng"], "__StdRandRng"),
     // std::url (url.hl): percent-encoding.

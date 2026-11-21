@@ -1,0 +1,11 @@
+// Build-only call fixture (F.40 phase 4, S0): the raw `std::u64` rows
+// the stdlib's u64.hl bodies sit on, at expression position (GH #2121).
+// Programs reach them only through those bodies, which the shadow set
+// does not walk. Never run; `stdlib_call_fixtures` builds it to IR.
+
+fn main() {
+    let s = "12";
+    let p = std::u64::__parses(s);
+    let v = std::u64::__parse(s);
+    let f = std::u64::__from_float(1.5);
+}

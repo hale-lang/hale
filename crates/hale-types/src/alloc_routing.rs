@@ -237,6 +237,7 @@ fn literal_spells_call_or_struct(l: &Literal) -> bool {
             s.contains("Call {") || s.contains("Struct {")
         }
         Literal::Int(_)
+        | Literal::U64(_)
         | Literal::Float(_)
         | Literal::Bool(_)
         | Literal::Nil
@@ -326,7 +327,7 @@ struct MemberCtx<'a> {
 /// Conservative: false-negatives just keep a redundant scratch;
 /// a false-positive that skips a needed scratch/deep-copy is a
 /// memory bug, so both gates must hold.
-///   1. `ret` is `None` or a scalar primitive (Int/Uint/Float/
+///   1. `ret` is `None` or a scalar primitive (Int/U64/Float/
 ///      Bool/Duration). Any heap return (String/Bytes/struct/array)
 ///      keeps the scratch — eliding would dangle the return alias.
 ///   2. The body is non-allocating under the method-aware
@@ -343,7 +344,7 @@ fn member_scratch_elidable(
         None => {}
         Some(TypeExpr::Primitive(
             PrimType::Int
-            | PrimType::Uint
+            | PrimType::U64
             | PrimType::Float
             | PrimType::Bool
             | PrimType::Duration,
@@ -623,7 +624,7 @@ fn type_expr_is_scratch_scalar(ty: &TypeExpr) -> bool {
         ty,
         TypeExpr::Primitive(
             PrimType::Int
-                | PrimType::Uint
+                | PrimType::U64
                 | PrimType::Float
                 | PrimType::Bool
                 | PrimType::Duration
@@ -1233,7 +1234,7 @@ struct AllocCtx<'a> {
     /// classifies as arithmetic.
     pub numeric_ret: &'a BTreeSet<String>,
     /// Method-elidability only: `self` fields of a non-allocating numeric
-    /// scalar type (Int / Uint / Float / Duration), so `self.x + 1` is
+    /// scalar type (Int / U64 / Float / Duration), so `self.x + 1` is
     /// arithmetic. EMPTY on the free-fn / locus-arena paths (no `self`).
     pub numeric_self_fields: &'a BTreeSet<String>,
     /// Method-elidability only: scalar (by-value, non-heap) `self` fields —
@@ -1253,7 +1254,7 @@ struct AllocCtx<'a> {
     pub numeric_ret_self_methods: &'a BTreeSet<String>,
     /// Scalar-param-field reads (2026-06-30): a map from an in-scope
     /// PARAM/LOCAL name → the set of that variable's numeric-scalar
-    /// (Int/Uint/Float/Duration) field names, resolved from the variable's
+    /// (Int/U64/Float/Duration) field names, resolved from the variable's
     /// declared struct/`type` shape. Lets `s.value` (a scalar field of a
     /// flat struct param `s`) classify as a non-allocating numeric scalar,
     /// so an enclosing `Add` like `self.sum + s.value` is arithmetic rather
@@ -1278,20 +1279,20 @@ struct AllocCtx<'a> {
     pub fnptr_numeric_ret: &'a BTreeSet<String>,
 }
 
-/// `Int` / `Uint` / `Float` / `Duration` — the scalar types whose `+` is
+/// `Int` / `U64` / `Float` / `Duration` — the scalar types whose `+` is
 /// arithmetic (never String concat) and which never allocate.
 fn type_expr_is_numeric_scalar(ty: &TypeExpr) -> bool {
     matches!(
         ty,
         TypeExpr::Primitive(
-            PrimType::Int | PrimType::Uint | PrimType::Float | PrimType::Duration,
+            PrimType::Int | PrimType::U64 | PrimType::Float | PrimType::Duration,
             _,
         )
     )
 }
 
 /// Build, from the whole program AST, a map `user-type name → its
-/// numeric-scalar field names` (Int/Uint/Float/Duration). Used to recognize
+/// numeric-scalar field names` (Int/U64/Float/Duration). Used to recognize
 /// `s.value` (a scalar field of a flat-struct param/local `s`) as a
 /// non-allocating numeric scalar in the allocation classifier. Walks plain
 /// `type T { ... }` data records (the only shape whose field is read with a
@@ -1459,7 +1460,7 @@ fn fn_body_definitely_non_allocating(
     num: &BTreeSet<String>,
 ) -> bool {
     // `num` is the set of in-scope locals known to hold a non-allocating
-    // numeric scalar (Int / Uint / Float / Duration) — seeded by the
+    // numeric scalar (Int / U64 / Float / Duration) — seeded by the
     // caller (a free fn's numeric params) and extended by numeric `let`s
     // as we walk. It's read by the type-aware `Add` classification: `a + b`
     // allocates only as String concat, so when both operands are provably
@@ -1483,7 +1484,7 @@ fn fn_body_definitely_non_allocating(
 }
 
 /// True iff `e` provably has a non-allocating numeric scalar type (Int /
-/// Uint / Float / Duration), so an enclosing `Add` is arithmetic, not
+/// U64 / Float / Duration), so an enclosing `Add` is arithmetic, not
 /// String concatenation. Conservative — anything not resolvable to a
 /// numeric literal, a known-numeric local (in `num`), or numeric
 /// arithmetic over those is `false`, leaving the `Add` classified as
@@ -1507,7 +1508,7 @@ fn expr_is_nonalloc_numeric(
         }
         // Scalar-param-field read (2026-06-30): `s.value` where `s` is a
         // PARAM/LOCAL of a flat struct type and `value` is one of that
-        // struct's numeric-scalar (Int/Uint/Float/Duration) fields is itself
+        // struct's numeric-scalar (Int/U64/Float/Duration) fields is itself
         // a numeric scalar — so `self.sum + s.value` is arithmetic, not
         // String concat. A scalar field load (GEP+load) never allocates, so
         // this only ever REMOVES a false "possibly-allocating" signal. If the
@@ -1563,7 +1564,7 @@ fn expr_is_nonalloc_numeric(
     }
 }
 
-/// A numeric-scalar `let` binding — an explicit Int/Uint/Float/Duration
+/// A numeric-scalar `let` binding — an explicit Int/U64/Float/Duration
 /// ascription, or a RHS that's provably numeric. Its name then joins the
 /// numeric scope so later `Add`s over it classify correctly. (Typecheck
 /// guarantees the RHS matches an ascription, so trusting the ascription is
@@ -1842,7 +1843,7 @@ fn expr_definitely_non_allocating(
 /// Gate 1 for method-scratch elision (stage 2's, [`elidable_methods`];
 /// stage 1, [`member_scratch_elidable`], spells the same gate inline): a
 /// method is elision-eligible only if its declared return is `None` (Unit)
-/// or a by-value scalar primitive (Int / Uint / Float / Bool / Duration).
+/// or a by-value scalar primitive (Int / U64 / Float / Bool / Duration).
 /// Any heap return (String / Bytes / struct / array) keeps the scratch —
 /// eliding would dangle the return alias, and as a CALL TARGET its result
 /// would be a fresh heap value the caller can't treat as non-allocating.
@@ -1851,7 +1852,7 @@ fn ret_is_scalar_or_unit(ret: Option<&TypeExpr>) -> bool {
         ret,
         None | Some(TypeExpr::Primitive(
             PrimType::Int
-                | PrimType::Uint
+                | PrimType::U64
                 | PrimType::Float
                 | PrimType::Bool
                 | PrimType::Duration,
@@ -1951,7 +1952,7 @@ fn elidable_methods(
                     match p.ty.as_ref() {
                         Some(TypeExpr::Primitive(
                             PrimType::Int
-                            | PrimType::Uint
+                            | PrimType::U64
                             | PrimType::Float
                             | PrimType::Duration,
                             _,

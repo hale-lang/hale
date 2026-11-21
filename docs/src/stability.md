@@ -81,6 +81,7 @@ namespace or spec file cannot land without a tier.
 | `std::time` | stable |  |
 | `std::ts` | experimental | the tree-sitter shim parses Go only, for DNA's ingest |
 | `std::u256` | experimental | new (GH #1934) |
+| `std::u64` | experimental | new (GH #2121) |
 | `std::url` | stable |  |
 
 ### Specification
@@ -110,7 +111,7 @@ namespace or spec file cannot land without a tier.
 | [`spec/styleguide.md`](https://github.com/hale-lang/hale/blob/main/spec/styleguide.md) | stable |  |
 | [`spec/testing.md`](https://github.com/hale-lang/hale/blob/main/spec/testing.md) | stable | experimental: § Property-based testing. |
 | [`spec/tokens.md`](https://github.com/hale-lang/hale/blob/main/spec/tokens.md) | stable |  |
-| [`spec/types.md`](https://github.com/hale-lang/hale/blob/main/spec/types.md) | stable | experimental: § U256 and I256 — 256-bit integers; § Scalar types (GH #1076); § Roles (GH #1109, #1417); § Working-set estimator (F.32-2). |
+| [`spec/types.md`](https://github.com/hale-lang/hale/blob/main/spec/types.md) | stable | experimental: § U64 — a 64-bit unsigned integer; § U256 and I256 — 256-bit integers; § Scalar types (GH #1076); § Roles (GH #1109, #1417); § Working-set estimator (F.32-2). |
 | [`spec/units.md`](https://github.com/hale-lang/hale/blob/main/spec/units.md) | experimental | the unit dialect is new (GH #1076) and its rows are still growing |
 | [`spec/verification.md`](https://github.com/hale-lang/hale/blob/main/spec/verification.md) | stable | experimental: § Fleet composition (GH #408 Phase 1); § The requirements artifact (GH #1835). |
 
