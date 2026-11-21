@@ -4557,7 +4557,7 @@ Where this decision chose (spec/types.md § U64):
   `distinct U64` and a range over `U64` are refused at the type, as a
   `Decimal` base is. A scalar's representation, range checks and
   conversions are signed `Int` arithmetic, and admitting a `U64` base is
-  a change to that machinery, not to this type. (Superseded by F.61:
+  a change to that machinery, not to this type. (Superseded by F.62:
   the base is a parameter, and a `U64` is one.)
 - **`@ffi("c")` carries it as a `uint64_t`**, and `@ffi("js")` as the
   JS number of its unsigned value, as it carries an `Int` (the FFI set
@@ -4572,68 +4572,6 @@ next. *A literal suffix (`5u64`)*: a unit may be named `u64`, as F.46
 found for `u256`; typing a literal from its place needs no new syntax.
 *`U8` / `U16` / `U32` now*: `Int { range: 0..256 }` covers the small
 cases.
-
-### F.61 — The unit dialect's base integer is a parameter
-
-**Status: accepted and implemented (2026-11-21; GH #2131).**
-
-**Problem.** F.60 admitted `U64` and refused it as a unit-dialect base:
-every quantity, point, identity and range counted an `Int`, and the
-representation, the range checks and the conversion factors were
-signed `Int` arithmetic. A wei balance, a nonce or a port held as a
-`U64` could not also be the quantity, identity or range it is, and the
-fixed-width integers to come (GH #2132) would each have needed the same
-change again.
-
-**Decision.** A scalar counts a **base** integer, a parameter of the
-dialect (spec/units.md § The base): `Int` or `U64` now, and any machine
-integer the language adds, with no rule of the dialect's changed. The
-base is the machine integer the root of a scalar's chain is written
-over (`quantity U64 in wei`, `distinct U64`, `U64 { range: … }`); a
-refinement, a boundary denomination, a point and a range over a scalar
-count their parent's. Every rule reads the base's width and signedness
-from the primitive (`PrimType::machine_int`): its representation, its
-literals' and range bounds' values, its arithmetic (a `U64`'s unsigned,
-an overflow a violation), its conversions' multiplications and
-divisions (a `U64`'s unsigned, a factor held to its range), its wire
-form, its shape tag, its FFI class and its report's headroom.
-
-Where this decision chose:
-
-- **A component counts one integer.** Every quantity of a component
-  counts the integer its quantity counts, so an `Int` count and a `U64`
-  count of one denomination never meet in an operator, an `or` or a
-  conversion: a boundary denomination written over the other integer is
-  refused at its base (law 5), naming the conversion through the count
-  (`U64::from_int(n)`, `U64::to_int(x) or ...`) into a quantity of units
-  of its own. The stdlib's time component counts an `Int`.
-- **No integer mixes implicitly.** An `Int` beside a scalar counting a
-  `U64`, or flowing into one, is refused naming the conversion, as an
-  `Int` beside a `U64` is (F.60); an integer literal is typed from its
-  place, as for a `U64`. `U64(nonce)` is an identity's `U64`, and
-  `Nonce(n)` of an `Int` is refused for `Nonce(U64::from_int(n))`.
-- **A factor is checked at the check.** A conversion whose factor's
-  numerator or denominator no value of the base holds is refused by the
-  check at the conversion, for an `Int` base too (it was the build's
-  refusal alone): a `U64` holds `10^19`, an `Int` does not.
-- **A quantity literal's magnitude is a `U64`'s.** `18446744073709551615wei`
-  is a literal; its count is held to the base it flows into, so the same
-  digits against a unit of an `Int` quantity are refused at the literal,
-  as a count past `Int`'s max always was.
-- **Wire and shape follow the base.** A scalar counting a `U64` is a
-  JSON string of its digits and a protobuf `uint64` (F.60's form), a
-  shape tag `u64` (an identity, a range) or `q(u64 <denomination>)`, and
-  an `@ffi("c")` `uint64_t`; an `Int`'s are as they were, so no existing
-  shape hash moves. A `RangeError` or `InexactError` field past `Int`'s
-  max is `Int`'s max.
-
-**Considered and rejected.** *A base per quantity, mixed within a
-component*: the stdlib's time literals and every literal of a unit are
-their component quantity's, so a `U64` boundary denomination of
-`Duration` would make `t + 1ms` a mix of two integers; the conversion
-between them would be a second narrowing beside the factor's, with two
-policies after one `or`. *Special-casing `U64`*: GH #2132's integers
-would each repeat it.
 
 ## Deferred & future work
 
@@ -4841,3 +4779,65 @@ duplicates an existing feature, has no checkable meaning, or checks
 something that cannot happen (above). *Keeping the three words
 reserved for a later meaning.* Nothing is planned for them, and a
 reserved word costs every program the name.
+
+### F.62 — The unit dialect's base integer is a parameter
+
+**Status: accepted and implemented (2026-11-21; GH #2131).**
+
+**Problem.** F.60 admitted `U64` and refused it as a unit-dialect base:
+every quantity, point, identity and range counted an `Int`, and the
+representation, the range checks and the conversion factors were
+signed `Int` arithmetic. A wei balance, a nonce or a port held as a
+`U64` could not also be the quantity, identity or range it is, and the
+fixed-width integers to come (GH #2132) would each have needed the same
+change again.
+
+**Decision.** A scalar counts a **base** integer, a parameter of the
+dialect (spec/units.md § The base): `Int` or `U64` now, and any machine
+integer the language adds, with no rule of the dialect's changed. The
+base is the machine integer the root of a scalar's chain is written
+over (`quantity U64 in wei`, `distinct U64`, `U64 { range: … }`); a
+refinement, a boundary denomination, a point and a range over a scalar
+count their parent's. Every rule reads the base's width and signedness
+from the primitive (`PrimType::machine_int`): its representation, its
+literals' and range bounds' values, its arithmetic (a `U64`'s unsigned,
+an overflow a violation), its conversions' multiplications and
+divisions (a `U64`'s unsigned, a factor held to its range), its wire
+form, its shape tag, its FFI class and its report's headroom.
+
+Where this decision chose:
+
+- **A component counts one integer.** Every quantity of a component
+  counts the integer its quantity counts, so an `Int` count and a `U64`
+  count of one denomination never meet in an operator, an `or` or a
+  conversion: a boundary denomination written over the other integer is
+  refused at its base (law 5), naming the conversion through the count
+  (`U64::from_int(n)`, `U64::to_int(x) or ...`) into a quantity of units
+  of its own. The stdlib's time component counts an `Int`.
+- **No integer mixes implicitly.** An `Int` beside a scalar counting a
+  `U64`, or flowing into one, is refused naming the conversion, as an
+  `Int` beside a `U64` is (F.60); an integer literal is typed from its
+  place, as for a `U64`. `U64(nonce)` is an identity's `U64`, and
+  `Nonce(n)` of an `Int` is refused for `Nonce(U64::from_int(n))`.
+- **A factor is checked at the check.** A conversion whose factor's
+  numerator or denominator no value of the base holds is refused by the
+  check at the conversion, for an `Int` base too (it was the build's
+  refusal alone): a `U64` holds `10^19`, an `Int` does not.
+- **A quantity literal's magnitude is a `U64`'s.** `18446744073709551615wei`
+  is a literal; its count is held to the base it flows into, so the same
+  digits against a unit of an `Int` quantity are refused at the literal,
+  as a count past `Int`'s max always was.
+- **Wire and shape follow the base.** A scalar counting a `U64` is a
+  JSON string of its digits and a protobuf `uint64` (F.60's form), a
+  shape tag `u64` (an identity, a range) or `q(u64 <denomination>)`, and
+  an `@ffi("c")` `uint64_t`; an `Int`'s are as they were, so no existing
+  shape hash moves. A `RangeError` or `InexactError` field past `Int`'s
+  max is `Int`'s max.
+
+**Considered and rejected.** *A base per quantity, mixed within a
+component*: the stdlib's time literals and every literal of a unit are
+their component quantity's, so a `U64` boundary denomination of
+`Duration` would make `t + 1ms` a mix of two integers; the conversion
+between them would be a second narrowing beside the factor's, with two
+policies after one `or`. *Special-casing `U64`*: GH #2132's integers
+would each repeat it.

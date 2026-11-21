@@ -432,7 +432,7 @@ It is no routing key,
 no `Numeric` generic bound's argument and no accumulator's element
 (`sum(self.x)`).
 
-**Units over `U64`** (GH #2131, F.61). The unit dialect's base integer
+**Units over `U64`** (GH #2131, F.62). The unit dialect's base integer
 is a parameter (spec/units.md § The base), and a `U64` is one: `type
 Wei = quantity U64 in wei;`, `type Nonce = distinct U64;` and `type
 Port = U64 { range: 1..65536; }` are each a `U64` that never mixes.
