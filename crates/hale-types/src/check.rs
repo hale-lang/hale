@@ -17241,7 +17241,16 @@ impl<'a> Checker<'a> {
                 let mut want = want;
                 if let (Some(bin), Some(w)) = (assign_binop(*op), self.scalars.quantity(&want)) {
                     use crate::unit_quantities::QKind;
-                    let int = matches!(got, Ty::Prim(PrimType::Int));
+                    // GH #2131: the count that scales it is the integer it
+                    // counts; an integer literal is one.
+                    let counted = self.scalars.counted(&w);
+                    let mut int = got == Ty::Prim(counted);
+                    if !int && got == Ty::Prim(PrimType::Int) && Self::u64_adoptable(value) {
+                        if matches!(bin, BinOp::Mul | BinOp::Div) {
+                            self.adopt_int(value, counted);
+                        }
+                        int = true;
+                    }
                     let literal = crate::unit_values::int_literal(value);
                     match bin {
                         BinOp::Add | BinOp::Sub if w.kind == QKind::Point => want = self.scalars.point_delta(&w),
@@ -17255,10 +17264,11 @@ impl<'a> Checker<'a> {
                             self.unit_error(Diag::ty(
                                 *span,
                                 format!(
-                                    "`{target} {}= {}`: a quantity adds and subtracts its own kind, and scales by an \
-                                     `Int`; a literal divisor is a narrowing, written `x = x / n or …`",
+                                    "`{target} {}= {}`: a quantity adds and subtracts its own kind, and scales by {}; \
+                                     a literal divisor is a narrowing, written `x = x / n or …`",
                                     crate::unit_quantities::op_symbol(bin),
-                                    self.scalars.type_display(&got)
+                                    self.scalars.type_display(&got),
+                                    crate::units::article_int(crate::ty::prim_name(counted))
                                 ),
                             ));
                             got = want.clone();
@@ -20951,9 +20961,16 @@ impl<'a> Checker<'a> {
             return handled;
         }
         if let Some(v) = crate::unit_values::int_literal(value) {
-            if matches!(got, Ty::Prim(PrimType::Int)) {
+            if matches!(got, Ty::Prim(PrimType::Int | PrimType::U64)) {
                 match self.scalars.literal(want, v, value.span()) {
-                    Some(Ok(())) => return true,
+                    Some(Ok(())) => {
+                        // GH #2131: the literal is a value of the integer
+                        // `want` counts.
+                        if let Some(int) = self.scalars.int_of(want) {
+                            self.adopt_int(value, int);
+                        }
+                        return true;
+                    }
                     Some(Err(d)) => {
                         self.diags.push(d);
                         return true;
@@ -21254,6 +21271,8 @@ impl<'a> Checker<'a> {
             (Some(_), Some(_)) => None,
             (Some(w), None) => {
                 if w.kind == QKind::Quantity && crate::unit_values::int_literal(value) == Some(0) {
+                    let int = self.scalars.counted(w);
+                    self.adopt_int(value, int);
                     return Some(true);
                 }
                 Some(match got {
@@ -21323,18 +21342,22 @@ impl<'a> Checker<'a> {
             // holds) has no count to convert, and no second error.
             let Ok((_, n)) = self.scalars.quantity_literal(written, unit) else { return };
             let n = if negated { -n } else { n };
-            if narrows && crate::unit_quantities::convert_count(n, &scale, None).is_some() {
+            // GH #2131: the count is a value of the integer the target
+            // counts (a `U64`'s is never negative).
+            let int = self.scalars.int_of(to).unwrap_or(PrimType::Int);
+            if narrows && crate::unit_quantities::convert_count(n, &scale, None, int).is_some() {
                 row.kind = ConversionKind::Widening;
                 row.policy = None;
             }
-            match crate::unit_quantities::convert_count(n, &scale, policy) {
+            match crate::unit_quantities::convert_count(n, &scale, policy, int) {
                 Some(Ok(count)) => row.count = Some(count),
                 Some(Err(())) => self.unit_error(Diag::ty(
                     value.span(),
                     format!(
-                        "`{}{written}{unit}` as a count of `{}` overflows an `Int`",
+                        "`{}{written}{unit}` as a count of `{}` overflows {}",
                         if negated { "-" } else { "" },
-                        row.target
+                        row.target,
+                        crate::units::article_int(crate::ty::prim_name(int))
                     ),
                 )),
                 None => {}
@@ -21343,15 +21366,27 @@ impl<'a> Checker<'a> {
             self.typed.reconversion(self.body, site, row);
             return;
         }
+        self.refuse_factor(value.span(), &scale, to);
         row.scale = Some(scale);
         self.typed.conversion(self.body, site, row);
+    }
+
+    /// GH #2131: a conversion of a value (not a literal, whose count the
+    /// check computes) into `to` whose factor no value of the integer `to`
+    /// counts holds: refused at `span`, where the build would refuse it.
+    fn refuse_factor(&mut self, span: Span, scale: &crate::typed_bodies::Scale, to: &Ty) {
+        let Some(int) = self.scalars.int_of(to) else { return };
+        let target = self.scalars.type_display(to);
+        if let Some(why) = self.scalars.factor_refusal(scale, int, &target) {
+            self.unit_error(Diag::ty(span, why));
+        }
     }
 
     /// GH #1076 (U3, U4): a quantity literal: its component's quantity at
     /// the quantity's denomination when the literal is a whole count of
     /// it (`500ms` is `Duration`), else at its own unit, with its own row
     /// (its count, before it flows anywhere).
-    fn quantity_literal(&mut self, n: i64, unit: &str, span: Span) -> Ty {
+    fn quantity_literal(&mut self, n: u64, unit: &str, span: Span) -> Ty {
         use crate::typed_bodies::{ConversionKind, ConversionRow, Scale};
         match self.scalars.quantity_literal(n, unit) {
             Err((why, ty)) => {
@@ -21479,7 +21514,7 @@ impl<'a> Checker<'a> {
                 if let Some((n, unit, negated)) = written_quantity_literal(arg) {
                     let Ok((_, n)) = self.scalars.quantity_literal(n, unit) else { return to };
                     let n = if negated { -n } else { n };
-                    if crate::unit_quantities::convert_count(n, &scale, q.policy).is_some() {
+                    if crate::unit_quantities::convert_count(n, &scale, q.policy, self.scalars.counted(&q)).is_some() {
                         self.record_scale(arg, &from, &to, scale, q.policy);
                         let one = crate::typed_bodies::Scale { factor: crate::unit_graph::Ratio::one(), offset: 0 };
                         if self.specializing.is_none() {
@@ -21492,6 +21527,7 @@ impl<'a> Checker<'a> {
                         return to;
                     }
                 }
+                self.refuse_factor(span, &scale, &to);
                 if self.specializing.is_none() {
                     let narrows = !scale.factor.is_integral();
                     let kind = if narrows { ConversionKind::Narrowing } else { ConversionKind::Widening };
@@ -21533,6 +21569,9 @@ impl<'a> Checker<'a> {
         if method == "in" {
             let to = self.scalars.at_denomination(q.base, &denom);
             let target = crate::unit_quantities::QType { denom, policy: None, range: None, synthesized: true, ..q.clone() };
+            if let Ok(scale) = self.scalars.scale(&q, &target) {
+                self.refuse_factor(span, &scale, &to);
+            }
             match self.scalars.scale(&q, &target) {
                 Ok(scale) if self.specializing.is_none() => {
                     let kind =
@@ -21560,10 +21599,17 @@ impl<'a> Checker<'a> {
         let Some((rest, scale, divisor)) = self.scalars.split(&t, &q, &denom) else {
             return Ty::Unknown;
         };
-        let Ok(divisor) = i64::try_from(divisor) else {
-            self.unit_error(Diag::ty(span, "`.split(…)`: the unit's count overflows an `Int`".to_string()));
-            return Ty::Unknown;
+        // GH #2131: the whole part is a count of the integer `x` counts.
+        let int = self.scalars.counted(&q);
+        let divisor = match i128::try_from(&divisor) {
+            Ok(d) if crate::units::int_holds(int, &divisor) => d,
+            _ => {
+                let a = crate::units::article_int(crate::ty::prim_name(int));
+                self.unit_error(Diag::ty(span, format!("`.split(…)`: the unit's count overflows {a}")));
+                return Ty::Unknown;
+            }
         };
+        self.refuse_factor(span, &scale, &rest);
         if self.specializing.is_none() {
             let mut row = ConversionRow::new(span, t, rest.clone(), ConversionKind::Widening, self.scalars.type_display(&rest));
             row.scale = Some(scale);
@@ -21571,7 +21617,7 @@ impl<'a> Checker<'a> {
             let site = self.site(SiteKind::Cast(call.0));
             self.typed.conversion(self.body, site, row);
         }
-        Ty::Tuple(vec![Ty::Prim(PrimType::Int), rest])
+        Ty::Tuple(vec![Ty::Prim(int), rest])
     }
 
     /// `Decimal<S>`: `d.rescale(T)`, `d` a `Decimal<from>` and `T` an
@@ -21638,8 +21684,11 @@ impl<'a> Checker<'a> {
         {
             return None;
         }
-        let to = if callee.name == "Int" {
-            if self.top.lookup("Int").is_some() || args.len() != 1 {
+        // GH #2131: `Int(x)` and `U64(x)` are an identity's or a range's
+        // integer, the one it counts.
+        let int = hale_syntax::parser::primitive_from_name(&callee.name).filter(|p| p.machine_int().is_some());
+        let to = if let Some(int) = int {
+            if self.top.lookup(&callee.name).is_some() || args.len() != 1 {
                 return None;
             }
             let mark = self.walk_mark();
@@ -21649,19 +21698,20 @@ impl<'a> Checker<'a> {
                 self.unit_error(Diag::ty(
                     span,
                     format!(
-                        "`Int(…)` of `{}`: a quantity's count in a unit is a quotient (`q / 1{}`), a point's the \
+                        "`{}(…)` of `{}`: a quantity's count in a unit is a quotient (`q / 1{}`), a point's the \
                          quantity from an origin's",
+                        callee.name,
                         self.scalars.quantity_display(&q),
                         self.scalars.unit_hint(&q)
                     ),
                 ));
-                return Some(Ty::Prim(PrimType::Int));
+                return Some(Ty::Prim(int));
             }
             if self.scalars.index(&from).is_none() {
                 self.discard_since(mark);
                 return None;
             }
-            return Some(self.check_cast(call, span, Ty::Prim(PrimType::Int), from, "Int"));
+            return Some(self.check_cast(call, span, Ty::Prim(int), from, &callee.name));
         } else {
             // U4: `Duration(…)` and `Time(…)` name the stdlib's
             // declarations, whose type is the primitive.
@@ -21698,7 +21748,15 @@ impl<'a> Checker<'a> {
             }
             t
         };
-        let from = self.check_expr(&args[0]);
+        let mut from = self.check_expr(&args[0]);
+        // GH #2131: an integer literal cast into a scalar counting another
+        // integer than `Int` (`Nonce(5)`) is a value of that integer.
+        if let Some(int) = self.scalars.int_of(&to).filter(|p| *p != PrimType::Int) {
+            if from == Ty::Prim(PrimType::Int) && Self::u64_adoptable(&args[0]) {
+                self.adopt_int(&args[0], int);
+                from = Ty::Prim(int);
+            }
+        }
         let target = callee.name.clone();
         Some(self.check_cast(call, span, to, from, &target))
     }
@@ -24212,7 +24270,10 @@ impl<'a> Checker<'a> {
             self.adopt_u64(value);
             return Some(true);
         }
-        if !want_u64 && !matches!(want, Ty::Unknown) {
+        // GH #2131: a scalar counting a `U64` takes the literal as its
+        // own rules say (its range).
+        let scalar_u64 = self.scalars.int_of(want) == Some(PrimType::U64);
+        if !want_u64 && !scalar_u64 && !matches!(want, Ty::Unknown) {
             if let Expr::Literal(Literal::U64(n), span) = value {
                 self.diags.push(Diag::ty(
                     *span,
@@ -24253,6 +24314,36 @@ impl<'a> Checker<'a> {
             }
         }
         None
+    }
+
+    /// GH #2131: an integer literal where a value of the integer a
+    /// unit-dialect scalar counts is expected is one: a `U64`'s is adopted
+    /// as a `U64` (`adopt_u64`), and an `Int`'s is one already.
+    fn adopt_int(&mut self, e: &Expr, int: PrimType) {
+        if int == PrimType::U64 {
+            self.adopt_u64(e);
+        }
+    }
+
+    /// GH #2131: the operand types of `op` once an integer literal scaling
+    /// a quantity (`q * 3`, `3 * q`, `q / 2`) that counts an integer other
+    /// than `Int` is adopted as that integer, so the algebra reads the
+    /// count it is.
+    fn adopt_scaling_literal(&mut self, op: BinOp, lt: &Ty, rt: &Ty, operands: (&Expr, &Expr)) -> (Ty, Ty) {
+        let (mut l, mut r) = (lt.clone(), rt.clone());
+        if !matches!(op, BinOp::Mul | BinOp::Div) || !self.scalars.has_quantities() {
+            return (l, r);
+        }
+        let counted = |t: &Ty| self.scalars.quantity(t).map(|q| self.scalars.counted(&q)).filter(|p| *p != PrimType::Int);
+        let int = Ty::Prim(PrimType::Int);
+        if let (Some(p), true) = (counted(lt), *rt == int && Self::u64_adoptable(operands.1)) {
+            self.adopt_int(operands.1, p);
+            r = Ty::Prim(p);
+        } else if let (Some(p), true, BinOp::Mul) = (counted(rt), *lt == int && Self::u64_adoptable(operands.0), op) {
+            self.adopt_int(operands.0, p);
+            l = Ty::Prim(p);
+        }
+        (l, r)
     }
 
     /// GH #2121: `min(x, 0)` / `max(x, 1)` over a `U64`: an integer
@@ -27949,6 +28040,11 @@ impl<'a> Checker<'a> {
         if !is_u64(lt) && !is_u64(rt) {
             return None;
         }
+        // GH #2131: a scalar of the unit dialect beside a `U64` (a count
+        // scaling a quantity, `n * 1wei`) is the unit rules' to judge.
+        if self.scalars.int_of(lt).is_some() || self.scalars.int_of(rt).is_some() {
+            return None;
+        }
         if matches!(op, Shl | Shr) && is_u64(lt) {
             if !matches!(rt, Ty::Prim(PrimType::Int) | Ty::Unknown) {
                 self.diags.push(Diag::ty(
@@ -28080,6 +28176,10 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // GH #2131: an integer literal scaling a quantity that counts
+        // another integer than `Int` (`w * 3`, `w / 2`) is that integer.
+        let (lt, rt) = self.adopt_scaling_literal(op, lt, rt, operands);
+        let (lt, rt) = (&lt, &rt);
         // GH #1076 (U3): a quantity or a point on either side: the
         // algebra's answer, each operand's conversion a row at it.
         if let Some(rule) = self.scalars.quantity_binop(op, lt, rt, operands.0, operands.1) {
@@ -28092,7 +28192,15 @@ impl<'a> Checker<'a> {
             Some(crate::unit_values::BinopRule::AsInt(l, r)) => {
                 return self.binop_ty(op, &l, &r, span, operands);
             }
-            Some(crate::unit_values::BinopRule::Compared) => return Ty::Prim(PrimType::Bool),
+            Some(crate::unit_values::BinopRule::Compared) => {
+                // GH #2131: a literal facing a scalar counting a `U64` is one
+                for (lit, other) in [(operands.0, rt), (operands.1, lt)] {
+                    if let (Some(int), Some(_)) = (self.scalars.int_of(other), crate::unit_values::int_literal(lit)) {
+                        self.adopt_int(lit, int);
+                    }
+                }
+                return Ty::Prim(PrimType::Bool);
+            }
             Some(crate::unit_values::BinopRule::Refused(why)) => {
                 self.diags.push(Diag::ty(span, why));
                 return if matches!(op, Eq | NotEq | Lt | Gt | LtEq | GtEq) { Ty::Prim(PrimType::Bool) } else { Ty::Unknown };
@@ -28327,13 +28435,15 @@ impl<'a> Checker<'a> {
 
     /// What a pattern's side is laid out as (`check_pattern_literals`):
     /// its primitive, any `Decimal` scale alike, an identity's, a range's
-    /// or a quantity's `Int`; `None` for what the comparison leaves alone.
+    /// or a quantity's integer (its representation, GH #2131); `None` for
+    /// what the comparison leaves alone.
     fn pattern_repr(&self, t: &Ty) -> Option<String> {
         match t {
             Ty::Prim(PrimType::Decimal(_)) => Some("Decimal".into()),
             Ty::Prim(p) => Some(crate::ty::prim_name(*p).into()),
             Ty::Named(n) => match self.top.symbols.get(n) {
                 Some(TopSymbol::Type(ti)) => match &ti.kind {
+                    TypeKind::Scalar(Ty::Prim(p)) => Some(crate::ty::prim_name(*p).into()),
                     TypeKind::Scalar(_) => Some("Int".into()),
                     TypeKind::Enum(_) | TypeKind::Struct(_) => Some(n.clone()),
                     TypeKind::Alias(inner) => self.pattern_repr(inner),
@@ -30043,7 +30153,7 @@ mod store_origin_tests {
 /// GH #1076: a quantity literal as written, `3b` or `-3b`: its magnitude,
 /// its unit and whether it is negated. A negated literal is the literal
 /// of the negated count wherever it flows (spec/units.md § Literals).
-fn written_quantity_literal(e: &Expr) -> Option<(i64, &str, bool)> {
+fn written_quantity_literal(e: &Expr) -> Option<(u64, &str, bool)> {
     match e {
         Expr::Literal(Literal::Quantity { value, unit }, _) => Some((*value, unit.as_str(), false)),
         Expr::Unary { op: UnaryOp::Neg, operand, .. } => match operand.as_ref() {

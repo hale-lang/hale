@@ -104,7 +104,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
-          pattern: hale-*
+          # Only the tarballs. The image build in this same run leaves
+          # docker build records (`hale-lang~hale~<id>.dockerbuild`), which
+          # `hale-*` also matched; the download failed on them and nothing
+          # was published (first nightly, run 44921259578).
+          pattern: hale-*-*-*
           merge-multiple: true
 
       - name: Create the pre-release

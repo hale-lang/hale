@@ -334,3 +334,29 @@ fn a_factor_no_int_holds_is_a_located_error() {
         other => panic!("expected a located refusal, got {other}"),
     }
 }
+
+/// GH #2131: a quantity and a range counting a `U64` convert in the
+/// `U64`'s arithmetic, read from the row: a widening is the `U64`'s
+/// checked multiplication (an overflow a violation, never a wrap), a
+/// narrowing's division and its rounding are unsigned, `.split(u)`
+/// divides unsigned with no correction, and a range narrowing compares
+/// unsigned.
+#[test]
+fn a_u64_base_converts_unsigned_and_checked() {
+    let decls = "unit wei;\nunit gwei = 1_000_000_000 wei;\ntype Wei = quantity U64 in wei;\n\
+                 type Gwei = Wei in gwei { round: half_up; }\ntype Port = U64 { range: 1..65536; }\n";
+    let widen = conv_ir_after(decls, "(g: Gwei) -> Wei", "    return g;\n");
+    assert!(widen.contains("@llvm.umul.with.overflow.i64"), "a checked multiplication: {widen}");
+    assert_eq!(count(&widen, " mul i64"), 0, "no wrapping multiplication: {widen}");
+    let narrow = conv_ir_after(decls, "(w: Wei) -> Gwei", "    return w;\n");
+    assert!(narrow.contains("%unit.quo = udiv i64"), "{narrow}");
+    assert!(narrow.contains("%unit.rem = urem i64"), "{narrow}");
+    assert!(narrow.contains("%unit.half.away = icmp uge i64"), "{narrow}");
+    assert_eq!(count(&narrow, "sdiv") + count(&narrow, "srem"), 0, "{narrow}");
+    let split = conv_ir_after(decls, "(w: Wei) -> U64", "    let (n, rest) = w.split(gwei);\n    return n;\n");
+    assert!(split.contains("%unit.split.quo = udiv i64"), "{split}");
+    assert_eq!(count(&split, "unit.split.adj"), 0, "an unsigned quotient is floored already: {split}");
+    let port = conv_ir_after(decls, "(n: U64) -> Port", "    return Port(n) or clamp;\n");
+    assert!(port.contains("%narrow.below = icmp ult i64"), "{port}");
+    assert!(port.contains("%narrow.above = icmp ugt i64"), "{port}");
+}

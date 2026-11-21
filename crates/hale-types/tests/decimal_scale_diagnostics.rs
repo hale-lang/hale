@@ -128,7 +128,7 @@ fn the_scale_is_an_integer_literal_from_zero_to_eighteen() {
 #[test]
 fn a_quantity_still_counts_an_int() {
     let (_, msg) = one("unit wei;\ntype Eth = quantity Decimal<18> in wei;\nfn main() {}\n");
-    assert_eq!(msg, "type `Eth`: a quantity counts an `Int`, and `Decimal<18>` is not one: write `quantity Int in wei`");
+    assert_eq!(msg, "type `Eth`: a quantity counts an integer (`Int`, `U64`), and `Decimal<18>` is not one: write `quantity Int in wei`");
 }
 
 /// Review of #1532: a composite literal flows into its place element by

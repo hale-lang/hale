@@ -123,6 +123,25 @@ fn rational_gcd(a: &Ratio, b: &Ratio) -> Ratio {
 }
 
 impl<'r> ScalarTypes<'r> {
+    /// GH #2131: the integer a value of `q` counts (`Int`, `U64`): its
+    /// component's, which every quantity and point of it counts (law 5).
+    pub fn counted(&self, q: &QType) -> hale_syntax::ast::PrimType {
+        self.rows.scalars[q.row].int
+    }
+
+    /// GH #2131: why a conversion by `scale` of a value counting `int`
+    /// cannot be emitted: its factor's numerator or denominator is no
+    /// value of `int`, so the multiplication or the division it is would
+    /// need a wider integer. A literal's conversion is computed by the
+    /// checker and needs none.
+    pub fn factor_refusal(&self, scale: &Scale, int: hale_syntax::ast::PrimType, target: &str) -> Option<String> {
+        let f = &scale.factor;
+        if crate::units::int_holds(int, f.numerator()) && crate::units::int_holds(int, f.denominator()) {
+            return None;
+        }
+        Some(format!("the conversion into `{target}` is by the factor {f}, which no `{}` holds", crate::ty::prim_name(int)))
+    }
+
     /// The quantity or point `ty` is, declared or synthesized; `None` for
     /// every other type, and for a declaration the laws left without a
     /// denomination or a catalogue.
@@ -312,10 +331,11 @@ impl<'r> ScalarTypes<'r> {
     /// `Duration`, `3USD` 300 of `Money` in cent, `1000mK` one of a
     /// quantity in `K`), else at the literal's own unit (`5mK` is
     /// `TempDelta in mK`, 5); or why there is none, with the type the
-    /// refused literal still is: a whole count no `Int` holds is its
-    /// quantity's, so what it flows into is checked as written, and a
-    /// literal with no unit or no quantity is `Unknown`.
-    pub fn quantity_literal(&self, value: i64, unit: &str) -> Result<(Ty, i64), (String, Ty)> {
+    /// refused literal still is: a whole count its quantity's integer
+    /// (`Int`, `U64`: GH #2131) does not hold is its quantity's, so what it
+    /// flows into is checked as written, and a literal with no unit or no
+    /// quantity is `Unknown`.
+    pub fn quantity_literal(&self, value: u64, unit: &str) -> Result<(Ty, i128), (String, Ty)> {
         let ty = self.literal_type(value, unit).map_err(|why| (why, Ty::Unknown))?;
         let at_quantity = self.rows.unit_named(unit).and_then(|u| self.rows.literal_at_quantity(value, u));
         match at_quantity {
@@ -323,16 +343,35 @@ impl<'r> ScalarTypes<'r> {
                 let row = &self.rows.scalars[p];
                 match count {
                     Ok(count) => Ok((row.ty(), count)),
-                    Err(()) => Err((format!("`{value}{unit}` as a count of `{}` overflows an `Int`", row.display), row.ty())),
+                    Err(()) => Err((
+                        format!(
+                            "`{value}{unit}` as a count of `{}` overflows {}",
+                            row.display,
+                            crate::units::article_int(crate::ty::prim_name(row.int))
+                        ),
+                        row.ty(),
+                    )),
                 }
             }
-            _ => Ok((ty, value)),
+            // at its own unit: the count is the magnitude, held to the
+            // integer its quantity counts (an `Int`'s is at most 2^63 - 1)
+            _ => match self.int_of(&ty) {
+                Some(int) if !crate::units::int_holds(int, &BigInt::from(value)) => Err((
+                    format!(
+                        "`{value}{unit}` as a count of `{}` overflows {}",
+                        self.type_display(&ty),
+                        crate::units::article_int(crate::ty::prim_name(int))
+                    ),
+                    ty,
+                )),
+                _ => Ok((ty, i128::from(value))),
+            },
         }
     }
 
     /// The type a quantity literal of `unit` is at its own unit (its
     /// component's quantity there); or why there is none.
-    fn literal_type(&self, value: i64, unit: &str) -> Result<Ty, String> {
+    fn literal_type(&self, value: u64, unit: &str) -> Result<Ty, String> {
         let Some(u) = self.rows.unit_named(unit) else {
             // The lexer reads every name after the digits as one unit, so
             // `1h30m` arrives here as `1` of `h30m`.
@@ -442,9 +481,32 @@ impl<'r> ScalarTypes<'r> {
         }
         let name = |t: &Ty| self.type_display(t);
         let sym = op_symbol(op);
-        let is_int = |t: &Ty| matches!(t, Ty::Prim(hale_syntax::ast::PrimType::Int));
-        let scalar_other = |t: &Ty| self.index(t).is_some();
         let quantity_side = lq.as_ref().or(rq.as_ref()).expect("one side is a quantity or a point");
+        // GH #2131: the count that scales a quantity is the integer it
+        // counts (`Int`, a `U64`); another integer never mixes with it.
+        let counted = self.counted(quantity_side);
+        let is_int = |t: &Ty| *t == Ty::Prim(counted);
+        let other_int = |t: &Ty| matches!(t, Ty::Prim(p) if p.machine_int().is_some() && *p != counted);
+        let scalar_other = |t: &Ty| self.index(t).is_some();
+        if matches!(op, Mul | Div) && (other_int(lt) || other_int(rt)) && (lq.is_none() || rq.is_none()) {
+            let (q_ty, other) = if lq.is_some() { (lt, rt) } else { (rt, lt) };
+            let o = match other {
+                Ty::Prim(p) => *p,
+                _ => unreachable!("an integer"),
+            };
+            return Some(self.refused(
+                format!(
+                    "`{}` {sym} `{}`: `{}` counts {}, and {} never mixes with it: write `{}`",
+                    name(lt),
+                    name(rt),
+                    name(q_ty),
+                    crate::units::article_int(crate::ty::prim_name(counted)),
+                    crate::units::article_int(crate::ty::prim_name(o)),
+                    crate::units::int_conversion(o, counted)
+                ),
+                &[quantity_side],
+            ));
+        }
         // A quantity with an identity or a range: nothing holds.
         if scalar_other(lt) || scalar_other(rt) {
             let (q_ty, other) = if scalar_other(lt) { (rt, lt) } else { (lt, rt) };
@@ -500,9 +562,13 @@ impl<'r> ScalarTypes<'r> {
                 ))),
             },
             (Add | Sub, _, _) => Some(both(format!(
-                "`{}` {sym} `{}`: an `Int` is no quantity; a count becomes one by a unit (`n * 1{}`)",
+                "`{}` {sym} `{}`: {} is no quantity; a count becomes one by a unit (`n * 1{}`)",
                 name(lt),
                 name(rt),
+                match if lq.is_some() { rt } else { lt } {
+                    Ty::Prim(p) if p.machine_int().is_some() => crate::units::article_int(crate::ty::prim_name(*p)),
+                    _ => "an `Int`".to_string(),
+                },
                 self.unit_hint(quantity_side)
             ))),
             // Products.
@@ -556,8 +622,9 @@ impl<'r> ScalarTypes<'r> {
                 let at = self.meet(&a.denom, &b.denom)?;
                 let lto = self.at_denomination(a.base, &at);
                 let rto = self.at_denomination(b.base, &at);
+                // GH #2131: the quotient of two counts is their integer.
                 Some(QBinop::Typed {
-                    ty: Ty::Prim(hale_syntax::ast::PrimType::Int),
+                    ty: Ty::Prim(counted),
                     left: self.operand(lt, a, &lto, &at),
                     right: self.operand(rt, b, &rto, &at),
                 })
@@ -661,7 +728,16 @@ impl<'r> ScalarTypes<'r> {
     /// neither; the result, or why it is refused.
     pub fn quantity_unary(&self, op: UnaryOp, t: &Ty) -> Option<Result<Ty, String>> {
         let q = self.quantity(t)?;
+        let int = self.counted(&q);
         Some(match (op, q.kind) {
+            // GH #2131: a quantity counting an unsigned integer is never
+            // negative.
+            (UnaryOp::Neg, QKind::Quantity) if int.machine_int().is_some_and(|(_, signed)| !signed) => Err(format!(
+                "`-` of `{}`, which counts a `{}`: a `{}` is never negative and has no unary `-`",
+                self.quantity_display(&q),
+                crate::ty::prim_name(int),
+                crate::ty::prim_name(int)
+            )),
             (UnaryOp::Neg, QKind::Quantity) => Ok(t.clone()),
             (UnaryOp::Neg, QKind::Point) => Err(format!("`-` of the point `{}`: a point has no negation", self.quantity_display(&q))),
             _ => Err(format!("`{}` is a quantity or a point; it has no logical or bitwise operator", self.quantity_display(&q))),
@@ -729,8 +805,9 @@ impl<'r> ScalarTypes<'r> {
         let target = self.quantity_display(to);
         let Some(f) = self.quantity(from) else {
             return Err(match from {
-                Ty::Prim(hale_syntax::ast::PrimType::Int) => format!(
-                    "`{target}(…)` of an `Int`: a count becomes a quantity by a unit (`n * 1{}`)",
+                Ty::Prim(p) if p.machine_int().is_some() => format!(
+                    "`{target}(…)` of {}: a count becomes a quantity by a unit (`n * 1{}`)",
+                    crate::units::article_int(crate::ty::prim_name(*p)),
                     self.unit_hint(to)
                 ),
                 other => format!("`{target}(…)` converts a quantity or a point of its own; got `{}`", self.type_display(other)),
@@ -791,8 +868,14 @@ pub fn op_symbol(op: BinOp) -> &'static str {
 /// under `scale`, rounded by `policy` when the factor divides: the
 /// checker's compile-time conversion of a quantity literal. `None` when
 /// the division leaves a remainder and no policy says what becomes of
-/// it, or the count overflows an `Int`.
-pub fn convert_count(value: i64, scale: &Scale, policy: Option<RoundPolicy>) -> Option<Result<i64, ()>> {
+/// it; `Err` when the count is no value of the integer the target counts
+/// (`int`: an `Int`, a `U64`, GH #2131).
+pub fn convert_count(
+    value: i128,
+    scale: &Scale,
+    policy: Option<RoundPolicy>,
+    int: hale_syntax::ast::PrimType,
+) -> Option<Result<i128, ()>> {
     let n = BigInt::from(value) * scale.factor.numerator() + BigInt::from(scale.offset);
     let d = scale.factor.denominator().clone();
     let (q, r) = n.div_rem(&d);
@@ -817,5 +900,8 @@ pub fn convert_count(value: i64, scale: &Scale, policy: Option<RoundPolicy>) -> 
             }
         }
     };
-    Some(i64::try_from(rounded).map_err(|_| ()))
+    if !crate::units::int_holds(int, &rounded) {
+        return Some(Err(()));
+    }
+    Some(i128::try_from(rounded).map_err(|_| ()))
 }

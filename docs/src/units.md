@@ -26,13 +26,13 @@ fn main() {
 | **Base unit** | `unit cent;` / `unit B;` / `unit tick;` | Starts a new unit component (dimension) |
 | **Derived unit** | `unit USD = 100 cent;` / `unit KiB = 1024 B;` | Defines a unit as an exact multiple of another unit in the same component |
 | **Dimensionless unit** | `unit bp = 1 / 10000;` / `unit pct = 100 bp;` | Defines a dimensionless ratio relative to `1` |
-| **Quantity type** | `type Money = quantity Int in cent;` | 64-bit integer counted in a specific base denomination |
+| **Quantity type** | `type Money = quantity Int in cent;` / `type Wei = quantity U64 in wei;` | 64-bit integer (`Int`, or unsigned `U64`) counted in a specific base denomination |
 | **Redenominated alias** | `type Seconds = Duration in s;` | Names an existing quantity at a coarser or finer unit |
 | **Boundary type** | `type Ledger = Money { round: half_even; }` | Automatically rounds narrower/finer inputs using `floor`, `ceil`, `trunc`, `half_up`, or `half_even` |
 | **Affine point** | `type Price = point Tick;` | Position on a quantity axis (`Point - Point -> Quantity`, `Point + Quantity -> Point`) |
 | **Shifted origin point** | `type Celsius = point TempDelta { origin: 273_150 mK; }` | Affine point with a non-zero origin offset |
-| **Distinct identity** | `type OrderId = distinct Int;` | Strongly typed ID with no arithmetic; converts via `OrderId(n)` and `Int(id)` |
-| **Bounded range** | `type Byte = Int { range: 0..256; }` | Integer constrained to `[0, 256)` (or `0..=255`); narrows via `or clamp`, `or wrap`, `or <val>`, `or raise` |
+| **Distinct identity** | `type OrderId = distinct Int;` / `type Nonce = distinct U64;` | Strongly typed ID with no arithmetic; converts via `OrderId(n)` and `Int(id)` (`U64(nonce)`) |
+| **Bounded range** | `type Byte = Int { range: 0..256; }` / `type Port = U64 { range: 1..65536; }` | Integer constrained to `[0, 256)` (or `0..=255`); narrows via `or clamp`, `or wrap`, `or <val>`, `or raise` |
 | **Explicit conversion** | `d.in(s) or floor` | Converts quantity `d` to unit `s` using the specified remainder policy |
 | **Lossless split** | `let (sec, rem) = d.split(s);` | Splits `d` into whole units `(Int)` and the remainder `(Quantity)` without losing precision |
 
@@ -201,6 +201,40 @@ fn main() {
 | `or handler(err)` | Passes `RangeError` (containing the value and bounds) to `handler` |
 | `or raise` | Propagates `RangeError` to the caller |
 
+## Unsigned Bases (`U64`)
+
+A quantity, an identity or a range counts an integer, its **base**: `Int` by default, or `U64` when the values are unsigned and may run past `2^63` (wei balances, nonces, ports). Write the base where you would write `Int`; everything else reads the same:
+
+```hale
+unit wei;
+unit gwei = 1_000_000_000 wei;
+unit eth  = 1_000_000_000 gwei;
+
+type Wei   = quantity U64 in wei;
+type Gwei  = Wei in gwei { round: floor; }
+type Nonce = distinct U64;
+type Port  = U64 { range: 1..65536; }
+
+fn main() {
+    let big: Wei = 18eth;                 // 18000000000000000000wei: past Int's max, a U64's
+    let fee = big / 1000 or floor;        // 18000000000000000wei: the literal is a U64
+    let g: Gwei = fee;                    // 18000000gwei, Gwei's floor
+    let n: Nonce = 18446744073709551615;  // a literal is typed from its place
+    let p = Port(U64::max()) or clamp;    // 65535, compared unsigned
+    println(big, " ", g, " ", U64(n), " ", p);
+}
+```
+
+A base's arithmetic is its own: a `U64` quantity never wraps, so `big + big` past `2^64 - 1`, `0wei - 1wei`, or a widening multiplication past the top stops the program with a violation, exactly as a `U64`'s `+` does. Its divisions and comparisons are unsigned, `Wei / Wei` is a `U64`, and it has no unary `-`. On the wire it is a `U64`: a JSON string of its digits, a protobuf `uint64`, a `uint64_t` across `@ffi("c")`.
+
+The two integers never mix implicitly. An `Int` beside a `U64` quantity is refused with the conversion to write:
+
+```text
+`Wei` * `Int`: `Wei` counts a `U64`, and an `Int` never mixes with it: write `U64::from_int(n)`
+```
+
+A component of units counts one integer: every quantity in `wei`, `gwei` and `eth` counts a `U64`, so an `Int` count of `gwei` (`quantity Int in gwei { round: floor; }`) is refused at the declaration. The stdlib's time units count an `Int` (`Duration`); a `U64` count of time is a quantity of a unit of its own (`unit tick;`, `quantity U64 in tick`), converted through its count (`U64::from_int(d / 1ns) * 1tick`).
+
 ## Common Compile-Time Diagnostics
 
 | Mistake | Invalid Example | Why It Fails & How to Fix |
@@ -209,6 +243,7 @@ fn main() {
 | **Adding two points or identities** | `let p = bid + ask;` / `id + id` | Points only subtract (`ask - bid`) or shift by a quantity (`bid + 1tick`); `distinct Int` has no arithmetic. |
 | **Narrowing without a policy** | `let bad: Money = odd;` | Converting `1/10000 cent` to `cent` divides by `10,000`; add `.in(cent) or floor` or use a `{ round: ... }` boundary type. |
 | **Bare `Int` vs. quantity** | `if d > 0 { ... }` / `let w: Duration = n;` | Quantities only compare with their own kind (`d > 0ns`). Convert `Int` to a quantity by multiplying (`n * 1ms`) and extract a count by dividing (`d / 1ms` or `x / 1cent`). |
+| **An `Int` beside a `U64` quantity** | `w * n` with `w: Wei`, `n: Int` | A quantity is scaled by the integer it counts: `w * U64::from_int(n)`; a literal (`w * 3`) is one already. |
 | **`min`/`max` across units** | `min(d, m)` with `d: Duration`, `m: Millis` | `min` and `max` order two values of one quantity (or two points of one origin) at one unit, and are that type: `min(lo, hi)` over two `Millis` is a `Millis`. Convert one side first (`m.in(ns)`, `Millis(d) or floor`). |
 
 ## Auditing Units with `hale check --units`
@@ -230,7 +265,7 @@ committed_form.hl:81:24  odd
 ```
 
 The report lists:
-- Every declared quantity, point, identity, and range, along with the smallest hardware integer width (`u8`, `u16`, etc.) a range fits in.
+- Every declared quantity, point, identity, and range, along with the smallest hardware integer width (`u8`, `u16`, etc.) a range fits in, and (with a `counts : U64` line) the integer it counts when that is not an `Int`; a `U64` quantity's headroom reads `0 to 18446744073709551615 wei (18 eth)`.
 - Every narrowing conversion across the program, its scale factor, the rounding policy that discharged it, the source location of that policy, and the `i64` overflow headroom at the finer denomination (for example, `Money in 1/10000 cent` has a headroom of `±9.22 trillion USD`).
 - Paths relative to the checked seed directory so the output can be committed and diffed deterministically in CI. If a program declares no units, `hale check --units` prints `units: no quantity is declared`.
 
