@@ -9233,7 +9233,11 @@ dynamic	Ender	on main
 dynamic	Parent	on main
 
 == tests/hale/text_receiver_calls_test.hl
-row	Counter@main1	Counter	main	default
+row	Counter@main3	Counter	main	default
+row	Source@main1	Source	main	default
+-- Shelf@main2	Shelf
+row	~	Shelf	main	default
+row	~.src	Source	main	inherited
 
 == tests/hale/time_return_test.hl
 row	Clock@main1	Clock	main	default

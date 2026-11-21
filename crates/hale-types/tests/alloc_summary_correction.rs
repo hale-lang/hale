@@ -343,8 +343,9 @@ const CALL_LINES_ONLY: [(&str, usize); 39] = [
     // only the check's typing names (as GH #1984's cursors above)
     ("tests/hale/str_chain_sources_test.hl", 21),
     // GH #2068's test: one call of a `std::str` fn written in Hale, which
-    // only the renames name, as every program calling one by its path
-    ("tests/hale/text_receiver_calls_test.hl", 1),
+    // only the renames name, as every program calling one by its path, and
+    // three calls of the locus `Source`'s own methods in its chains
+    ("tests/hale/text_receiver_calls_test.hl", 4),
 ];
 
 /// The targets whose verdicts move, each pinned in `verdict_changes`.
