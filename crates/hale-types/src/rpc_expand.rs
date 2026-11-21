@@ -426,7 +426,7 @@ impl<'a> Codec<'a> {
             TypeClass::Prim(PrimType::Duration) => format!(
                 "if !__api_json_is_int(std::str::trim({body})) {{ {bail} }}\nlet __n_{var} = std::str::parse_int(std::str::trim({body})) or {{ {bail} }};\nlet {var} = __n_{var} * 1ns;\n"
             ),
-            TypeClass::Named { name, .. } if self.convs.contains_key(name) => {
+            TypeClass::Named { name, .. } if self.convs.get(name).is_some_and(|c| c.int() == PrimType::Int) => {
                 let c = &self.convs[name];
                 let n = format!("__n_{var}");
                 let ins = format!(
@@ -434,8 +434,8 @@ impl<'a> Codec<'a> {
                 );
                 match c {
                     Conv::Range(..) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
-                    Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
-                    Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
+                    Conv::Identity(..) => format!("{ins}let {var} = {name}({n});\n"),
+                    Conv::Quantity(m, u, _) => format!("{ins}let {var} = {n} * {m}{u};\n"),
                 }
             }
             _ => format!("let {var} = {body};\n"),
@@ -479,7 +479,7 @@ impl PbCodec<'_> {
             TypeClass::Prim(PrimType::Time) => format!("__api_pb_put_int(1, std::time::nanos({v}))"),
             TypeClass::Prim(PrimType::Duration) => format!("__api_pb_put_int(1, {v} / 1ns)"),
             TypeClass::Prim(p) => put(p, v),
-            TypeClass::Named { name, base, .. } => match self.convs.get(name) {
+            TypeClass::Named { name, base, .. } => match self.convs.get(name).filter(|c| c.int() == PrimType::Int) {
                 Some(c) => format!("__api_pb_put_int(1, {})", c.to_int(v)),
                 None => put(base, v),
             },
@@ -515,14 +515,14 @@ impl PbCodec<'_> {
                 format!("let __n_{var} = __api_pb_box_int({bytes}) or {{ {bail} }};\nlet {var} = __n_{var} * 1ns;\n")
             }
             TypeClass::Prim(p) => format!("let {var} = {}({bytes}) or {{ {bail} }};\n", boxed(p)),
-            TypeClass::Named { name, .. } if self.convs.contains_key(name) => {
+            TypeClass::Named { name, .. } if self.convs.get(name).is_some_and(|c| c.int() == PrimType::Int) => {
                 let c = &self.convs[name];
                 let n = format!("__n_{var}");
                 let ins = format!("let {n} = __api_pb_box_int({bytes}) or {{ {bail} }};\n");
                 match c {
                     Conv::Range(..) => format!("{ins}let {var} = {name}({n}) or {{ {bail} }};\n"),
-                    Conv::Identity(_) => format!("{ins}let {var} = {name}({n});\n"),
-                    Conv::Quantity(m, u) => format!("{ins}let {var} = {n} * {m}{u};\n"),
+                    Conv::Identity(..) => format!("{ins}let {var} = {name}({n});\n"),
+                    Conv::Quantity(m, u, _) => format!("{ins}let {var} = {n} * {m}{u};\n"),
                 }
             }
             TypeClass::Named { base, .. } => format!("let {var} = {}({bytes}) or {{ {bail} }};\n", boxed(base)),

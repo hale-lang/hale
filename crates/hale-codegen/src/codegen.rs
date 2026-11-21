@@ -225,6 +225,22 @@ pub(crate) enum CodegenTy {
 /// open for further IR (Open) or close it with a terminator like
 /// `br` / `ret` / `unreachable` (Terminated)? Statements after a
 /// Terminated must not emit further IR into the same block.
+impl CodegenTy {
+    /// A machine integer's width in bits and whether it is signed: an
+    /// `Int` and a `U64` (and the `Duration` and `Time` counts, signed
+    /// `i64`s). `None` for every other representation. What a unit-dialect
+    /// conversion of a value counted in it reads (GH #2131): the width its
+    /// constants take and whether its divisions and comparisons are
+    /// signed.
+    pub(crate) fn machine_int(&self) -> Option<(u32, bool)> {
+        match self {
+            CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => Some((64, true)),
+            CodegenTy::U64 => Some((64, false)),
+            _ => None,
+        }
+    }
+}
+
 /// A type as a program spells it, as the checker renders one
 /// (`hale_types::ty::Ty::display`): what a refusal names, never the Rust
 /// shape of the representation (GH #1941: `TypeRef("IoError")`).
@@ -2191,6 +2207,7 @@ fn build_resolved_lowered(
         pending_type_names: BTreeSet::new(),
         pending_enum_names: BTreeSet::new(),
         user_type_aliases: BTreeMap::new(),
+        scalar_ints: BTreeMap::new(),
         user_enums: BTreeMap::new(),
         user_interfaces: BTreeSet::new(),
         user_consts: BTreeMap::new(),
@@ -4537,6 +4554,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// name straight to the target's lowering. Populated in pass
     /// A0 before any type decl is declared.
     pub(crate) user_type_aliases: BTreeMap<String, TypeExpr>,
+    /// GH #2131: the integer each unit-dialect scalar declaration counts
+    /// (`hale_types::units::typed_scalar_names`), by its name: what a
+    /// conversion row's type, declared or synthesized (`Wei in gwei`),
+    /// lowers as.
+    pub(crate) scalar_ints: BTreeMap<String, PrimType>,
     /// m47: user-defined enum declarations indexed by name. Each
     /// entry carries the variant-name → tag-index map. m47-payloads
     /// added payload-bearing variants (`Trade(Decimal, Int)`): such
@@ -10161,9 +10183,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 _ => None,
             })
             .collect();
-        for name in hale_types::units::typed_scalar_names(&scalars) {
+        // GH #2131: each is the integer it counts, an `Int` or a `U64`.
+        for (name, int) in hale_types::units::typed_scalar_names(&scalars) {
             self.user_type_aliases
-                .insert(name.to_string(), TypeExpr::Primitive(PrimType::Int, hale_syntax::span::Span::new(0, 0)));
+                .insert(name.to_string(), TypeExpr::Primitive(int, hale_syntax::span::Span::new(0, 0)));
+            self.scalar_ints.insert(name.to_string(), int);
         }
 
         // m61 / m61b: discover generic instantiations referenced
@@ -27292,7 +27316,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 if *op == UnaryOp::Neg {
                     if let Expr::Literal(Literal::Quantity { .. }, _) = operand.as_ref() {
                         if let Some((count, ty)) = self.negated_literal_count(*span) {
-                            return Ok((self.context.i64_type().const_int(count as u64, true).into(), ty));
+                            return Ok((count.into(), ty));
                         }
                     }
                 }
@@ -28674,10 +28698,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // comparison records no operator row (downstream handoff:
         // `a == b` with `b: Duration in ns` was refused here as
         // operands of mixed types).
+        // A `U64`'s (GH #2131) compares unsigned, below.
         if matches!(op, BinOp::Eq | BinOp::NotEq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq)
             && lt != rt
             && crate::conversion::is_quantity_repr(&lt)
             && crate::conversion::is_quantity_repr(&rt)
+            && lt != CodegenTy::U64
+            && rt != CodegenTy::U64
         {
             return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
         }
@@ -28724,7 +28751,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.lower_binop(*op, lv, rv, &lt)
     }
 
-    fn lower_binop(
+    pub(crate) fn lower_binop(
         &mut self,
         op: BinOp,
         lv: BasicValueEnum<'ctx>,
@@ -29305,6 +29332,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 CodegenTy::U64 => {
                     format.push_str("%llu");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
+                    // GH #2131: a quantity counting a `U64`, then its unit.
+                    if let Some(unit) = self.printed_unit(a) {
+                        format.push_str(&escape_format(&unit));
+                    }
                 }
                 CodegenTy::Float | CodegenTy::U256 | CodegenTy::I256 => {
                     // the text `to_string` gives, the shortest that reads
