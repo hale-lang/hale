@@ -704,6 +704,11 @@ pub struct TypedBody {
     /// RFC #2035: the `@display` template functions rendering each value
     /// calls, by the rendered value's span ([`CheckedCalls::renders`]).
     pub renders: BTreeMap<(u32, u32), Vec<String>>,
+    /// GH #2111: a generic body's expression types for each monomorph's
+    /// walk, by its type arguments, keyed as [`ExprTypes`]' rows are within
+    /// a body (span, kind, name). The template walk types a parameter's
+    /// values `Unknown`; these are what lowering reads in a monomorph.
+    pub specialized_exprs: Vec<(Vec<Ty>, std::collections::HashMap<(u32, u32, u8, u64), Ty>)>,
 }
 
 /// How a raised error becomes the enclosing fn's (GH #1951, item 2):
@@ -982,6 +987,15 @@ pub struct ViewTypes {
     bindings: std::collections::HashMap<usize, Ty>,
     places: std::collections::HashMap<usize, Ty>,
     callees: std::collections::HashMap<usize, CalleeRef>,
+    /// GH #2111: a read of a local or a parameter, which `exprs` leaves to
+    /// the binding's row: the type the checker gave the read, for the
+    /// lowering's per-body table ([`ExprTypes`]).
+    reads: std::collections::HashMap<usize, Ty>,
+    /// GH #2111: an element chain's receiver whose `.items` / `.entries`
+    /// the desugar stripped and the checker read as the receiver's real
+    /// field (GH #1984): the field's name and type. Lowering reads the
+    /// field it walks under the receiver's span ([`ExprTypes`]).
+    anchors: std::collections::HashMap<usize, (String, Ty)>,
     /// The declaration reads a method as a value (`let f = k.get;`): a
     /// call through a fn value may hide the receiver it was read from.
     method_values: bool,
@@ -1067,6 +1081,22 @@ impl ViewTypes {
         note(&mut self.places, node(at), ty, || Ty::Unknown);
     }
 
+    /// GH #2111: the chain receiver `receiver`'s field `field`, typed `ty`.
+    pub fn note_anchor(&mut self, receiver: &Expr, field: &str, ty: Ty) {
+        note(&mut self.anchors, node(receiver), (field.to_string(), ty), || (field.to_string(), Ty::Unknown));
+    }
+
+    /// GH #2111: a read of a local or a parameter, typed `ty`.
+    pub fn note_read(&mut self, e: &Expr, ty: Ty) {
+        note(&mut self.reads, node(e), ty, || Ty::Unknown);
+    }
+
+    /// The type the checker gave `e`: its `exprs` row, or for a read of a
+    /// local or a parameter its `reads` row.
+    pub fn typed(&self, e: &Expr) -> Option<&Ty> {
+        self.exprs.get(&node(e)).or_else(|| self.reads.get(&node(e)))
+    }
+
     /// Whether the declaration reads a method as a value.
     pub fn method_values(&self) -> bool {
         self.method_values
@@ -1104,12 +1134,19 @@ impl ViewTypes {
             bindings: move_rows(&self.bindings, &map),
             places: move_rows(&self.places, &map),
             callees: move_rows(&self.callees, &map),
+            reads: move_rows(&self.reads, &map),
+            anchors: move_rows(&self.anchors, &map),
             method_values: self.method_values,
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.exprs.is_empty() && self.bindings.is_empty() && self.places.is_empty() && self.callees.is_empty()
+        self.exprs.is_empty()
+            && self.bindings.is_empty()
+            && self.places.is_empty()
+            && self.callees.is_empty()
+            && self.reads.is_empty()
+            && self.anchors.is_empty()
     }
 }
 
@@ -1118,12 +1155,47 @@ impl ViewTypes {
 /// assignment target of the body (a fn's, a locus member's, in turn). Two
 /// parses of one declaration visit their nodes pairwise.
 pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
-    fn params(ps: &[hale_syntax::ast::Param], out: &mut Vec<usize>) {
-        for p in ps {
-            out.push(node(&p.name));
+    visit_view_nodes(item, &mut |_, n| {
+        out.push(match n {
+            ViewNode::Expr(e) => node(e),
+            ViewNode::Name(i) => node(i),
+        })
+    });
+}
+
+/// A node [`visit_view_nodes`] visits: an expression, or a name (a
+/// parameter's, a binding's, an assignment target's head or field).
+#[derive(Clone, Copy)]
+pub enum ViewNode<'a> {
+    Expr(&'a Expr),
+    Name(&'a Ident),
+}
+
+/// Visit every node of `item` a `views` row may name, in
+/// [`view_nodes`]' order, each with the id of the body it is in: a fn's,
+/// or a locus member's (a fn, a lifecycle hook, a mode, an
+/// `on_failure`, a closure's assertion), as lowering enters it
+/// (`Cx::in_body`).
+pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, ViewNode<'a>)) {
+    struct W<'v, 'a> {
+        body: NodeId,
+        visit: &'v mut dyn FnMut(NodeId, ViewNode<'a>),
+    }
+    type Out<'v, 'a> = W<'v, 'a>;
+    impl<'v, 'a> W<'v, 'a> {
+        fn push_expr(&mut self, e: &'a Expr) {
+            (self.visit)(self.body, ViewNode::Expr(e));
+        }
+        fn push_name(&mut self, i: &'a Ident) {
+            (self.visit)(self.body, ViewNode::Name(i));
         }
     }
-    fn block(b: &Block, out: &mut Vec<usize>) {
+    fn params<'a>(ps: &'a [hale_syntax::ast::Param], out: &mut Out<'_, 'a>) {
+        for p in ps {
+            out.push_name(&p.name);
+        }
+    }
+    fn block<'a>(b: &'a Block, out: &mut Out<'_, 'a>) {
         for st in &b.stmts {
             stmt(st, out);
         }
@@ -1131,7 +1203,7 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
             expr(t, out);
         }
     }
-    fn if_stmt(i: &IfStmt, out: &mut Vec<usize>) {
+    fn if_stmt<'a>(i: &'a IfStmt, out: &mut Out<'_, 'a>) {
         expr(&i.cond, out);
         block(&i.then_block, out);
         match i.else_block.as_deref() {
@@ -1140,17 +1212,17 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
             None => {}
         }
     }
-    fn pattern(p: &hale_syntax::ast::Pattern, out: &mut Vec<usize>) {
+    fn pattern<'a>(p: &'a hale_syntax::ast::Pattern, out: &mut Out<'_, 'a>) {
         use hale_syntax::ast::Pattern;
         match p {
-            Pattern::Binding(id) => out.push(node(id)),
+            Pattern::Binding(id) => out.push_name(id),
             Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
                 args.iter().for_each(|a| pattern(a, out))
             }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }
-    fn match_stmt(m: &MatchStmt, out: &mut Vec<usize>) {
+    fn match_stmt<'a>(m: &'a MatchStmt, out: &mut Out<'_, 'a>) {
         expr(&m.scrutinee, out);
         for arm in &m.arms {
             pattern(&arm.pattern, out);
@@ -1163,21 +1235,21 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
             }
         }
     }
-    fn stmt(st: &Stmt, out: &mut Vec<usize>) {
+    fn stmt<'a>(st: &'a Stmt, out: &mut Out<'_, 'a>) {
         match st {
             Stmt::Let { name, value, .. } => {
                 expr(value, out);
-                out.push(node(name));
+                out.push_name(name);
             }
             Stmt::LetTuple { names, value, .. } => {
                 expr(value, out);
-                names.iter().for_each(|n| out.push(node(n)));
+                names.iter().for_each(|n| out.push_name(n));
             }
             Stmt::Assign { target, value, .. } => {
-                out.push(node(&target.head));
+                out.push_name(&target.head);
                 for seg in &target.tail {
                     match seg {
-                        LValueSeg::Field(f) => out.push(node(f)),
+                        LValueSeg::Field(f) => out.push_name(f),
                         LValueSeg::Index(e) => expr(e, out),
                     }
                 }
@@ -1187,7 +1259,7 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
             Stmt::Match(m) => match_stmt(m, out),
             Stmt::For { name, iter, body, .. } => {
                 expr(iter, out);
-                out.push(node(name));
+                out.push_name(name);
                 block(body, out);
             }
             Stmt::While { cond, body, .. } => {
@@ -1214,14 +1286,14 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
             Stmt::Break(_) | Stmt::Continue(_) | Stmt::Yield(_) | Stmt::Terminate(_) => {}
         }
     }
-    fn disposition(d: &OrDisposition, out: &mut Vec<usize>) {
+    fn disposition<'a>(d: &'a OrDisposition, out: &mut Out<'_, 'a>) {
         match d {
             OrDisposition::Substitute(e) | OrDisposition::Fail(e, _) => expr(e, out),
             OrDisposition::Raise(_) | OrDisposition::Discard(_) | OrDisposition::Wait(_) => {}
         }
     }
-    fn expr(e: &Expr, out: &mut Vec<usize>) {
-        out.push(node(e));
+    fn expr<'a>(e: &'a Expr, out: &mut Out<'_, 'a>) {
+        out.push_expr(e);
         match e {
             Expr::Literal(..) | Expr::Ident(_) | Expr::Path(_) | Expr::KwSelf(_) => {}
             Expr::Binary { left, right, .. } => {
@@ -1260,8 +1332,10 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
             }
         }
     }
+    let out = &mut W { body: NodeId(0), visit };
     match item {
         TopDecl::Fn(f) => {
+            out.body = f.id;
             params(&f.params, out);
             block(&f.body, out);
         }
@@ -1269,26 +1343,164 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
             for m in &l.members {
                 match m {
                     LocusMember::Fn(f) => {
+                        out.body = f.id;
                         params(&f.params, out);
                         block(&f.body, out);
                     }
                     LocusMember::Lifecycle(d) => {
+                        out.body = d.id;
                         params(&d.params, out);
                         block(&d.body, out);
                     }
                     LocusMember::Mode(d) => {
+                        out.body = d.id;
                         params(&d.params, out);
                         block(&d.body, out);
                     }
                     LocusMember::Failure(d) => {
+                        out.body = d.id;
                         params(&d.params, out);
                         block(&d.body, out);
+                    }
+                    // GH #2111: a closure's assertion, its own body
+                    LocusMember::Closure(c) => {
+                        out.body = c.id;
+                        if let Some(a) = &c.assertion {
+                            expr(&a.left, out);
+                            expr(&a.right, out);
+                            expr(&a.tolerance, out);
+                        }
                     }
                     _ => {}
                 }
             }
         }
         _ => {}
+    }
+}
+
+/// GH #2111 (phase 1): what the checker typed each expression of each
+/// body, as lowering reads it ([`ExprTypes::at`]). Lowering lowers the
+/// merged program, whose nodes the checker never walked (the checked
+/// program after the lowering rewrites, the stdlib appended; a monomorph
+/// a clone of its template), so a row is keyed as the conversions
+/// column's is: by the body it is in (`Cx::in_body`'s declaration, its
+/// id in the merged program) and, within it, by the expression's span,
+/// kind and name ([`expr_name`]). Two answers at one key (generated code
+/// sharing a span) are none, `Unknown`, which a reader takes as no row
+/// rather than guesses. A generic body's rows here are the template
+/// walk's, its parameters `Unknown`; a monomorph's are its own walk's
+/// ([`TypedBodies::specialized_expr`]). A literal and an operator have no
+/// row yet (the `views` column reads them by their shape).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExprTypes {
+    rows: std::collections::HashMap<(u32, u32, u32, u8, u64), Ty>,
+}
+
+fn fnv(s: &str) -> u64 {
+    hale_graph::identity::fnv64(s.as_bytes())
+}
+
+/// The [`ExprTypes`] key, within its body, of the field `field` read off
+/// `receiver` under the receiver's span: the read an element chain's
+/// cursor walks when its anchor is a real field ([`ViewTypes::note_anchor`]).
+pub fn anchor_key(receiver: &Expr, field: &str) -> (u32, u32, u8, u64) {
+    let sp = receiver.span();
+    (sp.start.0, sp.end.0, 7, fnv(field))
+}
+
+/// The name an expression carries, hashed, the last part of an
+/// [`ExprTypes`] key: generated code (a chain's loop, a test's assertion)
+/// gives many nodes one span, and the names tell them apart (`xs` from
+/// `__n`, `b.items` from `b.items.len`). A local's, a field's, a path's
+/// last segment, a call's callee's; nothing for the rest.
+pub fn expr_name(e: &Expr) -> u64 {
+    match e {
+        Expr::Ident(i) => fnv(&i.name),
+        Expr::Field { name, .. } | Expr::Path2 { name, .. } => fnv(&name.name),
+        Expr::Path(q) => q.segments.last().map_or(0, |i| fnv(&i.name)),
+        Expr::Call { callee, .. } => expr_name(callee),
+        _ => 0,
+    }
+}
+
+/// An expression's kind, the part of an [`ExprTypes`] key that tells two
+/// expressions at one span apart (`x` and `x.f` begin together; a call
+/// and its callee may end together).
+pub fn expr_kind(e: &Expr) -> u8 {
+    match e {
+        Expr::Literal(..) => 0,
+        Expr::Ident(_) => 1,
+        Expr::Path(_) => 2,
+        Expr::KwSelf(_) => 3,
+        Expr::Binary { .. } => 4,
+        Expr::Unary { .. } => 5,
+        Expr::Call { .. } => 6,
+        Expr::Field { .. } => 7,
+        Expr::Path2 { .. } => 8,
+        Expr::Index { .. } => 9,
+        Expr::Tuple(..) => 10,
+        Expr::Array(..) => 11,
+        Expr::Struct { .. } => 12,
+        Expr::Block(_) => 13,
+        Expr::If(_) => 14,
+        Expr::Match(_) => 15,
+        Expr::Sum(..) => 16,
+        Expr::Prod(..) => 17,
+        Expr::Approx { .. } => 18,
+        Expr::Range { .. } => 19,
+        Expr::ArrayRepeat { .. } => 20,
+        Expr::Or { .. } => 21,
+    }
+}
+
+impl ExprTypes {
+    /// The type the checker gave `e` in the body `body`; `None` where it
+    /// recorded none, or two.
+    pub fn at(&self, body: NodeId, e: &Expr) -> Option<&Ty> {
+        let sp = e.span();
+        self.rows.get(&(body.0, sp.start.0, sp.end.0, expr_kind(e), expr_name(e))).filter(|t| **t != Ty::Unknown)
+    }
+
+    /// Add the rows of `program`, whose items the checker walked into
+    /// `views` (one table per item, in item order), each body by the id
+    /// `body` gives its id (the merged program's; `None` drops the body).
+    pub fn add_program(
+        &mut self,
+        program: &hale_syntax::ast::Program,
+        views: &[std::sync::Arc<ViewTypes>],
+        body: &dyn Fn(NodeId) -> Option<NodeId>,
+    ) {
+        for (item, v) in program.items.iter().zip(views) {
+            visit_view_nodes(item, &mut |at, n| {
+                let ViewNode::Expr(e) = n else { return };
+                let Some(at) = body(at) else { return };
+                let mut add = |(start, end, kind, name): (u32, u32, u8, u64), ty: &Ty| {
+                    match self.rows.get_mut(&(at.0, start, end, kind, name)) {
+                        Some(held) if held != ty => *held = Ty::Unknown,
+                        Some(_) => {}
+                        None => {
+                            self.rows.insert((at.0, start, end, kind, name), ty.clone());
+                        }
+                    }
+                };
+                if let Some(ty) = v.typed(e) {
+                    let sp = e.span();
+                    add((sp.start.0, sp.end.0, expr_kind(e), expr_name(e)), ty);
+                }
+                if let Some((field, ty)) = v.anchors.get(&node(e)) {
+                    add(anchor_key(e, field), ty);
+                }
+            });
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
     }
 }
 
@@ -1614,6 +1826,32 @@ impl TypingRecord {
         rows[at].calls.insert(call.0, row);
     }
 
+    /// GH #2111: what a monomorph's walk (its type arguments `args`) typed
+    /// the expression `e` of `body`; two answers at one key are `Unknown`.
+    pub fn specialized_expr(&mut self, body: NodeId, args: &[Ty], e: &Expr, ty: Ty) {
+        let sp = e.span();
+        self.specialized_key(body, args, (sp.start.0, sp.end.0, expr_kind(e), expr_name(e)), ty);
+    }
+
+    /// [`TypingRecord::specialized_expr`] by the row's key.
+    pub fn specialized_key(&mut self, body: NodeId, args: &[Ty], key: (u32, u32, u8, u64), ty: Ty) {
+        let rows = &mut self.body(body).specialized_exprs;
+        let at = match rows.iter().position(|(a, _)| a.as_slice() == args) {
+            Some(i) => i,
+            None => {
+                rows.push((args.to_vec(), Default::default()));
+                rows.len() - 1
+            }
+        };
+        match rows[at].1.get_mut(&key) {
+            Some(held) if *held != ty => *held = Ty::Unknown,
+            Some(_) => {}
+            None => {
+                rows[at].1.insert(key, ty);
+            }
+        }
+    }
+
     pub fn generic_call(&mut self, body: NodeId, call: NodeId, row: Typed<GenericCall>) {
         if call.is_none() {
             return;
@@ -1803,6 +2041,19 @@ impl TypedBodies {
     }
 
     /// The row of the generic call at `call`.
+    /// GH #2111: what the walk of the monomorph with type arguments `args`
+    /// typed the expression `e` of `body` ([`TypedBody::specialized_exprs`]).
+    pub fn specialized_expr(&self, body: NodeId, args: &[Ty], e: &Expr) -> Option<&Ty> {
+        let sp = e.span();
+        self.body(body)?
+            .specialized_exprs
+            .iter()
+            .find(|(a, _)| a.as_slice() == args)?
+            .1
+            .get(&(sp.start.0, sp.end.0, expr_kind(e), expr_name(e)))
+            .filter(|t| **t != Ty::Unknown)
+    }
+
     pub fn generic_call(&self, call: NodeId) -> Option<&Typed<GenericCall>> {
         let body = self.sites.get(&call.0)?;
         self.bodies.get(body)?.generic_calls.get(&call.0)
@@ -2326,6 +2577,54 @@ fn expr<'a>(e: &'a Expr, f: &mut Visit<'_, 'a>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// GH #2111: a row of the expression table is the row of its body, and
+    /// two answers at one key (generated code sharing a span, here a
+    /// declaration cloned into a second item under the same body) are no
+    /// row, never either answer.
+    #[test]
+    fn an_expression_row_is_its_bodys_and_two_answers_at_a_key_are_none() {
+        use hale_syntax::ast::PrimType;
+        let mut program = hale_syntax::parse_source("fn f() -> Int { let a = 1; return a; }\nfn g() -> Int { let a = 2; return a; }\n").expect("parses");
+        // the bodies' ids, as the loader mints them
+        for (i, item) in program.items.iter_mut().enumerate() {
+            if let TopDecl::Fn(f) = item {
+                f.id = NodeId(i as u32 + 1);
+            }
+        }
+        let read_of = |item: &TopDecl| {
+            let mut found = None;
+            visit_view_nodes(item, &mut |body, n| {
+                if let ViewNode::Expr(e @ Expr::Ident(_)) = n {
+                    found = Some((body, e.clone()));
+                }
+            });
+            found.expect("the item reads `a`")
+        };
+        let views = |item: &TopDecl, ty: Ty| {
+            let mut v = ViewTypes::default();
+            visit_view_nodes(item, &mut |_, n| {
+                if let ViewNode::Expr(e @ Expr::Ident(_)) = n {
+                    v.note_read(e, ty.clone());
+                }
+            });
+            std::sync::Arc::new(v)
+        };
+        let (f, g) = (&program.items[0], &program.items[1]);
+        let mut table = ExprTypes::default();
+        table.add_program(&program, &[views(f, Ty::Prim(PrimType::Int)), views(g, Ty::Prim(PrimType::String))], &|id| Some(id));
+        let ((fb, fa), (gb, ga)) = (read_of(f), read_of(g));
+        assert_eq!(table.at(fb, &fa), Some(&Ty::Prim(PrimType::Int)));
+        assert_eq!(table.at(gb, &ga), Some(&Ty::Prim(PrimType::String)));
+        assert_eq!(table.at(gb, &fa), None, "another body's span finds nothing");
+
+        let mut doubled = program.clone();
+        doubled.items.truncate(1);
+        doubled.items.push(doubled.items[0].clone());
+        let mut table = ExprTypes::default();
+        table.add_program(&doubled, &[views(&doubled.items[0], Ty::Prim(PrimType::Int)), views(&doubled.items[1], Ty::Prim(PrimType::String))], &|id| Some(id));
+        assert_eq!(table.at(fb, &fa), None, "two answers at one key are none");
+    }
 
     /// GH #1076 (U3 polish B): a span is a site within one body only. Two
     /// bodies record a row at one equal `Value` span (a user fn's

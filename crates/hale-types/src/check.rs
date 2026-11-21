@@ -22823,14 +22823,25 @@ impl<'a> Checker<'a> {
     }
 
     /// What every walked expression leaves behind for the passes after
-    /// the check: its type in the `views` column and in the caller's
-    /// `expr_types` capture.
+    /// the check: its type in the `views` column (or a monomorph's rows)
+    /// and in the caller's `expr_types` capture.
     fn note_expr_ty(&mut self, expr: &Expr, ty: Ty) -> Ty {
         if let Some(seen) = &mut self.expr_types {
             seen.push((expr as *const Expr, ty.clone()));
         }
         if self.records_views() {
             self.note_view_expr(expr, &ty);
+        } else if let Some(args) = &self.specializing {
+            // GH #2111: a monomorph's walk, outside every default, keeps
+            // what it typed each expression for lowering in the monomorph
+            if self.struct_defaults_typing.is_empty()
+                && self.default_invocations.is_empty()
+                && self.default_evaluation.is_empty()
+                && !matches!(expr, Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. })
+            {
+                let args = args.clone();
+                self.typed.specialized_expr(self.body, &args, expr, ty.clone());
+            }
         }
         ty
     }
@@ -22859,6 +22870,25 @@ impl<'a> Checker<'a> {
             _ => ty.clone(),
         };
         self.views.note_binding(name, ty);
+    }
+
+    /// GH #2111: the field an element chain's cursor walks, `receiver`'s
+    /// `field` of type `ty`, which lowering reads under the receiver's span
+    /// (`typed_bodies::anchor_key`): in the `views` column on the ordinary
+    /// walk, by the monomorph's arguments on a monomorph's.
+    fn note_anchor_read(&mut self, receiver: &Expr, field: &str, ty: &Ty) {
+        if self.records_views() {
+            self.views.note_anchor(receiver, field, ty.clone());
+        } else if let Some(args) = &self.specializing {
+            if self.struct_defaults_typing.is_empty()
+                && self.default_invocations.is_empty()
+                && self.default_evaluation.is_empty()
+            {
+                let args = args.clone();
+                let key = crate::typed_bodies::anchor_key(receiver, field);
+                self.typed.specialized_key(self.body, &args, key, ty.clone());
+            }
+        }
     }
 
     /// The interface a type expression names, however it is written: a
@@ -22891,7 +22921,11 @@ impl<'a> Checker<'a> {
         // local's read by its binding's row: no row of their own.
         match expr {
             Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. } => return,
-            Expr::Ident(id) if self.locals.lookup(&id.name).is_some() => return,
+            Expr::Ident(id) if self.locals.lookup(&id.name).is_some() => {
+                // GH #2111: the read's own row, for lowering's per-body table
+                self.views.note_read(expr, ty.clone());
+                return;
+            }
             _ => {}
         }
         let ty = match (ty, expr) {
@@ -25358,6 +25392,7 @@ impl<'a> Checker<'a> {
                                 let accessor = if self.field_ty(&ft, &name.name).is_some() { name.name.as_str() } else { "get" };
                                 if let Some(t) = self.field_ty(&ft, accessor) {
                                     self.note_cursor(&ft, *span);
+                                    self.note_anchor_read(receiver, anchor, &ft);
                                     return t;
                                 }
                             }

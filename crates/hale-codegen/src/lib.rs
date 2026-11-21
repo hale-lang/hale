@@ -63,6 +63,7 @@ pub(crate) mod shared;
 pub(crate) mod stdlib;
 pub(crate) mod string_append;
 pub(crate) mod string_len;
+pub(crate) mod typed_seam;
 pub(crate) mod types;
 pub(crate) mod view_bindings;
 
