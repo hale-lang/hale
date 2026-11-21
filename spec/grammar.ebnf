@@ -1265,7 +1265,7 @@ function_decl     = [ ffi_annotation | export_annotation
    locus method); `hot` is contextual, recognized only after `@`.
    See `spec/verification.md`.
 
-   `vectorize_annotation` (GH #2134, F.62): every innermost loop of
+   `vectorize_annotation` (GH #2134, F.63): every innermost loop of
    the fn must be vectorized by the build's optimizer on the build's
    target, at least `min_width` lanes wide when given (an integer
    literal from 2 to 1024). fn-only. See spec/semantics.md §

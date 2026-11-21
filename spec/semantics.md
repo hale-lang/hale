@@ -5250,7 +5250,7 @@ optimizer on the build's target. `@vectorize(min_width: N)` asks too that
 each is vectorized at least `N` lanes wide (`N` from 2 to 1024). It
 changes nothing the program computes: it asks no transformation of the
 optimizer, permits no reordering of `Float` arithmetic, and overrides
-no cost model (spec/decisions.md F.62).
+no cost model (spec/decisions.md F.63).
 
 ```hale
 @vectorize

@@ -4779,7 +4779,7 @@ something that cannot happen (above). *Keeping the three words
 reserved for a later meaning.* Nothing is planned for them, and a
 reserved word costs every program the name.
 
-### F.62 — `@vectorize`: a fn's innermost loops must vectorize, or the build says why not
+### F.63 — `@vectorize`: a fn's innermost loops must vectorize, or the build says why not
 
 **Status: accepted and implemented (2026-11-21, GH #2134).**
 

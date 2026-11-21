@@ -766,7 +766,7 @@ pub enum CodegenError {
     /// `None` for an input with no place in the program's sources (a
     /// `[ffi] link` the build was handed).
     CapabilityRefused(String, Option<hale_syntax::Span>),
-    /// GH #2134 (F.62): a loop of a `@vectorize` fn the build's optimizer
+    /// GH #2134 (F.63): a loop of a `@vectorize` fn the build's optimizer
     /// did not vectorize on the build's target, with the reason. Its own
     /// kind: it is a target-dependent build assertion (what the check can
     /// prove cannot vectorize it refuses first), so the check/build parity
@@ -2000,7 +2000,7 @@ fn build_resolved_lowered(
         bubble.clone()
     };
 
-    // GH #2134 (F.62): the loop vectorizer's remarks, for `@vectorize`.
+    // GH #2134 (F.63): the loop vectorizer's remarks, for `@vectorize`.
     // Turned on before this build runs any pass (process-global options),
     // and collected by a handler declared before the context, which it
     // outlives.
@@ -2330,7 +2330,7 @@ fn build_resolved_lowered(
     // addr2line, ASAN reports, and gdb frame listings consume;
     // variable info is a later stage. Native only (wasm DWARF is a
     // separate story).
-    // GH #2134 (F.62): whether this build holds `@vectorize` fns to what
+    // GH #2134 (F.63): whether this build holds `@vectorize` fns to what
     // the vectorizer does. A build that does gets debug locations for
     // their loops even when it emits no DWARF (synthetic ones, stripped
     // after the pipeline: `crate::vectorize`).
@@ -2749,7 +2749,7 @@ fn build_resolved_lowered(
             .run_passes(pass_pipeline, &machine, pb_opts)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
     }
-    // GH #2134 (F.62): every innermost loop of a `@vectorize` fn against
+    // GH #2134 (F.63): every innermost loop of a `@vectorize` fn against
     // what the vectorizer reported; then the debug info that existed only
     // for the check goes.
     if cx.vec_check {
@@ -5484,7 +5484,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// lazily there — the prologue has no scope to attach to yet).
     pub(crate) di_pending_params:
         Vec<(PointerValue<'ctx>, String, CodegenTy)>,
-    /// GH #2134 (F.62): whether this build checks `@vectorize`
+    /// GH #2134 (F.63): whether this build checks `@vectorize`
     /// (`crate::vectorize::skipped` is `None` and a fn carries it).
     pub(crate) vec_check: bool,
     /// The `@vectorize` fn being lowered: its name as written and its
@@ -18460,7 +18460,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         r
     }
 
-    /// GH #2134 (F.62): a `for` or `while` of the `@vectorize` fn being
+    /// GH #2134 (F.63): a `for` or `while` of the `@vectorize` fn being
     /// lowered is recorded with the location its remarks will carry
     /// (`crate::vectorize`): the statement's real span when the build
     /// emits DWARF for this fn, else line `n` of the synthetic file, set

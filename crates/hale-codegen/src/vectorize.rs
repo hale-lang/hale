@@ -1,11 +1,11 @@
-//! GH #2134 (F.62): the build half of `@vectorize`.
+//! GH #2134 (F.63): the build half of `@vectorize`.
 //!
 //! A fn marked `@vectorize` asserts that every innermost loop written in
 //! its body is vectorized by the optimization pipeline the build runs,
 //! on the build's target. The check never guesses from syntax: it reads
 //! what LLVM's loop vectorizer reported about each loop.
 //!
-//! How the build knows (measured on LLVM 18 through inkwell; see F.62):
+//! How the build knows (measured on LLVM 18 through inkwell; see F.63):
 //!
 //! - The vectorizer reports every innermost loop it looks at as an
 //!   optimization remark: `vectorized loop (vectorization width: W,

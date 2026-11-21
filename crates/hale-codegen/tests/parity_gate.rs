@@ -69,7 +69,7 @@
 //! (`parity/minimize.rs`).
 //!
 //! One refusal is not a divergence: a loop of a `@vectorize` fn the
-//! build's optimizer did not vectorize on this target (GH #2134, F.62).
+//! build's optimizer did not vectorize on this target (GH #2134, F.63).
 //! `hale check` refuses what no target vectorizes; what is left is a
 //! target-dependent build assertion by design (spec/semantics.md §
 //! Vectorized loops), so the gate counts it apart
@@ -765,7 +765,7 @@ fn mutators_reach_check_clean_programs() {
     assert!(dead.is_empty(), "mutators that produced no check-clean program over {} seeds: {dead:?}", seeds.len());
 }
 
-/// GH #2134 (F.62): a check-clean program whose `@vectorize` loop the
+/// GH #2134 (F.63): a check-clean program whose `@vectorize` loop the
 /// build's optimizer does not vectorize is the target's answer, counted
 /// as a target assertion, never a divergence.
 #[test]

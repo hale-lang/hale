@@ -1,4 +1,4 @@
-//! GH #2134 (F.62): `hale build` reports a `@vectorize` loop the
+//! GH #2134 (F.63): `hale build` reports a `@vectorize` loop the
 //! optimizer did not vectorize at the loop, in the program's file, line
 //! and column; and a build that does not check the assertion (a dev
 //! build, at O1) says so instead of passing it in silence.

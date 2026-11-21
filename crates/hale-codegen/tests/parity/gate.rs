@@ -38,7 +38,7 @@ pub enum Verdict {
     /// Checked clean and the build refused it, or lowering panicked. The
     /// rendered error.
     Diverges(String),
-    /// GH #2134 (F.62): checked clean, and the build refused a loop of a
+    /// GH #2134 (F.63): checked clean, and the build refused a loop of a
     /// `@vectorize` fn its optimizer did not vectorize on this target.
     /// That refusal is a target-dependent build assertion, not a gap
     /// between check and build: `hale check` refuses what no target

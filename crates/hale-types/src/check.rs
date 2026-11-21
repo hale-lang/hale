@@ -1628,7 +1628,7 @@ pub fn check_bundle_rules(
     // (hoisted field / `recv_into`).
     let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false, advisory: inputs.hot_path_advisory };
     diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
-    // GH #2134 (F.62): what an innermost loop of a `@vectorize` fn calls,
+    // GH #2134 (F.63): what an innermost loop of a `@vectorize` fn calls,
     // allocates or publishes that no target's vectorizer takes.
     {
         // (the effect rows are demanded only by a program that has one:
@@ -11607,7 +11607,7 @@ struct Checker<'a> {
     /// on the ordinary walk.
     generic_bindings: BTreeMap<String, Ty>,
     specializing: Option<Vec<Ty>>,
-    /// GH #2134 (F.62): the `@vectorize` fn being walked (its name as
+    /// GH #2134 (F.63): the `@vectorize` fn being walked (its name as
     /// written) and the innermost loop of it being walked.
     vec_fn: Option<String>,
     vec_loop: Option<crate::vectorize::LoopFindings>,
@@ -17116,7 +17116,7 @@ impl<'a> Checker<'a> {
         if self.vec_fn.is_none() {
             return self.check_stmt_at(stmt);
         }
-        // GH #2134 (F.62): what an innermost loop of a `@vectorize` fn
+        // GH #2134 (F.63): what an innermost loop of a `@vectorize` fn
         // holds that no target's vectorizer takes.
         use crate::vectorize::Cannot;
         let mut entered = None;

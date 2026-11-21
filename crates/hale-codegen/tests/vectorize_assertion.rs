@@ -1,4 +1,4 @@
-//! GH #2134 (F.62): `@vectorize` is held to what LLVM's loop vectorizer
+//! GH #2134 (F.63): `@vectorize` is held to what LLVM's loop vectorizer
 //! did with each innermost loop of the fn, on the build's target.
 //!
 //! The kernels here are chosen to agree on x86-64 (SSE2 baseline and

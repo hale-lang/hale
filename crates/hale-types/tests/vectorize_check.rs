@@ -1,4 +1,4 @@
-//! GH #2134 (F.62): what `hale check` refuses in a `@vectorize` fn,
+//! GH #2134 (F.63): what `hale check` refuses in a `@vectorize` fn,
 //! because no target's vectorizer takes it. Each refusal is placed at
 //! the thing that stops the loop and says what it is; what is left is
 //! the build's target-dependent assertion (hale-codegen's

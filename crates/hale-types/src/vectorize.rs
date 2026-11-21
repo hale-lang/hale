@@ -1,4 +1,4 @@
-//! GH #2134 (F.62): the check half of `@vectorize`.
+//! GH #2134 (F.63): the check half of `@vectorize`.
 //!
 //! A fn marked `@vectorize` asserts that every innermost loop written in
 //! its body is vectorized by the build's optimizer on the build's target

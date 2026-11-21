@@ -3767,7 +3767,7 @@ impl Parser {
         Ok(out)
     }
 
-    /// GH #2134 (F.62): `@vectorize` or `@vectorize(min_width: N)`, N a
+    /// GH #2134 (F.63): `@vectorize` or `@vectorize(min_width: N)`, N a
     /// positive integer literal.
     fn parse_vectorize_annotation(&mut self) -> Result<VectorizeAttr, Diag> {
         let at = self.expect(TokenKind::At, "@")?;

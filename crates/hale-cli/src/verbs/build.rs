@@ -591,7 +591,7 @@ fn shipped_native_warning(options: &hale_codegen::BuildOptions) -> Option<String
 /// travels), the portable baseline, or the CPU named. A cross build
 /// at the default is generic (GH #970); a wasm32 module is always
 /// generic and says nothing.
-/// GH #2134 (F.62): a build that does not check the program's
+/// GH #2134 (F.63): a build that does not check the program's
 /// `@vectorize` fns says so, and why.
 fn vectorize_skipped_note(
     snap: &hale_frontend::snapshot::Snapshot,

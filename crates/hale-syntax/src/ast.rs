@@ -2987,7 +2987,7 @@ pub struct FnDecorator {
     pub span: Span,
 }
 
-/// GH #2134 (F.62): a fn's `@vectorize` assertion.
+/// GH #2134 (F.63): a fn's `@vectorize` assertion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VectorizeAttr {
     /// `@vectorize(min_width: N)`: the narrowest vector, in lanes, the
@@ -3071,7 +3071,7 @@ pub struct FnDecl {
     /// contributes to its seed's default surface. A locus fn's alone;
     /// the surface law says so of any other.
     pub rpc: Option<RpcAttr>,
-    /// GH #2134 (F.62): `@vectorize` / `@vectorize(min_width: N)` —
+    /// GH #2134 (F.63): `@vectorize` / `@vectorize(min_width: N)` —
     /// every innermost loop written in this fn's body must be
     /// vectorized by the build's optimizer on the build's target, at a
     /// vector width of at least `min_width` lanes when one is given, or
