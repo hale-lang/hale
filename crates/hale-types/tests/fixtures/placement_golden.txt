@@ -9232,6 +9232,9 @@ row	App@literal1.run_owner	RunOwner	main	default
 dynamic	Ender	on main
 dynamic	Parent	on main
 
+== tests/hale/text_receiver_calls_test.hl
+row	Counter@main1	Counter	main	default
+
 == tests/hale/time_return_test.hl
 row	Clock@main1	Clock	main	default
 

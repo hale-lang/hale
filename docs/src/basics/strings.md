@@ -14,6 +14,26 @@ fn main() {
 }
 ```
 
+## Calling a `std::str` Function on a String
+
+A `std::str` function whose first parameter is the string can be called on the string itself: `raw.trim()` is `std::str::trim(raw)`, and `line.starts_with("#")` is `std::str::starts_with(line, "#")`. Calls chain left to right, each on what the one before returned:
+
+```hale
+fn main() {
+    let raw = "  Hello World  ";
+    println(raw.trim().lower());
+    let port = " 8080 ".trim().parse_int() or 0;
+    for w in "a hale program".words() {
+        println(w.upper());
+    }
+    println("a hale program".words().filter(len(it) > 1).count());
+}
+```
+
+- It works on a `String`, a `StringView` or a `ByteView` (with `std::str`: `v.find("&", 0)`), and on `Bytes` or a view of it (with `std::bytes`: `b.at(0)`, `b.slice(1, 3)`). The value becomes the first argument, and the call is exactly the path call: same checks, same errors, same cost.
+- `x.words()`, `x.lines()` and `x.split(sep)` are the text sources here too, as a `for` loop's source or an element chain's.
+- Your own types have no methods this way, and your own functions are not called on a value: `s.shout()` is refused, and `shout(s)` is the call. A name `std::str` does not have is refused with the nearest ones (`s.trimm()` suggests `.trim`), and `s.len()` points to the builtin `len(s)`.
+
 ## `std::str`, `std::bytes`, and `std::regex` Reference
 
 | Function / Type | Signature | Description |

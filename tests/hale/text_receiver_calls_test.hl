@@ -1,0 +1,154 @@
+// Receiver calls on text values (GH #2068, spec/decisions.md F.59): for
+// `x` a String, a StringView or a ByteView, `x.f(args)` is
+// `std::str::f(x, args)`; for a Bytes (or a view of one),
+// `std::bytes::f(x, args)`. Representative fns of both namespaces,
+// fallible ones under `or`, chains of calls, the receivers a chain starts
+// from (a literal, a local, a field, a call, a slice, a parameter, a
+// ByteView), the text sources (`words`, `lines`, `split`) in a `for` and
+// as an element chain's source, and the places a call is written (a locus
+// method, a generic body, a match guard). A locus method of a std fn's
+// name, and a fn of the program's, are untouched.
+
+type Line { text: String; }
+
+type Entry { key: String; value: String; }
+
+locus Counter {
+    params { seen: Int = 0; last: String = ""; }
+    // a method named like a std fn is the locus's own
+    fn trim() -> Int { return self.seen; }
+    fn note(raw: String) {
+        self.seen = self.seen + 1;
+        self.last = raw.trim().upper();
+    }
+}
+
+// a program's fn named like a std fn is called by its name
+fn upper(s: String) -> String {
+    return "<" + s + ">";
+}
+
+fn entry(line: String) -> Entry {
+    let (k, v) = line.cut("=") or { return Entry { key: "!" + err.kind, value: "" }; };
+    return Entry { key: k.trim(), value: v.trim() };
+}
+
+fn port(s: String) -> Int {
+    return s.trim().parse_int() or - 1;
+}
+
+// a receiver call in a generic body, on a value its own types make text
+fn tagged<T>(x: T, label: String) -> String {
+    return label.trim().lower() + ":" + to_string(x);
+}
+
+fn first_heading(doc: String) -> String {
+    return doc.lines().find(it.starts_with("#")) or "";
+}
+
+fn long_words(s: String) -> Int {
+    return s.words().filter(len(it) > 3).count();
+}
+
+fn csv_total(s: String) -> Int {
+    let mut t = 0;
+    for part in s.split(",") {
+        t = t + (part.trim().parse_int() or 0);
+    }
+    return t;
+}
+
+fn kind(s: String) -> String {
+    return match s {
+        _ if s.starts_with("GET ") -> "read",
+        _ if s.ends_with("!") -> "loud",
+        _ -> "other",
+    };
+}
+
+fn main() {
+    let raw = "  Hello World  ";
+    // a chain of receiver calls, each typed as the call before it returns
+    std::test::assert_eq_str(raw.trim(), "Hello World", "trim");
+    std::test::assert_eq_str(raw.trim().lower(), "hello world", "trim then lower");
+    std::test::assert_eq_str(
+        raw.trim().upper().replace("WORLD", "THERE"),
+        "HELLO THERE",
+        "three in a chain",
+    );
+    std::test::assert(raw.contains("World"), "contains");
+    std::test::assert(raw.trim().starts_with("Hello"), "starts_with");
+    std::test::assert(raw.trim().ends_with("World"), "ends_with");
+    std::test::assert_eq_int(raw.trim().index_of("World"), 6, "index_of");
+    std::test::assert_eq_int(raw.trim().last_index_of("o"), 7, "last_index_of");
+    std::test::assert_eq_str("ab".repeat(3), "ababab", "a literal receiver");
+    std::test::assert_eq_str("7".pad_left(3, "0"), "007", "pad_left");
+    std::test::assert_eq_str("v1.2".trim_prefix("v"), "1.2", "a fn written in Hale (trim_prefix)");
+    std::test::assert("Hale".eq_ignore_case("hALE"), "eq_ignore_case");
+    // the same calls spelled as paths agree
+    std::test::assert_eq_str(
+        raw.trim().lower(),
+        std::str::lower(std::str::trim(raw)),
+        "the path call",
+    );
+
+    // receivers: a field, a call, a parameter, a slice
+    let l = Line { text: " x = 1 " };
+    std::test::assert_eq_int(l.text.trim().index_of("="), 2, "a field receiver");
+    std::test::assert_eq_str(std::str::trim(raw).upper(), "HELLO WORLD", "a call receiver");
+    std::test::assert_eq_str(upper("hi"), "<hi>", "the program's own fn");
+    std::test::assert_eq_str(raw[2..7].upper(), "HELLO", "a slice receiver");
+
+    // fallible receiver calls, addressed with `or`
+    std::test::assert_eq_int(port(" 8080 "), 8080, "parse_int");
+    std::test::assert_eq_int(port("80x"), -1, "parse_int's or");
+    let e = entry(" name = hale ");
+    std::test::assert_eq_str(e.key + "|" + e.value, "name|hale", "cut");
+    std::test::assert_eq_str(entry("novalue").key, "!not_found", "cut's or");
+
+    // the text sources, as a `for`'s and as a chain's source
+    std::test::assert_eq_int(long_words("a hale lang words go"), 3, "words, a chain");
+    std::test::assert_eq_str(
+        first_heading("x\n# Title\ny"),
+        "# Title",
+        "lines, find with a receiver call on it",
+    );
+    std::test::assert_eq_int(csv_total("1, 2,3 , x"), 6, "split, a for");
+    let mut ws = "";
+    for w in "one two".words() {
+        ws = ws + w.upper();
+    }
+    std::test::assert_eq_str(ws, "ONETWO", "words, a for");
+
+    // a guard, a locus method, a generic body
+    std::test::assert_eq_str(kind("GET /"), "read", "a guard");
+    std::test::assert_eq_str(kind("hey!"), "loud", "a second guard");
+    let c = Counter { };
+    c.note("  done ");
+    std::test::assert_eq_str(c.last, "DONE", "in a locus method");
+    std::test::assert_eq_int(c.trim(), 1, "the locus's own trim");
+    std::test::assert_eq_str(tagged(3, " ID "), "id:3", "a generic body, Int");
+    std::test::assert_eq_str(tagged("x", "Name"), "name:x", "a generic body, String");
+
+    // a String's byte view reads through `std::str`
+    let v = std::str::bytes_view("ab\ncd");
+    std::test::assert_eq_int(v.find("\n", 0), 2, "a ByteView's find");
+    std::test::assert_eq_str(v.slice(3, 5), "cd", "a ByteView's slice");
+
+    // Bytes and its views read through `std::bytes`
+    let b = std::bytes::from_string("hale");
+    std::test::assert_eq_int(b.at(1) or - 1, 97, "at");
+    std::test::assert_eq_int(b.slice(1, 3).at(0) or - 1, 97, "slice then at");
+    std::test::assert_eq_int(
+        b.concat(std::bytes::from_string("!")).read_u8(4) or - 1,
+        33,
+        "concat then read_u8",
+    );
+
+    // a heap String a receiver call returns outlives the expression
+    let mut parts = "";
+    for i in 0..3 {
+        parts = parts + to_string(i).repeat(2);
+    }
+    std::test::assert_eq_str(parts.upper(), "001122", "a built String");
+}

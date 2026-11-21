@@ -86,6 +86,26 @@ pub fn source_of(callee: &Expr) -> Option<(&'static str, usize)> {
     SOURCES.iter().copied().find(|(n, _)| *n == f.name)
 }
 
+/// GH #2068 (F.59): the text source a `for`'s or a chain's source call
+/// is, and its arguments, the string first: `std::str::lines(s)`, or the
+/// receiver call `s.lines()` (`s.split(sep)`, `s.words()`), at the
+/// source's own arity. A source position is read before types, so a
+/// receiver call there naming a source is the source whatever the
+/// receiver is: the check refuses one that is no string, in the source's
+/// words. `self.lines()` is a locus's own method, never a source.
+pub fn source_call(e: &Expr) -> Option<(&'static str, Vec<Expr>)> {
+    let Expr::Call { callee, args, .. } = e else { return None };
+    if let Some((name, arity)) = source_of(callee) {
+        return (args.len() == arity).then(|| (name, args.clone()));
+    }
+    let Expr::Field { receiver, name, .. } = callee.as_ref() else { return None };
+    if matches!(receiver.as_ref(), Expr::KwSelf(_)) {
+        return None;
+    }
+    let (source, arity) = SOURCES.iter().copied().find(|(n, _)| *n == name.name)?;
+    (args.len() + 1 == arity).then(|| (source, std::iter::once(receiver.as_ref().clone()).chain(args.iter().cloned()).collect()))
+}
+
 /// The checker's refusal of a source left as written: a call used as a
 /// value, or one with the wrong number of arguments.
 pub fn refusal(name: &str, arity: usize, got: usize) -> String {
@@ -167,15 +187,12 @@ fn items(items_: &mut [TopDecl], n: &mut usize) {
 fn body(b: &mut Block, n: &mut usize) {
     crate::desugar::each_stmt_mut(b, &mut |s| {
         let Stmt::For { name, iter, body, span, .. } = s else { return };
-        let Expr::Call { callee, args, span: call_span, .. } = iter else { return };
-        let Some((source, arity)) = source_of(callee) else { return };
-        if args.len() != arity {
-            return;
-        }
+        let Some((source, args)) = source_call(iter) else { return };
+        let call_span = iter.span();
         let k = *n;
         *n += 1;
         let user_body = std::mem::replace(body, Block { stmts: Vec::new(), tail: None, span: *span });
-        let stmts = scan(source, std::mem::take(args), *call_span, &k.to_string(), name.clone(), user_body, *span);
+        let stmts = scan(source, args, call_span, &k.to_string(), name.clone(), user_body, *span);
         *s = Stmt::Block(Block { stmts, tail: None, span: *span });
     });
 }

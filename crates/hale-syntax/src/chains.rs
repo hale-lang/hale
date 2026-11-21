@@ -471,12 +471,8 @@ fn peel(e: &Expr) -> Option<Chain> {
     // the source's own arity. It is a call of the standard library's,
     // never a user's facade, so every terminal is recognized on it, a
     // stage or none (`std::str::words(s).count()`).
-    let text = match cur {
-        Expr::Call { callee, args, .. } => crate::str_sources::source_of(callee)
-            .filter(|(_, arity)| args.len() == *arity)
-            .map(|(name, _)| name),
-        _ => None,
-    };
+    // GH #2068: or the receiver call naming one, `s.words()`.
+    let text = crate::str_sources::source_call(cur).map(|(name, _)| name);
 
     // Recognition gate.
     let recognized = if !stages.is_empty() || text.is_some() {
@@ -969,11 +965,11 @@ fn build_loop(
     // element, bound once per iteration (GH #1995 S2).
     // (only at the source's own arity: any other call keeps the indexed
     // loop, whose `get` on the call is the checker's refusal to report)
-    if let Expr::Call { callee, args, span: call_span, .. } = src {
-        if let Some((source, _)) = crate::str_sources::source_of(callee).filter(|(_, arity)| args.len() == *arity) {
+    if let Expr::Call { span: call_span, .. } = src {
+        if let Some((source, args)) = crate::str_sources::source_call(src) {
             return crate::str_sources::scan(
                 source,
-                args.clone(),
+                args,
                 *call_span,
                 &text_tag(uid),
                 id(&elem, sp),
@@ -1367,10 +1363,10 @@ fn lower_text_indexed(
         }
     };
     let source = c.text.unwrap_or("words");
-    let (call_args, call_span) = match &c.src {
-        Expr::Call { args, span, .. } => (args.clone(), *span),
-        other => (Vec::new(), other.span()),
-    };
+    // GH #2068: the source's arguments, the string first (`s.words()`
+    // is `std::str::words(s)`)
+    let call_args = crate::str_sources::source_call(&c.src).map(|(_, args)| args).unwrap_or_default();
+    let call_span = c.src.span();
     let action: Vec<Stmt> = match inner_loop {
         None => head,
         Some(Stmt::Block(later)) => {

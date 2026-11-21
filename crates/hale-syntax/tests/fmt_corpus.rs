@@ -201,6 +201,32 @@ fn a_call_through_a_tuple_part_is_tight() {
     assert!(once.contains("t.0(4), t.0(5)"), "{once}");
 }
 
+/// GH #2068 (F.59): a receiver call on a text value is a method call to
+/// the formatter: tight around its dot, a chain of them kept on one line,
+/// and one broken over lines continued by its leading dots.
+#[test]
+fn receiver_calls_round_trip() {
+    let src = r#"fn f(raw: String) -> Int {
+    let t = raw . trim ( ) .lower();
+    let n = raw.trim()
+        .parse_int() or 0;
+    for w in raw.words() { println(w.upper()); }
+    return n + raw.words().filter(len(it) > 2).count();
+}
+"#;
+    let once = format_source(src).expect("gate");
+    assert_eq!(format_source(&once).expect("gate, 2nd pass"), once, "not a fixed point");
+    let expected = r#"fn f(raw: String) -> Int {
+    let t = raw.trim().lower();
+    let n = raw.trim()
+        .parse_int() or 0;
+    for w in raw.words() { println(w.upper()); }
+    return n + raw.words().filter(len(it) > 2).count();
+}
+"#;
+    assert_eq!(once, expected);
+}
+
 /// Every `.hl` file `hale fmt .` visits from the repository root:
 /// `vendor/`, dot-directories and build output skipped.
 fn tree_files() -> Vec<PathBuf> {

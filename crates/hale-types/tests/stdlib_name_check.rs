@@ -323,43 +323,42 @@ fn the_member_spelling_points_at_the_builtin() {
 
 #[test]
 fn a_string_method_spelling_points_at_the_std_str_function() {
-    // GH #1995 S3: `s.trim()` is the method spelling of a `std::str`
-    // free function, and a String has no methods. Every public
-    // `std::str` fn that takes the String first is named, with its call
-    // shape; a fn over a `ByteView` (`slice`) is not, and a name `std::str`
-    // does not have keeps the plain error.
+    // GH #1995 S3, then GH #2068 (F.59): `s.trim()` is the call
+    // `std::str::trim(s)` itself, for every public `std::str` fn that takes
+    // the String first; a fn over a `ByteView` (`slice`) is not one, a
+    // name `std::str` does not have is refused with the nearest names, and
+    // `s.trim` read without the call is no value.
     let m = msgs(
         r#"
         fn main() {
             let s = " a=b ";
             let t = s.trim();
             let u = s.starts_with("a");
-            let v = s.cut("=");
             let w = s.slice(0, 1);
             let x = s.frobnicate();
-            println(t, u, v, w, x);
+            let y = s.trimm();
+            let z = s.trim;
+            println(t, u, w, x, y);
         }
     "#,
     );
-    for (field, call) in [
-        ("trim", "`std::str::trim(s)`"),
-        ("starts_with", "`std::str::starts_with(s, …)`"),
-        ("cut", "`std::str::cut(s, …)`"),
-    ] {
-        assert!(
-            m.iter().any(|s| s.contains(&format!("no field `{field}` on `String`"))
-                && s.contains("string operations are free functions")
-                && s.contains(call)),
-            "`.{field}()` on a String should point at {call}; got: {m:?}"
-        );
-    }
+    // `t` and `u` are calls: no diagnostic is about them
+    assert_eq!(m.len(), 4, "`.trim()` and `.starts_with()` are `std::str` calls; got: {m:?}");
+    assert!(!m.iter().any(|s| s.contains("starts_with")), "{m:?}");
     for field in ["slice", "frobnicate"] {
         assert!(
-            m.iter().any(|s| s.contains(&format!("no field `{field}` on `String`"))
-                && !s.contains("std::str::")),
-            "`.{field}()` names no std::str call; got: {m:?}"
+            m.iter().any(|s| s.contains(&format!("no fn `{field}` in `std::str` takes a `String` first"))),
+            "`.{field}()` names no std::str call on a String; got: {m:?}"
         );
     }
+    assert!(
+        m.iter().any(|s| s.contains("no fn `trimm` in `std::str`") && s.contains("the nearest are `.trim`")),
+        "a near name; got: {m:?}"
+    );
+    assert!(
+        m.iter().any(|s| s.contains("no field `trim` on `String`") && s.contains("`trim` is the fn `std::str::trim`")),
+        "a call read as a value; got: {m:?}"
+    );
 }
 
 #[test]

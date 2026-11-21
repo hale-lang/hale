@@ -554,6 +554,10 @@ pub struct Snapshot {
     dependency_index: OnceCell<Result<DependencyIndex, Blocked>>,
     builds: [Cell<u32>; FAMILIES.len()],
     stage_builds: [Cell<u32>; STAGES.len()],
+    /// GH #2068 (F.59): whether the receiver calls on text values the
+    /// check resolved have been written as their path calls
+    /// ([`Snapshot::settle_receiver_calls`]).
+    receivers_settled: bool,
 }
 
 /// What [`Snapshot::from_program`]'s program is keyed and minted by:
@@ -733,6 +737,7 @@ impl Snapshot {
             dependency_index: OnceCell::new(),
             builds,
             stage_builds: Default::default(),
+            receivers_settled: false,
         };
         snap.count("seed_loading");
         if snap.config.wrap_main {
@@ -859,6 +864,12 @@ impl Snapshot {
                  adopted into the entry's `main locus` and evaluated in the world it closes",
                 entry.display()
             )));
+        }
+        // GH #2068 (F.59): the editor's load settles once it is offered
+        // the seed's previous snapshot, or none (`reusing_typing`,
+        // `settled`), so its walk reuses what it can.
+        if mode != Some(LoadMode::Editor) {
+            snap.settle_receiver_calls();
         }
         Ok(snap)
     }
@@ -1393,10 +1404,89 @@ impl Snapshot {
     /// [`Snapshot::take_previous`]. A previous snapshot whose typing never
     /// ran, or that loaded another seed or under another config, offers
     /// nothing and the typing is whole ([`TypingReuse::Whole`]).
-    pub fn reusing_typing(self, previous: Snapshot) -> Snapshot {
+    pub fn reusing_typing(mut self, previous: Snapshot) -> Snapshot {
         drop(previous.previous.take());
         self.previous.set(Some(Box::new(previous)));
+        self.settle_receiver_calls();
         self
+    }
+
+    /// GH #2068 (F.59): the editor's snapshot with no previous snapshot
+    /// to reuse, its receiver calls settled as every other load's are.
+    pub fn settled(mut self) -> Snapshot {
+        self.settle_receiver_calls();
+        self
+    }
+
+    /// GH #2068 (F.59): write each receiver call on a text value the check
+    /// resolved (`x.trim()`, `TypingRecord::receiver_calls`) as the path
+    /// call it means (`std::str::trim(x)`), once, before any family past
+    /// the walk reads the program. A program with no method call that
+    /// could be one is not typed for it; one whose walk resolves none
+    /// keeps that walk. One that resolves some is rewritten and every
+    /// family derived so far forgotten, so the check, the analyses and
+    /// lowering all read the path calls.
+    fn settle_receiver_calls(&mut self) {
+        if std::mem::replace(&mut self.receivers_settled, true) || self.has_hole() {
+            return;
+        }
+        {
+            let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
+            if !hale_types::receiver_calls::any_candidate(&mut refs) {
+                return;
+            }
+        }
+        let calls = match self.final_walk() {
+            Ok(w) => w.walk.record.receiver_calls.clone(),
+            Err(_) => return,
+        };
+        if calls.is_empty() {
+            return;
+        }
+        let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
+        hale_types::receiver_calls::rewrite(&mut refs, &calls);
+        self.forget_derived();
+    }
+
+    /// Every family derived from the programs, forgotten: what
+    /// [`Snapshot::settle_receiver_calls`] does once it has rewritten them.
+    fn forget_derived(&mut self) {
+        self.demangler = OnceCell::new();
+        self.entry = OnceCell::new();
+        self.target = OnceCell::new();
+        self.capability_uses = OnceCell::new();
+        self.scope = OnceCell::new();
+        self.partial_scope = OnceCell::new();
+        self.bindings = OnceCell::new();
+        self.forms = OnceCell::new();
+        self.typing = OnceCell::new();
+        self.walking = OnceCell::new();
+        self.verifying = OnceCell::new();
+        self.typed_bodies = OnceCell::new();
+        self.owned_views = OnceCell::new();
+        self.bus_graph = OnceCell::new();
+        self.ownership_graph = OnceCell::new();
+        self.handlers = OnceCell::new();
+        self.flows = OnceCell::new();
+        self.alloc_summary = OnceCell::new();
+        self.law_selection = OnceCell::new();
+        self.role_rows = OnceCell::new();
+        self.surface_rows = OnceCell::new();
+        self.units = OnceCell::new();
+        self.effects = OnceCell::new();
+        self.placement = OnceCell::new();
+        self.arrangement = OnceCell::new();
+        self.dispatch_gates = OnceCell::new();
+        self.dispatch_plan = OnceCell::new();
+        self.lifecycle = OnceCell::new();
+        self.model = OnceCell::new();
+        self.typing_stage = OnceCell::new();
+        self.laws = OnceCell::new();
+        self.check = OnceCell::new();
+        self.intra_locus = OnceCell::new();
+        self.lowering = OnceCell::new();
+        self.declarations = OnceCell::new();
+        self.dependency_index = OnceCell::new();
     }
 
     /// The previous snapshot [`Snapshot::reusing_typing`] offered, if the

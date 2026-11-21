@@ -4357,6 +4357,73 @@ The pre-1.0 policy migrates the repository's own code in the change
 that breaks it. *Keeping `module` as a reserved word.* Nothing is
 planned for it, and a hard keyword costs every program the name.
 
+### F.59 — A `std::str` or `std::bytes` fn is called on the text value it takes first
+
+**Status: accepted and implemented (2026-11-20; GH #2068, from RFC
+#1995 S4).**
+
+**Problem.** Every string operation is spelled through its namespace:
+`std::str::trim(s)`, `std::str::lower(std::str::trim(raw))`. The corpus
+RFC #1995 counted spells `std::str::` about 11.7K times. `s.trim()` is
+the first thing a newcomer types (the check pointed at the path since GH
+#1995 S3), nested calls read inside out, and an editor cannot offer the
+namespace's fns after `s.` because there is nothing there to offer.
+
+**Decision.** For `x` of type `String`, `StringView` or
+`std::str::ByteView` (a String's byte view) with no field `f`,
+`x.f(args)` means `std::str::f(x, args)`; for `Bytes`, `BytesView` or
+`BytesMut`, `std::bytes::f(x, args)`; when that fn is public and
+takes a value of `x`'s type first. Chains read left to right:
+`raw.trim().lower()`. Only these types and only these namespaces: a
+record type still has no methods, a locus's methods are its own, and a
+fn of the program's is never called on a value (no UFCS). `len(s)` stays
+the builtin, and `s.len()` is refused pointing to it.
+
+The check decides, since only it knows a receiver's type: it types the
+call as the path call and records it by the call's node id
+(`TypingRecord::receiver_calls`). The snapshot then writes each recorded
+call as that path call (`hale_types::receiver_calls`) and types the
+program again, so every later pass (the effects, allocation and
+ownership analyses, the summaries, lowering) reads the path call: a
+receiver call classifies as the path call because it is one. A program
+with no method call whose name is a `std::str` or `std::bytes` fn is not
+typed for this; one whose calls resolve none keeps its one walk. The
+editor settles a snapshot after it is offered the previous one, so its
+walk reuses what it can.
+
+In a `for` loop's source and an element chain's source, which are read
+before types (the chain desugar runs at parse), `x.split(sep)`,
+`x.lines()` and `x.words()` are the text sources whatever `x` is; the
+check refuses an `x` that is no string in the source's words.
+
+**What a program now gets.** On a text value, a name that is no fn of
+its namespace taking that type first is a located type error with the
+nearest fns:
+
+```text
+type error: no fn `trimm` in `std::str` takes a `String` first, so `.trimm` names nothing on it — the nearest are `.trim`, `.trim_end`, `.trim_start`
+```
+
+A fn of the program's is pointed at its call (`shout(x, …)`), a value of
+a record or an `Int` keeps "no field", and a receiver call in a generic
+body on a value of a type parameter calls nothing and is refused once a
+specialization would make it text. The editor completes the namespace's
+fns after `x.` on a text value.
+
+A `ByteView`'s `v.find(…)` passed the check before this (the stdlib
+handles' member sugar, GH #470, named the fn) and lowering refused it as a
+method call on a value that is no locus; it is now the path call too.
+
+**Considered and rejected.** *Methods for every type, or UFCS for every
+fn.* Either makes the method namespace open-ended, so a call's meaning
+depends on every fn in scope, and gives types the methods the language
+keeps off them; this is two namespaces, on the types they are for. *A
+desugar before the check.* It cannot tell a String's `.trim()` from a
+locus's method `trim`. *Teaching each analysis the receiver form.* Each
+classifier of a call by its callee (the summaries, the effects, the
+capability uses, lowering) would need the same rule twice; rewriting the
+call once keeps one.
+
 ## Deferred & future work
 
 ### semantics — What's deferred
