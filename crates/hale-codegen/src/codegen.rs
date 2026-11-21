@@ -39701,7 +39701,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and is let through, as the checker lets it through
         let scalar = match &slot_ty {
             CodegenTy::Int | CodegenTy::U64 | CodegenTy::Float | CodegenTy::Bool | CodegenTy::Duration | CodegenTy::Time => true,
-            CodegenTy::Decimal(_) | CodegenTy::U256 | CodegenTy::I256 => true,
+            // GH #2132: a narrower integer is an inline scalar too
+            CodegenTy::Decimal(_) | CodegenTy::U256 | CodegenTy::I256 | CodegenTy::Narrow(_) => true,
             CodegenTy::Enum(_) => !self.self_field_type_retires(&slot_ty),
             _ => false,
         };
