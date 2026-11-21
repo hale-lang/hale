@@ -106,6 +106,10 @@ jobs:
       - name: Build + push by digest
         id: build
         uses: docker/build-push-action@v6
+        env:
+          # No build-record artifact: a caller that downloads its run's
+          # artifacts (nightly.yml) gets only what it built on purpose.
+          DOCKER_BUILD_RECORD_UPLOAD: false
         with:
           context: .
           add-hosts: |
