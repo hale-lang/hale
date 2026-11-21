@@ -177,6 +177,8 @@ subscribe Frame as on_frame bounded(64, drop_old);
 
 A subscriber bound smaller than the topic bound sheds excess messages locally before the topic bound is reached.
 
+The topic bound needs no `keyed_by`: any topic may declare `bounded(N); on_full: fail;`. `or raise` refuses with `BusFull` at the send site, `or discard` sends anyway and lets a subscriber at capacity shed the message (counted), and `or wait` parks the publisher until the queue drains. On a keyed topic that also declares `on_unmatched: fail`, a send takes `or raise` or `or discard` (`or wait` cannot outwait an unmatched key).
+
 > [!NOTE]
 > Subscriber-level `bounded(...)` clauses apply only to cooperative subscribers on `main`. Subscribers placed on a non-`main` `cooperative(pool = ...)` or `pinned` thread (and children nested under them) already receive messages through fixed-size inter-thread rings that apply backpressure directly to producers.
 
