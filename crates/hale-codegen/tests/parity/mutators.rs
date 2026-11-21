@@ -817,9 +817,9 @@ struct Elem {
 }
 
 /// The element types a probe can carry: the primitives the corpus
-/// steers around least (Decimal, U256, U64, String), a payload enum, and the
-/// program's own records and enums, valued from a literal the program
-/// writes.
+/// steers around least (Decimal, U256, U64, String), the unit dialect's
+/// scalars over a `U64`, a payload enum, and the program's own records and
+/// enums, valued from a literal the program writes.
 fn elem_types(src: &str, program: &Program) -> Vec<Elem> {
     let mut out = vec![
         Elem { ty: "Int".into(), value: "7".into(), decls: vec![] },
@@ -834,6 +834,23 @@ fn elem_types(src: &str, program: &Program) -> Vec<Elem> {
         // one is one only where its place is
         Elem { ty: "U64".into(), value: "18446744073709551615".into(), decls: vec![] },
         Elem { ty: "U64".into(), value: "7".into(), decls: vec![] },
+        // GH #2131: the unit dialect's scalars over a `U64`: a quantity, an
+        // identity and a range
+        Elem {
+            ty: "__PgWei".into(),
+            value: "7pgwei".into(),
+            decls: vec!["unit pgwei;".into(), "type __PgWei = quantity U64 in pgwei;".into()],
+        },
+        Elem {
+            ty: "__PgNonce".into(),
+            value: "__PgNonce(18446744073709551615)".into(),
+            decls: vec!["type __PgNonce = distinct U64;".into()],
+        },
+        Elem {
+            ty: "__PgPort".into(),
+            value: "(__PgPort(7) or 0)".into(),
+            decls: vec!["type __PgPort = U64 { range: 1..65536; }".into()],
+        },
         Elem {
             ty: "__PgPay".into(),
             value: "__PgPay::Two(3, \"x\")".into(),

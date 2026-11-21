@@ -5,8 +5,8 @@ equations between them, and **scalar types** counted in them: a
 **quantity** (an amount: `Money`, `Duration`), a **point** (a position
 on a quantity's line: `Price`, `Time`), an **identity** (an integer
 that never mixes with another: `OrderId`) and a **range** (an integer
-with bounds: `Byte`). Every value of one is the `Int` it counts. The
-compiler knows each conversion between two of them as one exact
+with bounds: `Byte`). Every value of one is the integer it counts, its
+**base**: an `Int`, or a `U64` (§ The base). The compiler knows each conversion between two of them as one exact
 rational factor, and holds one rule: **widening is free and narrowing
 is named**. A conversion that multiplies by a whole factor is exact and
 implicit; one that divides, or that may leave a range, is written with
@@ -51,6 +51,19 @@ type Ledger    = quantity Int in cent { round: half_even; }
 type Seconds   = Duration in s;
 ```
 
+and, over a `U64` (§ The base):
+
+```hale
+unit wei;
+unit gwei = 1_000_000_000 wei;
+unit eth = 1_000_000_000 gwei;
+
+type Wei   = quantity U64 in wei;
+type Gwei  = Wei in gwei { round: floor; }
+type Nonce = distinct U64;
+type Port  = U64 { range: 1..65536; }
+```
+
 ## Declarations
 
 **A unit.** `unit tick;` declares a unit with no equation, its own
@@ -73,12 +86,16 @@ with at least one of the kind word, the `in` and the clause block
 
 | kind | written | example |
 |---|---|---|
-| quantity | `quantity Int in D` | `type Money = quantity Int in cent;` |
+| quantity | `quantity Int in D`, `quantity U64 in D` | `type Money = quantity Int in cent;` |
 | boundary denomination of a quantity | `Q in D`, `Q { round: …; }`, or `quantity Int in D { round: …; }` over a component that has its quantity | `type Ledger = quantity Int in cent { round: half_even; }`, `type Seconds = Duration in s;` |
 | point | `point Q`, optionally `{ origin: N UNIT; }` | `type Celsius = point TempDelta { origin: 273_150 mK; }` |
 | refinement of a point | `P in D { … }` | `type WireStamp = Time in us { round: floor; }` |
-| identity | `distinct Int`, optionally `{ range: LO..HI; }` | `type Session = distinct Int { range: 0..64; }` |
-| range | `Int { range: LO..HI; }`, or over an identity or a range | `type Byte = Int { range: 0..256; }` |
+| identity | `distinct Int`, `distinct U64`, optionally `{ range: LO..HI; }` | `type Session = distinct Int { range: 0..64; }` |
+| range | `Int { range: LO..HI; }`, `U64 { range: LO..HI; }`, or over an identity or a range | `type Byte = Int { range: 0..256; }` |
+
+`BASE` is the integer the type counts, `Int` or `U64` (§ The base); a
+refinement, a boundary denomination written `Q in D` and a point count
+their parent's.
 
 A denomination is a unit and a positive integer multiple of it (`ns`,
 `100ms`, `100 ms`). The clauses are `range: LO..HI` (or `LO..=HI`),
@@ -129,8 +146,11 @@ minted it (§ The catalogue): the stdlib's time catalogue and its
 - **A scalar row** per scalar `type` declaration:
   - its **kind**: its word's (`distinct` is an identity); with no word,
     its base's (a refinement of a quantity is a quantity, of a point a
-    point, of `Int`, an identity or a range a range; `Int in D` is a
-    quantity missing its word, which law 5 refuses);
+    point, of an integer, an identity or a range a range; `Int in D` is
+    a quantity missing its word, which law 5 refuses);
+  - its **integer** (`ScalarRow::int`, GH #2131): the machine integer
+    its chain is written over, `Int` or `U64`, a refinement's and a
+    point's its parent's;
   - its **parent**, the scalar it is written over;
   - a quantity's or a point's **denomination**, a value (a unit and an
     exact positive multiple): its own `in`, else its parent's; and its
@@ -225,14 +245,28 @@ wordings are the compiler's.
    type Heavy = quantity Int in kg { round: floor; }   // a denomination of `Mass`
    ```
 
-5. **A quantity counts an `Int` in a denomination.** "type \`F\`: a
-   quantity counts an \`Int\`, and \`Float\` is not one: write
-   \`quantity Int in g\`"; a quantity with no `in` and `Int in D` with
-   no word are refused saying what to write.
+5. **A quantity counts an integer in a denomination, its component's.**
+   Its base is `Int` or `U64` (§ The base): "type \`F\`: a quantity
+   counts an integer (\`Int\`, \`U64\`), and \`Float\` is not one:
+   write \`quantity Int in g\`"; a quantity with no `in` and `Int in D`
+   with no word are refused saying what to write. Every quantity of a
+   component counts the integer its quantity counts, so an `Int` count
+   and a `U64` count of one denomination never meet: a boundary
+   denomination written over the other integer is refused at its base,
+   naming the conversion through the count, with the component's
+   quantity its witness: "type \`Signed\`: the units of \`gwei\` count a
+   \`U64\`, as their quantity \`Wei\` does, and every quantity of them
+   counts it: a \`U64\` count and an \`Int\` count of one denomination
+   never mix; write \`quantity U64 in gwei\`, or count an \`Int\` in a
+   unit of its own (\`unit tick;\`, \`quantity Int in tick\`) and convert
+   through the count, \`U64::to_int(x) or ...\`" (note: "\`Wei\` counts a
+   \`U64\`"). The stdlib's time component counts an `Int`, so a `U64`
+   count of nanoseconds is a quantity of a unit of its own.
 
    ```hale,fragment
-   type F = quantity Float in g;   // error: a quantity counts an `Int` …
+   type F = quantity Float in g;   // error: a quantity counts an integer (`Int`, `U64`) …
    type I = Int in g;              // error: `Int in g` is a quantity without its word …
+   type Signed = quantity Int in gwei { round: floor; }   // error: the units of `gwei` count a `U64` …
    ```
 
 6. **A point is over a quantity**, or refines a point; an `origin:` is
@@ -250,25 +284,29 @@ wordings are the compiler's.
 7. **`round:` and `range:` mean something.** `round:` names one of the
    five policies, on a quantity or a point; a `range:`'s bounds are
    integer literals (a leading minus allowed) spanning at least one
-   value, and a refinement's range sits inside its nearest ancestor's,
-   which is the witness: "type \`Wide\`: \`range: 0..300\` is not inside
-   \`Byte\`'s \`0..256\`: a refinement narrows its parent's range, never
-   widens it".
+   value of the integer the type counts ("type \`Port\`: \`range:
+   -1..65536\` holds values no \`U64\` holds: a \`U64\` is never
+   negative, and a range over it bounds its values"), and a
+   refinement's range sits inside its nearest ancestor's, which is the
+   witness: "type \`Wide\`: \`range: 0..300\` is not inside \`Byte\`'s
+   \`0..256\`: a refinement narrows its parent's range, never widens it".
 
    ```hale,fragment
    type Wide = Byte { range: 0..300; }        // error: … is not inside `Byte`'s `0..256` …
    type Mass = quantity Int in g { round: flor; }   // error: `flor` is not a rounding policy …
+   type Port = U64 { range: -1..65536; }      // error: … holds values no `U64` holds …
    ```
 
-8. **An identity is `distinct Int`**, with no denomination; a range
-   type refines `Int`, an identity or another range, has no
-   denomination, and a refinement of `Int` states its range: "type
-   \`F\`: an identity is \`distinct Int\`, and \`Float\` is not \`Int\`:
-   write \`distinct Int\`".
+8. **An identity is `distinct` over an integer** (`distinct Int`,
+   `distinct U64`), with no denomination; a range type refines an
+   integer, an identity or another range, has no denomination, and a
+   refinement of an integer states its range: "type \`F\`: an identity
+   is \`distinct\` over an integer (\`distinct Int\`, \`distinct U64\`),
+   and \`Float\` is not one: write \`distinct Int\`".
 
    ```hale,fragment
-   type F = distinct Float;          // error: an identity is `distinct Int` …
-   type R = Float { range: 0..1; }   // error: a range type refines `Int`, an identity or another range …
+   type F = distinct Float;          // error: an identity is `distinct` over an integer …
+   type R = Float { range: 0..1; }   // error: a range type refines an integer (`Int`, `U64`), an identity or another range …
    ```
 
 9. **A refinement refines a scalar.** A base is a declared type; a
@@ -334,7 +372,9 @@ nothing, so a use of it is no second error.
 
 One table (`ScalarTypes::quantity_binop`, `hale_types::unit_quantities`;
 the identities' and ranges' rules in `hale_types::unit_values`), read by
-the checker and, through its rows, by lowering:
+the checker and, through its rows, by lowering. Where it says `Int`, it
+means the integer the type counts (§ The base): a `Wei` is scaled by a
+`U64`, and `Wei / Wei` is a `U64`.
 
 | operands | result |
 |---|---|
@@ -371,7 +411,8 @@ let sq = d * d;                // error: `Duration` * `Duration`: a product of t
                                // quantity only when one is dimensionless (a ratio); neither is
 ```
 
-**A quantity and an `Int`.** An `Int` is no quantity: `d + n` is
+**A quantity and an `Int`.** An `Int` (a `U64`, beside a quantity
+counting one) is no quantity: `d + n` is
 refused ("\`Duration\` + \`Int\`: an \`Int\` is no quantity; a count
 becomes one by a unit (\`n * 1ns\`)"), and so is `d > 0` ("…compare
 with a quantity (\`0ns\`)"). A count becomes a quantity by a unit (`n *
@@ -409,10 +450,14 @@ own unit: `3s` is 3,000,000,000 of `Duration`, `1_250_000USD`
 literal's count there, its value times its unit's factor, not the
 factor alone: in a `Mass` counted in grams, `1000mg` is 1 of `Mass`,
 and with `unit psec = 1/1000 ns;`, `1000psec` is 1 of `Duration`; `5mg`
-and `1500mg` are each a `Mass in mg`. A whole count no `Int` holds
-(`10000000000s` is 10^19 nanoseconds) is refused at the literal, never
-wrapped and never kept at its own unit ("\`10000000000s\` as a count of
-\`Duration\` overflows an \`Int\`"). A literal of a unit no `unit`
+and `1500mg` are each a `Mass in mg`. A literal's magnitude is any
+value of a `U64` (`18446744073709551615wei`; past it, a lex error), and
+its count is held to the integer its quantity counts: a count no value
+of it holds (`10000000000s` is 10^19 nanoseconds, past an `Int`; `20eth`
+is 2·10^19 wei, past a `U64`) is refused at the literal, never wrapped
+and never kept at its own unit ("\`10000000000s\` as a count of
+\`Duration\` overflows an \`Int\`"), while `18eth` is a `Wei`'s
+18,000,000,000,000,000,000. A literal of a unit no `unit`
 declares, or of a unit whose component has no quantity, is refused at
 the literal ("\`3xyz\`: no \`unit\` declares \`xyz\`"); so is a literal of
 several units ("\`1h30m\`: a quantity literal has one unit; write \`1h +
@@ -442,8 +487,13 @@ let n: Seconds = -2_000ms; // -2, exact: the negated count converts as the count
 An **integer literal** where a value of an identity or a range is
 expected (a binding, an argument, a return, a field, an `or` substitute,
 an element of an array literal of them, the other side of a comparison
-with an identity) is a value of that type, and one outside its range is
-refused at the literal: "\`300\` is outside \`Byte\`'s range \`0..256\`".
+with an identity, or with a range of a `U64`) is a value of that type,
+and one outside its range, or outside its integer's, is refused at the
+literal: "\`300\` is outside \`Byte\`'s range \`0..256\`", "\`-1\` is no
+\`Nonce\`: it counts a \`U64\`, which is 0 through
+18446744073709551615". A literal where a `U64` scaling a quantity that
+counts one is expected (`w * 3`, `w / 2`, `w *= 4`) is a `U64`, as it is
+beside a `U64` (spec/types.md § U64).
 With no expected type it is an `Int`, and an `Int` reaches an identity
 only through its conversion: "\`Int\` is not \`OrderId\`: an identity is
 reached only through the explicit conversion \`OrderId(…)\`".
@@ -513,7 +563,8 @@ divided, the divisor), in every program (a Decimal's narrowing
 `.rescale(T)` fails with it too, spec/types.md § Decimal<S>); a value
 outside a range with a `RangeError { kind: String;
 value: Int; low: Int; high: Int }`, injected where a type declares a
-range.
+range. A field of either is an `Int`: a `U64`'s value or bound past
+`Int`'s max is `Int`'s max there (GH #2131).
 
 ```hale,fragment
 let whole = d.in(s) or 0;                 // 3.5 s is no whole number of seconds: 0
@@ -534,7 +585,8 @@ let top = Byte(n) or clamp;               // 255 for anything above
   \`Duration\`: \`Duration\` counts in the units of \`Duration\`").
 - **`x.split(u)`** is `(whole: Int, rest)`: the floored quotient by `u`
   and the remainder, never negative, at the finer of `x`'s and `u`'s
-  denominations. It is total: `let (sec, rem) = d.split(s);` is 3 and
+  denominations. The whole part is a count of the integer `x` counts (a
+  `Wei`'s a `U64`), and `u`'s count is held to it. It is total: `let (sec, rem) = d.split(s);` is 3 and
   `500000000ns`.
 - **`T(x)`**, `T` a quantity or a point: `x` of `T`'s component
   converted into `T`. A quantity into a point is the point that far
@@ -546,18 +598,21 @@ let top = Byte(n) or clamp;               // 255 for anything above
   `T`, at compile time. `T` may be an imported seed's, written through
   its alias (`lib::Money(x)`): the cast, and the `or` after it, are the
   same.
-- **`T(x)`**, `T` an identity, a range or `Int`:
+- **`T(x)`**, `T` an identity, a range or the integer it counts (`Int`,
+  or `U64` for one counting a `U64`):
 
   | conversion | kind |
   |---|---|
   | `OrderId(n)`: an `Int` into an identity with no range | total |
-  | `Int(o)`: an identity's `Int` | total |
+  | `Int(o)`: an identity's `Int`; `U64(nonce)` a `U64` identity's `U64` | total |
   | `Int(b)`, `Byte(nib)`: into an ancestor | widening |
   | `Session(n)`, `Nibble(b)`: into a range the value may be outside of | narrowing |
   | `SeqNo(o)`, `OrderId(b)`: across two families | refused: "\`SeqNo\` and \`OrderId\` are distinct identities; a conversion between them goes through \`Int\`: \`SeqNo(Int(…))\`" |
+  | `Nonce(n)`, `n` an `Int`; `Int(nonce)`: across two integers | refused, naming the conversion: "\`Int\` is not \`Nonce\`: \`Nonce\` counts a \`U64\`, and an \`Int\` never converts implicitly to one: write \`Nonce(U64::from_int(n))\`" |
 
-  A range widens to its parent, and a range rooted at `Int` to `Int`,
-  wherever one is expected, for free; an identity widens to nothing
+  A range widens to its parent, and a range rooted at its integer to that
+  integer (`Int`, `U64`), wherever one is expected, for free; an
+  identity widens to nothing
   ("\`OrderId\` is an identity and widens to nothing: write \`Int(…)\`
   for its \`Int\`"). `Int(d)` of a quantity is refused, its count being
   a quotient ("\`Int(…)\` of \`Duration\`: a quantity's count in a unit
@@ -709,35 +764,48 @@ its class's own rendering; `d.in(ms) or floor` prints `1500ms`.
 ## Layout and the wire
 
 Wherever a type reaches a representation an identity, a range, a
-quantity or a point is its `Int`: codegen's `i64`, a hashmap key and a
-routing key, a flat payload's field, an array element, a generic
-argument whose monomorph lays it out as an `Int` (`Box<OrderId>`), an
-FFI `Int`. The stdlib's `Duration` and `Time` are their own class
+quantity or a point is the integer it counts (§ The base): codegen's
+`i64` (an `Int`'s, or a `U64`'s, read unsigned), a hashmap key and a
+routing key (an `Int`'s; a `U64` is neither, spec/types.md § U64), a
+flat payload's field, an array element, a generic argument whose
+monomorph lays it out as its integer (`Box<OrderId>`), an FFI `Int` or
+`uint64_t`. The stdlib's `Duration` and `Time` are their own class
 there, as they always were.
 
-On the **wire** (decision 9) a field is its integer. A topic's shape
-string tags an identity's and a range's field `i`, as an `Int`'s, so
-declaring one moves no shape hash. A quantity's or a point's field is
+On the **wire** (decision 9) a field is its integer, as that integer
+crosses it: an `Int`'s a JSON number and a protobuf `int64`, a `U64`'s
+a JSON string of its digits and a `uint64` (spec/api.md § Codecs). A
+topic's shape string tags an identity's and a range's field as its
+integer is tagged, `i` for an `Int`'s, so declaring one moves no shape
+hash, and `u64` for a `U64`'s. A quantity's or a point's field is
 tagged by its denomination: `q(` the denomination as its nearest
 declaration writes it `)` (`q(cent)`, `q(100 ms)`), a point's adding
-`point` and its origin when one is written (`q(mK point 273150 mK)`).
-Two processes whose fields count in different denominations disagree
-in the shape hash the observer protocol already compares. A program
-with no quantity renders every shape as before, and `Duration` and
-`Time` keep `u` and `t`.
+`point` and its origin when one is written (`q(mK point 273150 mK)`),
+and one counting a `U64` naming it first (`q(u64 wei)`). Two processes
+whose fields count in different denominations, or in different
+integers, disagree in the shape hash the observer protocol already
+compares. A program with no quantity renders every shape as before,
+and `Duration` and `Time` keep `u` and `t`.
 
 ```hale,fragment
 type Fill { order: OrderId; notional: Money; fee: Ledger; }
 topic Fills { payload: Fill; subject: "desk.fills"; }
 // shape: order:i;notional:q(cent);fee:q(cent)
+type Transfer { nonce: Nonce; value: Wei; port: Port; }
+// shape: nonce:u64;value:q(u64 wei);port:u64
 ```
 
-**Overflow** follows `Int`'s arithmetic (decision 7): a widening's
-multiplication is the `Int` multiplication. A factor no `Int` holds is
-an error at the conversion when the program is built ("…by the factor
-1000000000000000000000000, which no \`Int\` holds"), never a wrap; a
-literal's count that overflows is refused by the check, at the
-literal (§ Literals). A quantity's `range:` is a row the witness report reads (what it fits
+**Overflow** follows the arithmetic of the integer counted: an `Int`'s
+wraps (decision 7), and a widening's multiplication is the `Int`
+multiplication; a `U64`'s never wraps, so a sum, a difference, a
+product or a widening's multiplication past either end, and a division
+by zero, is a violation where it happens, as a `U64`'s operator is
+(spec/types.md § U64). A factor whose numerator or denominator no
+value of the integer holds is refused by the check at the conversion
+("the conversion into \`Big\` is by the factor 10000000000000000000,
+which no \`Int\` holds"; a `U64` holds that one), never a wrap, and
+the build refuses it too; a literal's count that overflows is refused
+by the check, at the literal (§ Literals). A quantity's `range:` is a row the witness report reads (what it fits
 in); no conversion checks it at v1.
 
 ## The stdlib's time catalogue
@@ -799,14 +867,17 @@ nothing (`hale_types::unit_report`). It is a development report,
 outside the hashed model half: no shape hash reads it.
 
 - **Per scalar declaration of the program**, in program order: its
-  kind (and its quantity, or a range's parent); its denomination and
-  the declaration whose `in` fixed it (the stdlib's `Duration` named by
-  its stdlib file and line); its policy and the declaration that writes
-  it; a point's origin; its range; the **headroom** of an `Int` at its
-  denomination, `Int`'s range counted in the unit the denomination is
-  written against and in the coarsest unit of its component that still
-  counts one; and what a declared range **fits in**, the narrowest of
-  `u8`, `u16`, `u32`, `u64` that holds it (`i64` for a negative bound).
+  kind (and its quantity, or a range's parent); the integer it counts,
+  a `counts` line when it is not an `Int` (`--json`'s `counts`, always);
+  its denomination and the declaration whose `in` fixed it (the stdlib's
+  `Duration` named by its stdlib file and line); its policy and the
+  declaration that writes it; a point's origin; its range; the
+  **headroom** of its integer at its denomination, that integer's range
+  counted in the unit the denomination is written against and in the
+  coarsest unit of its component that still counts one (`±` for an
+  `Int`'s, `0 to` for a `U64`'s, which holds no negative count); and
+  what a declared range **fits in**, the narrowest of `u8`, `u16`,
+  `u32`, `u64` that holds it (`i64` for a negative bound).
 - **Per narrowing the check recorded**, by site: its source and target
   types, its factor or its range, a literal's count converted at
   compile time, the policy that discharged it and where the policy came
@@ -839,6 +910,54 @@ committed_form.hl:81:24  odd
     headroom     : ±922337203685477 cent (9223372036854 USD), of Money in 1/10000 cent
 ```
 
+and a quantity counting a `U64`:
+
+```text
+u64_base.hl:9:1  type Wei = quantity U64 in wei
+    kind         : quantity
+    counts       : U64
+    denomination : wei, fixed by its own `in`
+    headroom     : 0 to 18446744073709551615 wei (18 eth)
+```
+
+## The base
+
+A scalar's **base** is the integer it counts (GH #2131): `Int`, or
+`U64`. It is a parameter of the dialect, not a kind of its own: every
+rule above is written over it, and reads its width and its signedness
+from the primitive (`PrimType::machine_int`), so a machine integer the
+language adds is a base with no rule of the dialect's changed.
+
+- **Declared** by the declaration at the root of a chain, the one with
+  a kind word or a range over a primitive: `quantity U64 in wei`,
+  `distinct U64`, `U64 { range: 1..65536; }`. A refinement, a boundary
+  denomination written `Q in D`, a point and a range over a scalar count
+  their parent's (`ScalarRow::int`).
+- **One per component.** A component's quantities all count its
+  quantity's integer (law 5), so an `Int` count and a `U64` count of one
+  denomination never meet; the stdlib's time component counts an `Int`.
+- **Its values.** A range's bounds, a literal's count and an integer
+  literal where a value of the type is expected are values of it (laws
+  5 and 7, § Literals): a `U64`'s are never negative and may be past
+  `Int`'s max.
+- **Its arithmetic** is the integer's: a `U64` quantity is scaled and
+  divided by a `U64`, its quotient by another of its quantity is a
+  `U64`, `.split(u)`'s whole part is a `U64`, a range of one adds as a
+  `U64`, and none of them has a unary `-`. A `U64`'s operators never
+  wrap: an overflow, an underflow and a division by zero are a violation
+  (§ Layout and the wire). An `Int` beside a scalar counting a `U64` (or
+  the reverse) is refused naming the conversion, as beside a `U64`:
+  "\`Wei\` * \`Int\`: \`Wei\` counts a \`U64\`, and an \`Int\` never mixes
+  with it: write \`U64::from_int(n)\`".
+- **Its conversions** multiply and divide in it: a factor is held to its
+  range (§ Layout and the wire), a `U64`'s division and its rounding are
+  unsigned (`floor` is `trunc` there), its range narrowing compares
+  unsigned, and its `or wrap` wraps within the range, from below the low
+  bound too.
+- **Its representation** everywhere (§ Layout and the wire), its
+  printing (decimal digits, unsigned) and its `T(x)` conversions to and
+  from the integer itself (`U64(nonce)`, `Nonce(n)` of a `U64`).
+
 ## What the dialect does not do
 
 At v1, by the committed form's deferral or the plan's own decision:
@@ -851,11 +970,11 @@ At v1, by the committed form's deferral or the plan's own decision:
   of two different quantities, which is what is refused now, so `d /
   1ms` keeps its meaning.
 - **`Float` quantities** and a physics catalogue: a quantity counts an
-  `Int` (law 5); an irrational edge is lossy by definition.
+  integer (law 5); an irrational edge is lossy by definition.
 - **Calendars.** `day` is 24 hours; months, years and time zones are
   projections, not units.
 - **Packing by width.** The report says what a range fits in; no layout
-  reads it, and every scalar is an `i64`.
+  reads it, and every scalar is its integer's 8 bytes.
 - **Rounding functions declared by a program**: a handler after `or` is
   already a program's own function. **A JSON form for a quantity**:
   `Duration` has none either.

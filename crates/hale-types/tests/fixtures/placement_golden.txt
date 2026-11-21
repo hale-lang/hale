@@ -2016,21 +2016,21 @@ row	App@literal1.s2	Source	pool:p2	entry	off owner
 row	App@literal1.s3	Source	pool:p3	entry	off owner
 row	App@literal1.sub	Counter	pool:p	entry	off owner
 
-== crates/hale-codegen/tests/bus_bounded_topics.rs#32b214f8
+== crates/hale-codegen/tests/bus_bounded_topics.rs#102bbc55
 root	App
 domain	pinned:App@literal1.p	cpus 0
 row	App@literal1	App	main	default
 row	App@literal1.p	Pusher	pinned:App@literal1.p	entry	off owner
 row	App@literal1.tally	Tally	main	default
 
-== crates/hale-codegen/tests/bus_bounded_topics.rs#17057996
+== crates/hale-codegen/tests/bus_bounded_topics.rs#4cb22b4a
 root	App
 domain	pinned:App@literal1.p	cpus 0
 row	App@literal1	App	main	default
 row	App@literal1.p	Pusher	pinned:App@literal1.p	entry	off owner
 row	App@literal1.tally	Tally	main	default
 
-== crates/hale-codegen/tests/bus_bounded_topics.rs#c7310a08
+== crates/hale-codegen/tests/bus_bounded_topics.rs#8c6d716d
 root	App
 domain	pinned:App@literal1.p	cpus 0
 row	App@literal1	App	main	default
@@ -8253,6 +8253,15 @@ shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
 shared	dynamic	sites in the seed #d81b1982
 
 == tests/hale/api/pb_u64_test.hl
+root	Desk
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.probe	Probe	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #d81b1982
+
+== tests/hale/api/pb_units_u64_test.hl
 root	Desk
 domain	pool:__api_grpc	async_io
 row	Desk@literal1	Desk	main	default

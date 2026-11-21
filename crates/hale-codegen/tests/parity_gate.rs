@@ -27,8 +27,9 @@
 //! - element types: a probe exercising `bounded[T; N]` fields and
 //!   parameters, `[T; N]` arrays, a payload enum, a generic record, a fn
 //!   value, `@form(vec)` and `@form(hashmap)` over `T` drawn from Int,
-//!   String, Decimal, U256, I256, U64, a payload enum, a record and the
-//!   program's own records and enums; a locus with no form whose own
+//!   String, Decimal, U256, I256, U64, a quantity, an identity and a range
+//!   over a `U64` (GH #2131), a payload enum, a record and the program's own
+//!   records and enums; a locus with no form whose own
 //!   `items` / `entries` param a `for` walks;
 //! - call shapes: a method as a free fn, a call through a fn value, a
 //!   forwarding wrapper, interface dispatch;

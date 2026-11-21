@@ -163,7 +163,7 @@ fn main() {
 - **Bits.** `& | ^ ~` are bitwise; `x << n` and `x >> n` shift by an `Int` count from 0 to 63, and any other count stops the process. `U64::wrapping_shl` / `wrapping_shr` take the count modulo 64.
 - **No mixing.** A `U64` never mixes with an `Int`, a `Float` or another width: write `U64::from_int(n)` (a negative `n` stops the process), `U64::to_int(x) or ...`, `Float(x)`, `U64::from_float(f) or ...`. `U64::from_bits(n)` / `to_bits(x)` reinterpret the 64 bits. The check names the conversion.
 - **Text and bytes.** `to_string(x)`, `println`, f-strings and `+` with a `String` print unsigned decimal; `U64::to_hex(x)` is `0x` and lowercase digits; `U64::parse` reads either; `to_be_bytes` / `to_le_bytes` and `from_be_bytes` / `from_le_bytes` are its 8 bytes.
-- **Where it goes.** Record and locus fields, `bounded` lists, fixed arrays, enum payloads, hashmap cells, `Box<U64>`, bus payloads, `@ffi("c")` (a `uint64_t`), and the JSON codecs, which always write a JSON string (see [JSON Encoding & Decoding](../everyday/json.md)); protobuf carries a `uint64`. A unit-dialect scalar (`quantity`, `distinct`, a range) counts an `Int`, not a `U64`.
+- **Where it goes.** Record and locus fields, `bounded` lists, fixed arrays, enum payloads, hashmap cells, `Box<U64>`, bus payloads, `@ffi("c")` (a `uint64_t`), and the JSON codecs, which always write a JSON string (see [JSON Encoding & Decoding](../everyday/json.md)); protobuf carries a `uint64`. A unit-dialect scalar (`quantity U64 in wei`, `distinct U64`, `U64 { range: … }`) may count a `U64` and has its arithmetic (see [Units, End to End](../units.md)).
 
 ## 256-bit Integers (`U256` and `I256`)
 

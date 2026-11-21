@@ -6,10 +6,10 @@
 //! For each scalar declaration of the program it says what the rows say:
 //! a quantity's or a point's denomination and the declaration that fixed
 //! it, its policy and where that is written, a point's origin, the
-//! headroom of its representation (`Int`'s range counted in its
-//! denomination, stated in the unit the denomination is written against
-//! and in the coarsest unit of its catalogue that still counts one), and
-//! what a declared range fits in. For each narrowing the checker
+//! headroom of its representation (its integer's range, `Int`'s or a
+//! `U64`'s (GH #2131), counted in its denomination, stated in the unit the
+//! denomination is written against and in the coarsest unit of its
+//! catalogue that still counts one), and what a declared range fits in. For each narrowing the checker
 //! recorded, it says the factor (or the range), the policy that discharged
 //! it and where the policy came from: the site's `or`, or the target
 //! type's `round:`.
@@ -56,6 +56,8 @@ pub struct Declaration {
     pub declared: Place,
     /// `quantity`, `point`, `identity` or `range`.
     pub kind: &'static str,
+    /// GH #2131: the integer it counts (`Int`, `U64`).
+    pub counts: &'static str,
     /// A boundary denomination's quantity, a point's quantity, a range's
     /// parent (`Int` for a range written over it).
     pub of: Option<String>,
@@ -74,11 +76,13 @@ pub struct Declaration {
     pub fits_in: Option<&'static str>,
 }
 
-/// The largest count of an `Int` at a denomination, in the unit the
-/// denomination is written against, and in the coarsest unit of the
-/// catalogue it is still one or more of.
+/// The largest count of the integer a type counts (an `Int`, a `U64`: GH
+/// #2131) at a denomination, in the unit the denomination is written
+/// against, and in the coarsest unit of the catalogue it is still one or
+/// more of: `±` that for a signed integer, `0` to it for an unsigned one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Headroom {
+    pub signed: bool,
     pub count: BigInt,
     pub unit: String,
     pub coarse: Option<(BigInt, String)>,
@@ -97,7 +101,7 @@ pub struct Narrowing {
     /// The range a value may be outside of, of an identity's or a range's.
     pub range: Option<(i128, i128)>,
     /// A literal's count, converted (and rounded) at compile time.
-    pub literal: Option<i64>,
+    pub literal: Option<i128>,
     /// The discharge as the program writes it (`or floor`, `or <value>`);
     /// `None` for a narrowing nothing discharges, which the check refuses.
     pub policy: Option<&'static str>,
@@ -144,7 +148,7 @@ pub fn report(rows: &UnitRows, typed: &TypedBodies, place: &dyn Fn(Span) -> Opti
             ScalarKindRow::Identity => None,
             ScalarKindRow::Range => match &s.written.base {
                 Base::Scalar(p) => Some(rows.scalars[*p].display.clone()),
-                _ => Some("Int".into()),
+                _ => Some(crate::ty::prim_name(s.int).into()),
             },
         };
         let denomination = q.as_ref().and_then(|q| {
@@ -160,6 +164,7 @@ pub fn report(rows: &UnitRows, typed: &TypedBodies, place: &dyn Fn(Span) -> Opti
             name: s.display.clone(),
             declared: declaration_of(i),
             kind,
+            counts: crate::ty::prim_name(s.int),
             of,
             denomination,
             origin,
@@ -242,10 +247,13 @@ pub fn collapsed(text: &str) -> String {
     one.join(" ").trim_end_matches(';').trim_end().to_string()
 }
 
-/// The headroom of an `Int` counted in `q`'s denomination.
+/// The headroom of the integer `q` counts (GH #2131), counted in `q`'s
+/// denomination.
 fn headroom(rows: &UnitRows, q: &QType) -> Option<Headroom> {
     let catalogue = rows.catalogue.as_ref()?;
-    let max = BigRational::from_integer(BigInt::from(i64::MAX));
+    let int = rows.scalars[q.row].int;
+    let (min, max) = crate::units::int_bounds(int);
+    let max = BigRational::from_integer(BigInt::from(max));
     let count_in = |to: &Denom| -> Option<BigInt> {
         let f = catalogue.factor(&q.denom, to)?;
         Some((&max * BigRational::new(f.numerator().clone(), f.denominator().clone())).floor().to_integer())
@@ -265,7 +273,7 @@ fn headroom(rows: &UnitRows, q: &QType) -> Option<Headroom> {
         }
     }
     let coarse = coarse.filter(|(c, _)| *c < count).map(|(c, u)| (c, rows.units[u].name.clone()));
-    Some(Headroom { count, unit: rows.units[own].name.clone(), coarse })
+    Some(Headroom { signed: min < 0, count, unit: rows.units[own].name.clone(), coarse })
 }
 
 /// The narrowest machine width that holds every value of the half-open
@@ -289,9 +297,10 @@ pub fn fits_in(lo: i128, hi: i128) -> &'static str {
 }
 
 fn headroom_text(h: &Headroom) -> String {
+    let span = |n: &BigInt| if h.signed { format!("±{n}") } else { format!("0 to {n}") };
     match &h.coarse {
-        Some((c, u)) => format!("±{} {} ({} {})", h.count, h.unit, c, u),
-        None => format!("±{} {}", h.count, h.unit),
+        Some((c, u)) => format!("{} {} ({} {})", span(&h.count), h.unit, c, u),
+        None => format!("{} {}", span(&h.count), h.unit),
     }
 }
 
@@ -345,6 +354,11 @@ pub fn render(report: &UnitReport) -> String {
             None => d.kind.to_string(),
         };
         out.push_str(&format!("    kind         : {kind}\n"));
+        // GH #2131: an integer other than `Int` is said; an `Int` is the
+        // default, and its reports read as they did.
+        if d.counts != "Int" {
+            out.push_str(&format!("    counts       : {}\n", d.counts));
+        }
         if let Some((denomination, fixed)) = &d.denomination {
             let by = if *fixed == d.declared { "its own `in`".to_string() } else { place_text(fixed) };
             out.push_str(&format!("    denomination : {denomination}, fixed by {by}\n"));
@@ -381,6 +395,7 @@ fn place_json(p: &Place) -> serde_json::Value {
 
 fn headroom_json(h: &Headroom) -> serde_json::Value {
     serde_json::json!({
+        "signed": h.signed,
         "count": h.count.to_string(),
         "unit": h.unit,
         "coarse": h.coarse.as_ref().map(|(c, u)| serde_json::json!({ "count": c.to_string(), "unit": u })),
@@ -398,6 +413,7 @@ pub fn render_json(report: &UnitReport) -> serde_json::Value {
                 "name": d.name,
                 "declared": place_json(&d.declared),
                 "kind": d.kind,
+                "counts": d.counts,
                 "of": d.of,
                 "denomination": d.denomination.as_ref().map(|(s, _)| s),
                 "denomination_fixed_by": d.denomination.as_ref().map(|(_, p)| place_json(p)),

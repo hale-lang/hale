@@ -6,8 +6,10 @@
 //! its kind, the range a narrowing checks against, the exact factor and
 //! shift of a change of denomination, and what discharges it.
 //! [`Cx::lower_conversion`] reads the row and decides nothing. An
-//! identity, a range, a quantity and a point are each an `Int` here
-//! (`user_type_aliases`).
+//! identity, a range, a quantity and a point are each the integer it
+//! counts here (`user_type_aliases`): an `Int`, or a `U64` (GH #2131),
+//! whose arithmetic the conversion's is: a `U64`'s multiplication is
+//! checked, its divisions and comparisons unsigned ([`Cx::unit_repr`]).
 //!
 //! - Between identities and ranges (U2), a total conversion and a
 //!   widening emit nothing; a narrowing emits the two comparisons and,
@@ -148,7 +150,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// where it is written.
     pub(crate) fn lower_quantity_literal(
         &mut self,
-        value: i64,
+        value: u64,
         unit: &str,
         span: Span,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
@@ -162,18 +164,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             )
         };
         let (count, ty) = match self.row(SiteKind::value(span)) {
-            Some(row) => (row.count.ok_or_else(missing)?, quantity_repr(&row.to)),
+            Some(row) => (row.count.ok_or_else(missing)?, self.unit_repr(&row.to)),
             // U4: a body the checker types no row in (the stdlib's own,
             // a `bindings { }` initializer) has the literal's own row of
             // the stdlib's catalogue: a time literal is that count of
             // `Duration`, in every program.
             None if !self.current_body.is_some_and(|b| self.typed.has_conversions_in(b)) => {
                 let (count, ty) = hale_types::units::stdlib_literal(value, unit).ok_or_else(missing)?;
-                (count, quantity_repr(&ty))
+                (i128::from(count), self.unit_repr(&ty))
             }
             None => return Err(missing()),
         };
-        Ok((self.context.i64_type().const_int(count as u64, true).into(), ty))
+        Ok((self.count_const(count, &ty).into(), ty))
+    }
+
+    /// A count the checker converted, as a constant of its integer's
+    /// width: its bits (a `U64`'s past `Int`'s max included, GH #2131).
+    fn count_const(&self, count: i128, ty: &CodegenTy) -> IntValue<'ctx> {
+        let bits = ty.machine_int().map_or(64, |(b, _)| b);
+        self.context.custom_width_int_type(bits).const_int(count as u64, false)
     }
 
     /// GH #1076: the constant a negated quantity literal (`-3b`) is where
@@ -184,12 +193,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// proved, `-3b` into a type counted in thirds of `b`, was lost).
     /// `None` where the negation has no such row: it is the negation of
     /// the literal's value then.
-    pub(crate) fn negated_literal_count(&self, span: Span) -> Option<(i64, CodegenTy)> {
+    pub(crate) fn negated_literal_count(&self, span: Span) -> Option<(IntValue<'ctx>, CodegenTy)> {
         if !self.typed.has_quantity_rows() {
             return None;
         }
         let row = self.row(SiteKind::value(span))?;
-        Some((row.count?, quantity_repr(&row.to)))
+        let ty = self.unit_repr(&row.to);
+        Some((self.count_const(row.count?, &ty), ty))
     }
 
     /// GH #1076 (U4): what an arithmetic operator over a quantity or a
@@ -201,7 +211,41 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if !self.typed.has_quantity_rows() {
             return None;
         }
-        Some(quantity_repr(&self.row(SiteKind::operator(span))?.to))
+        Some(self.unit_repr(&self.row(SiteKind::operator(span))?.to))
+    }
+
+    /// The representation a value of a unit-dialect type `t` lowers as:
+    /// the stdlib's `Duration` and `Time` keep their own class (U4); every
+    /// other quantity, point, identity or range, declared or synthesized
+    /// (`Wei in gwei`), is the integer it counts (GH #2131: an `Int` or a
+    /// `U64`, `scalar_ints`), as is that integer itself.
+    pub(crate) fn unit_repr(&self, t: &hale_types::ty::Ty) -> CodegenTy {
+        use hale_syntax::ast::{PrimType, TypeExpr};
+        use hale_types::ty::Ty;
+        match t {
+            Ty::Prim(PrimType::Duration) => return CodegenTy::Duration,
+            Ty::Prim(PrimType::Time) => return CodegenTy::Time,
+            Ty::Prim(PrimType::Bool) => return CodegenTy::Bool,
+            Ty::Prim(PrimType::Decimal(s)) => return CodegenTy::Decimal(*s),
+            _ => {}
+        }
+        self.unit_int(t)
+            .and_then(|p| self.type_expr_to_codegen_ty(&TypeExpr::Primitive(p, Span::new(0, 0))).ok())
+            .unwrap_or(CodegenTy::Int)
+    }
+
+    /// GH #2131: the integer a value of the unit-dialect type `t` counts
+    /// (`Int`, `U64`), or that integer itself; `Int` for the stdlib's
+    /// `Duration` and `Time`. `None` for every other type.
+    pub(crate) fn unit_int(&self, t: &hale_types::ty::Ty) -> Option<hale_syntax::ast::PrimType> {
+        use hale_syntax::ast::PrimType;
+        use hale_types::ty::Ty;
+        match t {
+            Ty::Prim(p) if p.machine_int().is_some() => Some(*p),
+            Ty::Prim(PrimType::Duration | PrimType::Time) => Some(PrimType::Int),
+            Ty::Named(n) => self.scalar_ints.get(n.split_once(" in ").map_or(n.as_str(), |(base, _)| base)).copied(),
+            _ => None,
+        }
     }
 
     /// GH #1076 (U3): the unit a printed value's row writes after its
@@ -297,9 +341,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if row.scale.is_some() {
             return self.lower_scale(row, v);
         }
+        // GH #2131: an identity or a range is the integer it counts, an
+        // `Int` or a `U64`, and is compared as that integer is.
+        let repr = self.unit_repr(&row.to);
         if row.kind != ConversionKind::Narrowing {
-            // An identity or a range is its `Int`: nothing to emit.
-            return Ok(Converted::Value(v.into(), CodegenTy::Int));
+            // An identity or a range is its integer: nothing to emit.
+            return Ok(Converted::Value(v.into(), repr));
         }
         let Some((lo, hi)) = row.range else {
             return Err(CodegenError::UnsupportedAt(
@@ -307,19 +354,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 row.span,
             ));
         };
-        let i64_t = self.context.i64_type();
-        let (lo, last) = (saturate(lo), saturate(hi - 1));
-        let (lo_c, last_c) = (i64_t.const_int(lo as u64, true), i64_t.const_int(last as u64, true));
-        let below = emit(self.builder.build_int_compare(IntPredicate::SLT, v, lo_c, "narrow.below"))?;
-        let above = emit(self.builder.build_int_compare(IntPredicate::SGT, v, last_c, "narrow.above"))?;
+        let signed = repr.machine_int().map_or(true, |(_, s)| s);
+        let (lo, last) = if signed { (i128::from(saturate(lo)), i128::from(saturate(hi - 1))) } else { (lo, hi - 1) };
+        let (lo_c, last_c) = (self.count_const(lo, &repr), self.count_const(last, &repr));
+        let (lt, gt) = if signed { (IntPredicate::SLT, IntPredicate::SGT) } else { (IntPredicate::ULT, IntPredicate::UGT) };
+        let below = emit(self.builder.build_int_compare(lt, v, lo_c, "narrow.below"))?;
+        let above = emit(self.builder.build_int_compare(gt, v, last_c, "narrow.above"))?;
         match row.policy {
             Some(Discharge::Clamp) => {
                 let up = emit(self.builder.build_select(below, lo_c, v, "narrow.clamp.lo"))?.into_int_value();
                 let c = emit(self.builder.build_select(above, last_c, up, "narrow.clamp"))?;
-                Ok(Converted::Value(c, CodegenTy::Int))
+                Ok(Converted::Value(c, repr))
             }
-            Some(Discharge::Wrap) => self.lower_wrap(row, v, lo, hi).map(|w| Converted::Value(w.into(), CodegenTy::Int)),
-            Some(_) => self.lower_checked_narrowing(row, v, below, above, lo_c, last_c).map(Converted::Checked),
+            Some(Discharge::Wrap) => {
+                let w = self.lower_wrap(row, v, lo, hi, signed)?;
+                Ok(Converted::Value(w.into(), repr))
+            }
+            Some(_) => self.lower_checked_narrowing(row, v, below, above, (lo, hi), &repr).map(Converted::Checked),
             None => Err(CodegenError::UnsupportedAt(
                 format!(
                     "the narrowing into `{}` is discharged by nothing in its row; the check refuses a bare one",
@@ -331,25 +382,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// `or wrap`: `lo + ((v - lo) mod w)`, `w = hi - lo`, the remainder
-    /// taken non-negative, for every `Int` `v` and without overflow. The
-    /// distance between `v` and `lo` is exact as an unsigned `Int` (the
-    /// wrapping subtraction of the smaller from the larger), so each side
-    /// takes an unsigned remainder: at or above `lo`, `t = (v - lo) urem
-    /// w`; below it, `m = (lo - v) urem w` and `t = w - m`, or `0` when
-    /// `m` is. `t < w`, so `lo + t` is at most `hi - 1`. Both sides are
-    /// computed and one selected: neither can trap.
-    fn lower_wrap(&mut self, row: &ConversionRow, v: IntValue<'ctx>, lo: i64, hi: i128) -> Result<IntValue<'ctx>, CodegenError> {
-        let width = hi - i128::from(lo);
-        let Ok(width) = i64::try_from(width) else {
+    /// taken non-negative, for every value `v` of the integer and without
+    /// overflow. The distance between `v` and `lo` is exact as an unsigned
+    /// integer (the wrapping subtraction of the smaller from the larger),
+    /// so each side takes an unsigned remainder: at or above `lo`, `t = (v
+    /// - lo) urem w`; below it, `m = (lo - v) urem w` and `t = w - m`, or
+    /// `0` when `m` is. `t < w`, so `lo + t` is at most `hi - 1`. Both
+    /// sides are computed and one selected: neither can trap. A `U64`'s
+    /// (GH #2131) compares unsigned, and a range holding every `U64` is
+    /// every value already.
+    fn lower_wrap(
+        &mut self,
+        row: &ConversionRow,
+        v: IntValue<'ctx>,
+        lo: i128,
+        hi: i128,
+        signed: bool,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let width = hi - lo;
+        let fits = if signed { i64::try_from(width).is_ok() } else { u64::try_from(width).is_ok() };
+        if !fits && !signed {
+            return Ok(v);
+        }
+        if !fits {
             return Err(CodegenError::UnsupportedAt(
                 format!("`{}`'s range is wider than an `Int`: `or wrap` has no width to wrap by", row.target),
                 row.span,
             ));
-        };
-        let i64_t = self.context.i64_type();
-        let (lo_c, width_c) = (i64_t.const_int(lo as u64, true), i64_t.const_int(width as u64, true));
-        let zero = i64_t.const_zero();
-        let at_or_above = emit(self.builder.build_int_compare(IntPredicate::SGE, v, lo_c, "narrow.wrap.up"))?;
+        }
+        let int_t = v.get_type();
+        let (lo_c, width_c) = (int_t.const_int(lo as u64, false), int_t.const_int(width as u64, false));
+        let zero = int_t.const_zero();
+        let ge = if signed { IntPredicate::SGE } else { IntPredicate::UGE };
+        let at_or_above = emit(self.builder.build_int_compare(ge, v, lo_c, "narrow.wrap.up"))?;
         let above = emit(self.builder.build_int_sub(v, lo_c, "narrow.wrap.above"))?;
         let above = emit(self.builder.build_int_unsigned_rem(above, width_c, "narrow.wrap.above.rem"))?;
         let below = emit(self.builder.build_int_sub(lo_c, v, "narrow.wrap.below"))?;
@@ -363,22 +428,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A narrowing its `or` discharges: the value in the success slot,
     /// or a `RangeError` in the error slot, and the path bit the `or`
-    /// branches on (1 = outside the range).
+    /// branches on (1 = outside the range). The error's fields are
+    /// `Int`s: a `U64`'s value or bound past `Int`'s max is `Int`'s max
+    /// there (GH #2131).
     fn lower_checked_narrowing(
         &mut self,
         row: &ConversionRow,
         v: IntValue<'ctx>,
         below: IntValue<'ctx>,
         above: IntValue<'ctx>,
-        lo_c: IntValue<'ctx>,
-        last_c: IntValue<'ctx>,
+        (lo, hi): (i128, i128),
+        repr: &CodegenTy,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
         let func = self
             .current_fn
             .ok_or_else(|| CodegenError::UnsupportedAt("a narrowing outside a fn body".into(), row.span))?;
         let outside = emit(self.builder.build_or(below, above, "narrow.outside"))?;
         let payload_ty = CodegenTy::TypeRef("RangeError".into());
-        let out_val_slot = self.alloca_for(&CodegenTy::Int, "narrow.val.slot")?;
+        let out_val_slot = self.alloca_for(repr, "narrow.val.slot")?;
         let out_err_slot = self.alloca_for(&payload_ty, "narrow.err.slot")?;
         let ok_bb = self.context.append_basic_block(func, "narrow.ok");
         let err_bb = self.context.append_basic_block(func, "narrow.err");
@@ -390,8 +457,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         emit(self.builder.build_unconditional_branch(join_bb))?;
 
         self.builder.position_at_end(err_bb);
-        let high = emit(self.builder.build_int_add(last_c, self.context.i64_type().const_int(1, false), "narrow.high"))?;
-        let err = self.emit_range_error_alloc(&row.target, v, lo_c, high, row.span)?;
+        let i64_t = self.context.i64_type();
+        let (low, high) = (i64_t.const_int(saturate(lo) as u64, true), i64_t.const_int(saturate(hi) as u64, true));
+        let value = self.saturate_to_int(v, repr)?;
+        let err = self.emit_range_error_alloc(&row.target, value, low, high, row.span)?;
         emit(self.builder.build_store(out_err_slot, err))?;
         emit(self.builder.build_unconditional_branch(join_bb))?;
 
@@ -400,7 +469,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             i1_path: outside,
             out_val_slot: Some(out_val_slot),
             out_err_slot,
-            success_ty: Some(CodegenTy::Int),
+            success_ty: Some(repr.clone()),
             payload_ty,
         })
     }
@@ -447,54 +516,143 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `u`'s count instead and is the pair.
     pub(crate) fn lower_scale(&mut self, row: &ConversionRow, v: IntValue<'ctx>) -> Result<Converted<'ctx>, CodegenError> {
         let scale: &Scale = row.scale.as_ref().expect("a row with a scale");
-        let machine = scale.factor.to_machine().map_err(|o| {
+        // GH #2131: the integer the value counts, whose arithmetic the
+        // conversion's is: an `Int`'s wraps and divides signed, a `U64`'s
+        // multiplication and shift are checked (an overflow a violation,
+        // as its `*` is) and it divides unsigned. A `Decimal<S>`'s i128
+        // mantissa (`.rescale(T)`) is signed.
+        let repr = self.unit_repr(&row.to);
+        let signed = repr.machine_int().map_or(true, |(_, s)| s);
+        let int = self.unit_int(&row.to).unwrap_or(hale_syntax::ast::PrimType::Int);
+        let (numerator, denominator) = scale.factor.to_machine_int(int).map_err(|o| {
             CodegenError::UnsupportedAt(
-                format!("the conversion into `{}` is by the factor {}, which no `Int` holds", row.target, o.factor),
+                format!(
+                    "the conversion into `{}` is by the factor {}, which no `{}` holds",
+                    row.target,
+                    o.factor,
+                    hale_types::ty::prim_name(int)
+                ),
                 row.span,
             )
         })?;
-        // The value's own width: an `Int`'s i64, or a `Decimal<S>`'s
-        // i128 mantissa (`.rescale(T)`).
-        let i64_t = v.get_type();
+        // The value's own width: an integer's, or a `Decimal<S>`'s i128
+        // mantissa.
+        let int_t = v.get_type();
         let mut v = v;
-        if machine.numerator != 1 {
-            let p = i64_t.const_int(machine.numerator as u64, true);
-            v = emit(self.builder.build_int_mul(v, p, "unit.scale"))?;
+        if numerator != 1 {
+            let p = int_t.const_int(numerator, false);
+            v = if signed {
+                emit(self.builder.build_int_mul(v, p, "unit.scale"))?
+            } else {
+                self.lower_binop_values(hale_syntax::ast::BinOp::Mul, v, p, &repr)?
+            };
         }
         if scale.offset != 0 {
-            let k = i64_t.const_int(scale.offset as u64, true);
-            v = emit(self.builder.build_int_add(v, k, "unit.shift"))?;
+            v = if signed {
+                let k = int_t.const_int(scale.offset as u64, true);
+                emit(self.builder.build_int_add(v, k, "unit.shift"))?
+            } else {
+                let (op, k) = if scale.offset > 0 {
+                    (hale_syntax::ast::BinOp::Add, scale.offset.unsigned_abs())
+                } else {
+                    (hale_syntax::ast::BinOp::Sub, scale.offset.unsigned_abs())
+                };
+                self.lower_binop_values(op, v, int_t.const_int(k, false), &repr)?
+            };
         }
         if let Some(d) = row.split {
-            return self.lower_split(v, d, quantity_repr(&row.to));
+            return self.lower_split(v, d, repr, signed);
         }
-        if machine.denominator == 1 {
-            return Ok(Converted::Value(v.into(), quantity_repr(&row.to)));
+        if denominator == 1 {
+            return Ok(Converted::Value(v.into(), repr));
         }
-        let q = i64_t.const_int(machine.denominator as u64, true);
+        let q = int_t.const_int(denominator, false);
         match row.policy {
             Some(Discharge::Round { policy, .. }) => {
-                self.lower_rounding(v, q, policy).map(|r| Converted::Value(r.into(), quantity_repr(&row.to)))
+                self.lower_rounding(v, q, policy, signed).map(|r| Converted::Value(r.into(), repr))
             }
             Some(Discharge::Clamp | Discharge::Wrap) | None => Err(CodegenError::UnsupportedAt(
                 format!(
                     "the conversion into `{}` divides by {} and its row says nothing of the remainder; the check \
                      refuses a bare one",
-                    row.target, machine.denominator
+                    row.target, denominator
                 ),
                 row.span,
             )),
-            Some(_) => self.lower_checked_division(row, v, q).map(Converted::Checked),
+            Some(_) => self.lower_checked_division(row, v, q, &repr).map(Converted::Checked),
         }
     }
 
+    /// `op` over two values of the integer `repr`, by its own operator
+    /// (a `U64`'s checked: GH #2131).
+    fn lower_binop_values(
+        &mut self,
+        op: hale_syntax::ast::BinOp,
+        l: IntValue<'ctx>,
+        r: IntValue<'ctx>,
+        repr: &CodegenTy,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
+        let (v, _) = self.lower_binop(op, l.into(), r.into(), repr)?;
+        Ok(v.into_int_value())
+    }
+
+    /// The quotient and remainder of `v` by the positive `q`, signed or
+    /// unsigned as the integer is.
+    fn quo_rem(
+        &mut self,
+        v: IntValue<'ctx>,
+        q: IntValue<'ctx>,
+        signed: bool,
+        at: &str,
+    ) -> Result<(IntValue<'ctx>, IntValue<'ctx>), CodegenError> {
+        let (quo, rem) = (format!("{at}.quo"), format!("{at}.rem"));
+        Ok(if signed {
+            (emit(self.builder.build_int_signed_div(v, q, &quo))?, emit(self.builder.build_int_signed_rem(v, q, &rem))?)
+        } else {
+            (emit(self.builder.build_int_unsigned_div(v, q, &quo))?, emit(self.builder.build_int_unsigned_rem(v, q, &rem))?)
+        })
+    }
+
     /// `v / q` rounded by `policy`, `q` positive: the truncating quotient
-    /// and remainder, then one correction per policy.
-    fn lower_rounding(&mut self, v: IntValue<'ctx>, q: IntValue<'ctx>, policy: RoundPolicy) -> Result<IntValue<'ctx>, CodegenError> {
+    /// and remainder, then one correction per policy. An unsigned value's
+    /// remainder is never negative (GH #2131): `floor` is `trunc` there,
+    /// and nothing rounds away below zero.
+    fn lower_rounding(
+        &mut self,
+        v: IntValue<'ctx>,
+        q: IntValue<'ctx>,
+        policy: RoundPolicy,
+        signed: bool,
+    ) -> Result<IntValue<'ctx>, CodegenError> {
         let i64_t = v.get_type();
         let zero = i64_t.const_zero();
-        let quo = emit(self.builder.build_int_signed_div(v, q, "unit.quo"))?;
-        let rem = emit(self.builder.build_int_signed_rem(v, q, "unit.rem"))?;
+        let (quo, rem) = self.quo_rem(v, q, signed, "unit")?;
+        if !signed {
+            let one = i64_t.const_int(1, false);
+            let away = match policy {
+                RoundPolicy::Trunc | RoundPolicy::Floor => return Ok(quo),
+                RoundPolicy::Ceil => emit(self.builder.build_int_compare(IntPredicate::NE, rem, zero, "unit.ceil.above"))?,
+                RoundPolicy::HalfUp | RoundPolicy::HalfEven => {
+                    // the remainder against the divisor's other part,
+                    // with no doubling to overflow
+                    let other = emit(self.builder.build_int_sub(q, rem, "unit.half.other"))?;
+                    if policy == RoundPolicy::HalfUp {
+                        emit(self.builder.build_int_compare(IntPredicate::UGE, rem, other, "unit.half.away"))?
+                    } else {
+                        let past = emit(self.builder.build_int_compare(IntPredicate::UGT, rem, other, "unit.half.past"))?;
+                        let tie = emit(self.builder.build_int_compare(IntPredicate::EQ, rem, other, "unit.half.tie"))?;
+                        let low = emit(self.builder.build_and(quo, one, "unit.half.low"))?;
+                        let odd = emit(self.builder.build_int_compare(IntPredicate::NE, low, zero, "unit.half.odd"))?;
+                        let tie_odd = emit(self.builder.build_and(tie, odd, "unit.half.tie_odd"))?;
+                        emit(self.builder.build_or(past, tie_odd, "unit.half.away"))?
+                    }
+                }
+            };
+            // `quo` is at most the integer's max over `q`, `q > 1`: one
+            // more never overflows.
+            let up = emit(self.builder.build_int_z_extend(away, i64_t, "unit.up"))?;
+            return emit(self.builder.build_int_add(quo, up, "unit.round"));
+        }
         match policy {
             RoundPolicy::Trunc => Ok(quo),
             RoundPolicy::Floor => {
@@ -540,16 +698,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         row: &ConversionRow,
         v: IntValue<'ctx>,
         q: IntValue<'ctx>,
+        repr: &CodegenTy,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
         let func = self
             .current_fn
             .ok_or_else(|| CodegenError::UnsupportedAt("a conversion outside a fn body".into(), row.span))?;
         let i64_t = v.get_type();
-        let quo = emit(self.builder.build_int_signed_div(v, q, "unit.quo"))?;
-        let rem = emit(self.builder.build_int_signed_rem(v, q, "unit.rem"))?;
+        let signed = repr.machine_int().map_or(true, |(_, s)| s);
+        let (quo, rem) = self.quo_rem(v, q, signed, "unit")?;
         let inexact = emit(self.builder.build_int_compare(IntPredicate::NE, rem, i64_t.const_zero(), "unit.inexact"))?;
         let payload_ty = CodegenTy::TypeRef("InexactError".into());
-        let success_ty = quantity_repr(&row.to);
+        let success_ty = repr.clone();
         let out_val_slot = self.alloca_for(&success_ty, "unit.val.slot")?;
         let out_err_slot = self.alloca_for(&payload_ty, "unit.err.slot")?;
         let ok_bb = self.context.append_basic_block(func, "unit.ok");
@@ -570,8 +729,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let kind = self.global_string(&row.target);
         // A `Decimal<S>`'s mantissa is an i128 and the error's fields are
         // `Int`s: each is the nearest `Int`, exact for a mantissa within
-        // an `Int`'s range (the divisor, a power of ten, always is).
-        let (v, q) = (self.saturate_to_int(v)?, self.saturate_to_int(q)?);
+        // an `Int`'s range (the divisor, a power of ten, always is); a
+        // `U64`'s past `Int`'s max is `Int`'s max (GH #2131).
+        let (v, q) = (self.saturate_to_int(v, repr)?, self.saturate_to_int(q, repr)?);
         let fields: [(&str, BasicValueEnum<'ctx>); 3] = [("kind", kind.into()), ("value", v.into()), ("divisor", q.into())];
         for (name, value) in fields {
             let (idx, _) = info.fields.get(name).cloned().expect("a field of the row");
@@ -591,10 +751,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
-    /// `v` as an `Int`: itself when it is one, else (a `Decimal`'s i128)
-    /// the nearest `Int`.
-    fn saturate_to_int(&mut self, v: IntValue<'ctx>) -> Result<IntValue<'ctx>, CodegenError> {
+    /// `v`, a value of `repr`, as an `Int`: itself when it is one, else
+    /// the nearest `Int` (a `Decimal`'s i128, a `U64` past `Int`'s max).
+    fn saturate_to_int(&mut self, v: IntValue<'ctx>, repr: &CodegenTy) -> Result<IntValue<'ctx>, CodegenError> {
         let i64_t = self.context.i64_type();
+        if let Some((bits, false)) = repr.machine_int() {
+            let v = if bits < 64 { emit(self.builder.build_int_z_extend(v, i64_t, "sat.wide"))? } else { v };
+            let max = i64_t.const_int(i64::MAX as u64, false);
+            let above = emit(self.builder.build_int_compare(IntPredicate::UGT, v, max, "sat.above"))?;
+            return Ok(emit(self.builder.build_select(above, max, v, "sat.int"))?.into_int_value());
+        }
         if v.get_type().get_bit_width() == 64 {
             return Ok(v);
         }
@@ -608,19 +774,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     /// `.split(u)`: the floored quotient by `u`'s count `d` and the
-    /// remainder, which is then never negative, as a pair.
-    fn lower_split(&mut self, v: IntValue<'ctx>, d: i64, rest_ty: CodegenTy) -> Result<Converted<'ctx>, CodegenError> {
-        let i64_t = self.context.i64_type();
-        let zero = i64_t.const_zero();
-        let dc = i64_t.const_int(d as u64, true);
-        let quo = emit(self.builder.build_int_signed_div(v, dc, "unit.split.quo"))?;
-        let rem = emit(self.builder.build_int_signed_rem(v, dc, "unit.split.rem"))?;
-        let below = emit(self.builder.build_int_compare(IntPredicate::SLT, rem, zero, "unit.split.below"))?;
-        let down = emit(self.builder.build_int_z_extend(below, i64_t, "unit.split.adj"))?;
-        let whole = emit(self.builder.build_int_sub(quo, down, "unit.split.whole"))?;
-        let lift = emit(self.builder.build_select(below, dc, zero, "unit.split.lift"))?.into_int_value();
-        let rest = emit(self.builder.build_int_add(rem, lift, "unit.split.rest"))?;
-        let elem_tys = vec![CodegenTy::Int, rest_ty];
+    /// remainder, which is then never negative, as a pair. The whole part
+    /// is a count of the integer the value counts (GH #2131); an unsigned
+    /// one's quotient is floored already.
+    fn lower_split(&mut self, v: IntValue<'ctx>, d: i128, rest_ty: CodegenTy, signed: bool) -> Result<Converted<'ctx>, CodegenError> {
+        let int_t = v.get_type();
+        let zero = int_t.const_zero();
+        let dc = int_t.const_int(d as u64, false);
+        let (quo, rem) = self.quo_rem(v, dc, signed, "unit.split")?;
+        let (whole, rest) = if signed {
+            let below = emit(self.builder.build_int_compare(IntPredicate::SLT, rem, zero, "unit.split.below"))?;
+            let down = emit(self.builder.build_int_z_extend(below, int_t, "unit.split.adj"))?;
+            let whole = emit(self.builder.build_int_sub(quo, down, "unit.split.whole"))?;
+            let lift = emit(self.builder.build_select(below, dc, zero, "unit.split.lift"))?.into_int_value();
+            (whole, emit(self.builder.build_int_add(rem, lift, "unit.split.rest"))?)
+        } else {
+            (quo, rem)
+        };
+        // the whole part is the integer itself: a `Duration`'s an `Int`
+        let whole_ty = match rest_ty {
+            CodegenTy::Duration | CodegenTy::Time => CodegenTy::Int,
+            ref other => other.clone(),
+        };
+        let elem_tys = vec![whole_ty, rest_ty];
         let storage_ty = self.llvm_tuple_storage_type(&elem_tys);
         let bytes = storage_ty.size_of().expect("tuple storage type has known size");
         let tup_ptr = self.arena_alloc(bytes, "unit.split.alloc")?;
@@ -640,25 +816,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 }
 
-/// The representation a value of a unit-dialect type `t` lowers as: the
-/// stdlib's `Duration` and `Time` keep their own class (U4), every other
-/// quantity, point, identity or range is the `Int` it counts.
-pub(crate) fn quantity_repr(t: &hale_types::ty::Ty) -> CodegenTy {
-    use hale_syntax::ast::PrimType;
-    match t {
-        hale_types::ty::Ty::Prim(PrimType::Duration) => CodegenTy::Duration,
-        hale_types::ty::Ty::Prim(PrimType::Time) => CodegenTy::Time,
-        hale_types::ty::Ty::Prim(PrimType::Bool) => CodegenTy::Bool,
-        hale_types::ty::Ty::Prim(PrimType::Decimal(s)) => CodegenTy::Decimal(*s),
-        _ => CodegenTy::Int,
-    }
-}
-
 /// Whether a value lowered as `ty` is one a conversion of the unit
-/// dialect converts: an `Int`, or a `Duration` or `Time` (U4). Two such
-/// values the checker compared are compared as the counts they are.
+/// dialect converts: a machine integer (an `Int`, a `U64`: GH #2131), or
+/// a `Duration` or `Time` (U4). Two such values the checker compared are
+/// compared as the counts they are.
 pub(crate) fn is_quantity_repr(ty: &CodegenTy) -> bool {
-    matches!(ty, CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time)
+    ty.machine_int().is_some()
 }
 
 /// A row's bound as a machine `Int`: a bound past an `Int`'s is the

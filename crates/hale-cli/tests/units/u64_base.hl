@@ -1,0 +1,24 @@
+// GH #2131: the unit dialect's scalars over a `U64`, for the report:
+// each counts a `U64`, its headroom is the `U64`'s, from zero, and a
+// range of one fits the narrowest unsigned width.
+
+unit wei;
+unit gwei = 1_000_000_000 wei;
+unit eth = 1_000_000_000 gwei;
+
+type Wei = quantity U64 in wei;
+type Gwei = Wei in gwei { round: floor; }
+type Nonce = distinct U64;
+type Port = U64 { range: 1..65536; }
+type Ephemeral = Port { range: 49152..65536; }
+
+fn port_of(n: U64) -> Port {
+    return Port(n) or clamp;
+}
+
+fn main() {
+    let w: Wei = 18eth;
+    let g = w.in(gwei) or floor;
+    let paid: Gwei = w;
+    println(f"{g} {paid} {port_of(70000)}");
+}
