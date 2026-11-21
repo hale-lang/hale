@@ -2016,14 +2016,14 @@ row	App@literal1.s2	Source	pool:p2	entry	off owner
 row	App@literal1.s3	Source	pool:p3	entry	off owner
 row	App@literal1.sub	Counter	pool:p	entry	off owner
 
-== crates/hale-codegen/tests/bus_bounded_topics.rs#32b214f8
+== crates/hale-codegen/tests/bus_bounded_topics.rs#102bbc55
 root	App
 domain	pinned:App@literal1.p	cpus 0
 row	App@literal1	App	main	default
 row	App@literal1.p	Pusher	pinned:App@literal1.p	entry	off owner
 row	App@literal1.tally	Tally	main	default
 
-== crates/hale-codegen/tests/bus_bounded_topics.rs#c7310a08
+== crates/hale-codegen/tests/bus_bounded_topics.rs#8c6d716d
 root	App
 domain	pinned:App@literal1.p	cpus 0
 row	App@literal1	App	main	default

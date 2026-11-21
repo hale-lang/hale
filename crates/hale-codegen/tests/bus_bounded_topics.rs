@@ -10,6 +10,20 @@
 //!   3. The same burst with `or wait` parks the publisher until
 //!      the drain frees space — nothing is shed, all events
 //!      arrive.
+//!
+//! GH #2138: the subscriber is a main-queue one, which only main
+//! drains (at its sleep slices), while the pinned publisher bursts
+//! on its own thread, so whether a burst outran the drain was the
+//! scheduler's choice: a main that drained between sends kept the
+//! queue under the bound, and `on_full_fail_or_raise_refuses` saw
+//! its burst survive. In the first two the subscriber's first
+//! delivery now holds the queue: its handler waits on a latch the
+//! publisher sets after its burst (`latch()`, a file named by the
+//! pid; a sleep in a handler does not drain), and main's run() waits
+//! for the same latch. Nothing drains during the burst, so the queue
+//! is at its bound by the third send whatever the scheduler does.
+//! The third test waits for its 50 deliveries instead of a fixed
+//! 1.5 s, which a slow drain could outlast.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -27,12 +41,21 @@ fn build(name: &str, src: &str) -> PathBuf {
 
 #[test]
 fn drop_old_keeps_newest_under_burst() {
-    // Pinned publisher bursts 100 events while main sleeps (no
-    // drain); the bounded(4, drop_old) subscriber must see the
-    // TAIL of the burst — event 99 — and strictly fewer than
-    // 100 total. (A drain slice may land mid-burst, so the exact
-    // count is timing-dependent; the ring property is not.)
+    // Pinned publisher bursts 100 events while the subscriber's
+    // first delivery holds the queue (no drain); the
+    // bounded(4, drop_old) subscriber must see the TAIL of the
+    // burst — event 99 — and strictly fewer than 100 total.
     let src = r#"
+        fn latch() -> String {
+            return "/tmp/hale_test_busbound_latch_" + to_string(std::process::pid());
+        }
+        // up to 10 s, so a burst that never sets it still ends
+        fn await_latch() {
+            let deadline = std::time::monotonic_ns() + 10000000000;
+            while !std::io::fs::file_exists(latch()) && std::time::monotonic_ns() < deadline {
+                std::time::sleep(1ms);
+            }
+        }
         type E { n: Int = 0; }
         topic Evt { payload: E; subject: "evt"; }
         locus Tally {
@@ -52,6 +75,9 @@ fn drop_old_keeps_newest_under_burst() {
                 println("ok seen=", self.seen, " last=", self.last);
             }
             fn on_e(e: E) {
+                // the first delivery holds the queue until the burst
+                // is over (a sleep in a handler does not drain)
+                if self.seen == 0 { await_latch(); }
                 self.seen = self.seen + 1;
                 self.last = e.n;
             }
@@ -65,6 +91,7 @@ fn drop_old_keeps_newest_under_burst() {
                     Evt <- E { n: i };
                     i = i + 1;
                 }
+                std::io::fs::write_file(latch(), "") or discard;
             }
         }
         main locus App {
@@ -74,7 +101,9 @@ fn drop_old_keeps_newest_under_burst() {
             }
             placement { p: pinned(core = 0); }
             run() {
-                std::time::sleep(600ms);
+                await_latch();
+                std::time::sleep(50ms);
+                std::io::fs::unlink(latch()) or discard;
             }
         }
         fn main() { App { }; }
@@ -93,7 +122,20 @@ fn drop_old_keeps_newest_under_burst() {
 
 #[test]
 fn on_full_fail_or_raise_refuses() {
+    // The pinned publisher's third send finds the subscriber at its
+    // bound — one delivery held in its handler, two queued (or two
+    // queued and none taken yet) — and raises BusFull.
     let src = r#"
+        fn latch() -> String {
+            return "/tmp/hale_test_busbound_latch_" + to_string(std::process::pid());
+        }
+        // up to 10 s, so a burst that never sets it still ends
+        fn await_latch() {
+            let deadline = std::time::monotonic_ns() + 10000000000;
+            while !std::io::fs::file_exists(latch()) && std::time::monotonic_ns() < deadline {
+                std::time::sleep(1ms);
+            }
+        }
         type E { n: Int = 0; }
         topic Evt {
             payload: E;
@@ -104,7 +146,12 @@ fn on_full_fail_or_raise_refuses() {
         locus Tally {
             params { seen: Int = 0; }
             bus { subscribe Evt as on_e; }
-            fn on_e(e: E) { self.seen = self.seen + 1; }
+            fn on_e(e: E) {
+                // the first delivery holds the queue until the burst
+                // is over, so the bound is reached by the third send
+                if self.seen == 0 { await_latch(); }
+                self.seen = self.seen + 1;
+            }
         }
         locus Pusher {
             bus { publish Evt; }
@@ -116,6 +163,7 @@ fn on_full_fail_or_raise_refuses() {
                     i = i + 1;
                 }
                 println("BURST SURVIVED (should have raised)");
+                std::io::fs::write_file(latch(), "") or discard;
             }
         }
         main locus App {
@@ -125,7 +173,8 @@ fn on_full_fail_or_raise_refuses() {
             }
             placement { p: pinned(core = 0); }
             run() {
-                std::time::sleep(600ms);
+                await_latch();
+                std::io::fs::unlink(latch()) or discard;
             }
         }
         fn main() { App { }; }
@@ -192,7 +241,12 @@ fn on_full_or_wait_delivers_everything() {
             }
             placement { p: pinned(core = 0); }
             run() {
-                std::time::sleep(1500ms);
+                // until every event is delivered (up to 10 s), not a
+                // fixed sleep a slow drain could outlast
+                let deadline = std::time::monotonic_ns() + 10000000000;
+                while self.tally.seen < 50 && std::time::monotonic_ns() < deadline {
+                    std::time::sleep(10ms);
+                }
             }
         }
         fn main() { App { }; }
