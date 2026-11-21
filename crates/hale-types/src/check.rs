@@ -25143,10 +25143,15 @@ impl<'a> Checker<'a> {
                 };
                 // A bare builtin types by the signature table lowering
                 // reads (F.40 phase 3, E4), where lowering would lower
-                // it; anywhere else it stays Unknown, as before.
+                // it; anywhere else it stays Unknown, as before. A call
+                // the shadowing desugar left as written calls the builtin
+                // whatever binding of the name is in scope (the callee was
+                // typed so: `callee_unshadowed`), so a binding no longer
+                // leaves it untyped (GH #2111: an f-string's `to_string`
+                // beside a local `to_string`, `max(1, 2)` beside `let max`).
                 let base_ret = match (callee.as_ref(), base_ret) {
                     (Expr::Ident(id), Ty::Unknown)
-                        if self.locals.lookup(&id.name).is_none()
+                        if (self.locals.lookup(&id.name).is_none() || BARE_BUILTIN_CALLEES.contains(&id.name.as_str()))
                             && self.top.lookup(&id.name).is_none()
                             && !self.generic_fns.contains_key(id.name.as_str()) =>
                     {
