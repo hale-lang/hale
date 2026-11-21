@@ -43,19 +43,50 @@ locus EventStream {
         return head;
     }
     // Whether an event naming `what` arrives within `secs`, reading what
-    // came since the last call; `poke` runs before each read.
+    // came since the last call. `poke` runs once at the start and again
+    // after each second nothing was heard: the head subscribes within a
+    // second of the project becoming active, so a fact said before that
+    // is said again, but a poke per read (every 250 ms) left events in
+    // flight for the next wait to hear (GH #2149).
     fn heard(what: String, secs: Int, poke: Poker) -> Bool {
         let st = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
         let deadline = std::time::now() + dna::wait_secs(secs);
+        let mut poked = std::time::monotonic_ns();
+        poke.poke();
         while std::time::now() <= deadline {
             if std::str::contains(self.seen, "event: changed\ndata: " + what + "\n\n") {
                 self.seen = "";
                 return true;
             }
-            poke.poke();
+            if std::time::monotonic_ns() - poked >= 1000000000 {
+                poked = std::time::monotonic_ns();
+                poke.poke();
+            }
             self.seen = self.seen + (st.recv(4096) or "");
         }
         return false;
+    }
+    // Reads until no `changed` event has arrived for two seconds (at most
+    // ten), and forgets what it read: the events an earlier wait's pokes
+    // still had in flight, so the next wait hears only its own (GH #2149:
+    // a late `rows` from the owner's pokes was heard as another
+    // organization's).
+    fn quiet() {
+        let st = std::io::tcp::Stream { conn_fd: self.fd, owns_fd: false };
+        let end = std::time::monotonic_ns() + 10000000000;
+        let mut last = std::time::monotonic_ns();
+        // what was read and not yet matched, as an event may span reads
+        let mut buf = self.seen;
+        while std::time::monotonic_ns() < end && std::time::monotonic_ns() - last < 2000000000 {
+            buf = buf + (st.recv(4096) or "");
+            let mut at = std::str::index_of(buf, "event: changed");
+            while at >= 0 {
+                last = std::time::monotonic_ns();
+                buf = buf[(at + 14)..len(buf)];
+                at = std::str::index_of(buf, "event: changed");
+            }
+        }
+        self.seen = "";
     }
 }
 
@@ -88,9 +119,9 @@ locus Held {
     }
 }
 
-// What a wait publishes before each read: a RowLanded on `subject`
-// (nothing when ""). The head subscribes within a second of the project
-// becoming active, so the fact is said again until it is heard.
+// What a wait publishes: a RowLanded on `subject` (nothing when ""). The
+// head subscribes within a second of the project becoming active, so the
+// fact is said again, once a second, until it is heard.
 locus Poker {
     params {
         client: nats::NatsClient = nats::NatsClient { name: "head-push-test", timeout: 2s };
@@ -140,9 +171,11 @@ fn main() {
         s.heard("rows", 30, p),
         "a row the organization lands is pushed: " + s.seen + f.log(),
     );
+    s.quiet();
     p.subject = org + ".north.head.row.landed";
     std::test::assert(s.heard("rows", 10, p), "so is one an owner's organization lands: " + s.seen);
     // another organization's rows are not this project's
+    s.quiet();
     p.subject = "dna_other.head.row.landed";
     std::test::assert(
         !s.heard("rows", 3, p),

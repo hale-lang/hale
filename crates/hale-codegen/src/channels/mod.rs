@@ -2251,7 +2251,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
     ) -> Option<(Expr, &'static str)> {
         let anchor = hale_syntax::chains::cursor_anchor(args)?;
-        let field_ty = match self.ty_at(receiver)? {
+        let field_ty = match self.ty_or_fallback(receiver)? {
             CodegenTy::TypeRef(n) => self.user_types.get(&n)?.fields.get(anchor)?.1.clone(),
             CodegenTy::LocusRef(n) => {
                 let info = self.user_loci.get(&n)?;
