@@ -943,7 +943,6 @@ fn literal_default_missing_field_diags(bundle: &Bundle<'_>, top: &crate::resolve
                         match m {
                             LocusMember::Fn(f) => params(&f.params, &mut out),
                             LocusMember::Lifecycle(lc) => params(&lc.params, &mut out),
-                            LocusMember::Mode(md) => params(&md.params, &mut out),
                             LocusMember::Failure(fd) => params(&fd.params, &mut out),
                             LocusMember::Type(t) => fields(t, &mut out),
                             _ => {}
@@ -1033,7 +1032,6 @@ fn publish_in_default_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
                             }
                             LocusMember::Fn(f) => params(&f.params, &mut out),
                             LocusMember::Lifecycle(lc) => params(&lc.params, &mut out),
-                            LocusMember::Mode(md) => params(&md.params, &mut out),
                             LocusMember::Failure(fd) => params(&fd.params, &mut out),
                             LocusMember::Type(t) => fields(t, &mut out),
                             _ => {}
@@ -3014,8 +3012,7 @@ fn hot_factory_locus(c: &crate::alloc_summary::CallEdge, top: &TopScope) -> Opti
 }
 
 /// The hot-path allocation lint, a law over the allocation summary's
-/// rows (F.40 phase 3, E3a part C): the program's own fns, a mode's
-/// body aside, each with its sites and calls where they are written
+/// rows (F.40 phase 3, E3a part C): the program's own fns, each with its sites and calls where they are written
 /// (`in_loop`) and its context.
 ///
 /// - A BUS HANDLER runs per message (Gap D, 2026-07-17), so a per-call
@@ -3101,7 +3098,7 @@ fn hot_path_findings<'s>(
     use crate::alloc_summary::{AllocKind, CallSpelling, EntryKind};
     let (summary, top, stdlib) = (rows.summary, rows.top, rows.stdlib);
     let mut rows: Vec<&crate::alloc_summary::FnSummary> =
-        summary.fns.values().filter(|f| summary.is_own(&f.key) != stdlib && !f.mode).collect();
+        summary.fns.values().filter(|f| summary.is_own(&f.key) != stdlib).collect();
     rows.sort_by_key(|f| f.decl_index);
     let mut out = Vec::new();
     for f in rows {
@@ -4080,7 +4077,7 @@ fn check_scope_local_subscriber_on_classic_pool(rows: &ScopeLocalSubscriberRows<
         return;
     }
     let mut fns: Vec<&crate::alloc_summary::FnSummary> =
-        summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
+        summary.fns.values().filter(|f| summary.is_own(&f.key)).collect();
     fns.sort_by_key(|f| f.decl_index);
     let mut kept: Option<BTreeSet<String>> = None;
     for f in fns {
@@ -4223,7 +4220,7 @@ fn check_subscriber_torn_down_at_its_statement(rows: &ScopeLocalSubscriberRows<'
     }
     works.extend(&runs);
     let mut fns: Vec<&crate::alloc_summary::FnSummary> =
-        summary.fns.values().filter(|f| summary.is_own(&f.key) && !f.mode).collect();
+        summary.fns.values().filter(|f| summary.is_own(&f.key)).collect();
     fns.sort_by_key(|f| f.decl_index);
     let mut kept: Option<BTreeSet<String>> = None;
     for f in fns {
@@ -5234,14 +5231,13 @@ fn called_names(b: &Block, out: &mut BTreeSet<String>) {
 }
 
 /// Return the body block of a locus member that carries one
-/// (lifecycle, on_failure, fn, mode). Anything else (params,
+/// (lifecycle, on_failure, fn). Anything else (params,
 /// bus, closure decl, etc.) returns None.
 fn locus_member_body(member: &LocusMember) -> Option<&Block> {
     match member {
         LocusMember::Lifecycle(lc) => Some(&lc.body),
         LocusMember::Failure(fd) => Some(&fd.body),
         LocusMember::Fn(fd) => Some(&fd.body),
-        LocusMember::Mode(md) => Some(&md.body),
         _ => None,
     }
 }
@@ -11569,7 +11565,7 @@ struct Checker<'a> {
     /// snapshot's typed-body table (`crate::typed_bodies`).
     typed: &'a mut crate::typed_bodies::TypingRecord,
     /// The declaration whose body is being walked: a fn, a lifecycle
-    /// hook, a mode, an `on_failure`, a closure; else the enclosing
+    /// hook, an `on_failure`, a closure; else the enclosing
     /// locus or top-level declaration. The table's rows are its.
     body: NodeId,
     /// RFC #2035: walking the function a `@display` template desugared
@@ -13339,7 +13335,7 @@ impl<'a> Checker<'a> {
         // treats `contract` members as pure declaration, so this is
         // the ONLY place a lying expose can be caught — an entry
         // must bind against something real on this locus (a params
-        // field, a mode, or a fn member) at a matching type, or a
+        // field or a fn member) at a matching type, or a
         // consuming parent type-checks against fiction.
         if !info.contract_expose.is_empty() {
             self.check_contract_expose_validity(info);
@@ -14034,7 +14030,7 @@ impl<'a> Checker<'a> {
     ///
     /// Free fns can still return loci (entity creation —
     /// `std::io::file::open(path) -> File fallible(IoError)`).
-    /// Lifecycle methods / modes / failure handlers don't have
+    /// Lifecycle methods / failure handlers don't have
     /// return types in the value-bearing sense, so they're
     /// unaffected.
     ///
@@ -15097,8 +15093,7 @@ impl<'a> Checker<'a> {
 
     /// M3 stage 4 (2026-07-02): every `expose` entry must bind
     /// against something real on the declaring locus — a params
-    /// field, a mode (bulk/harmonic/resolution, per the
-    /// mode-pull rule in semantics.md), or a `fn` member — with a
+    /// field or a `fn` member — with a
     /// type matching what's declared there (v0 equality via
     /// assignable_from, which stays permissive on Unknown).
     /// Without this, `expose value: String;` over an Int field
@@ -15154,44 +15149,7 @@ impl<'a> Checker<'a> {
                 }
                 continue;
             }
-            // 2. mode (exposed-mode pull: `expose bulk: T;`)
-            let mode = match entry.name.as_str() {
-                "bulk" => Some(ModeKind::Bulk),
-                "harmonic" => Some(ModeKind::Harmonic),
-                "resolution" => Some(ModeKind::Resolution),
-                _ => None,
-            };
-            if let Some(mk) = mode {
-                match locus.mode_returns.get(&mk) {
-                    Some(ret) => {
-                        if !entry.ty.assignable_from(ret) {
-                            self.diags.push(Diag::ty(
-                                entry.span,
-                                format!(
-                                    "contract: locus `{}` exposes `{}: {}`, \
-                                     but the mode returns `{}`",
-                                    locus.name,
-                                    entry.name,
-                                    entry.ty.display(),
-                                    ret.display()
-                                ),
-                            ));
-                        }
-                    }
-                    None => {
-                        self.diags.push(Diag::ty(
-                            entry.span,
-                            format!(
-                                "contract: locus `{}` exposes mode `{}` but \
-                                 does not declare it",
-                                locus.name, entry.name
-                            ),
-                        ));
-                    }
-                }
-                continue;
-            }
-            // 3. fn member (vertical method surface)
+            // 2. fn member (vertical method surface)
             if let Some(m) =
                 locus.methods.iter().find(|m| m.name == entry.name)
             {
@@ -15213,8 +15171,8 @@ impl<'a> Checker<'a> {
             self.diags.push(Diag::ty(
                 entry.span,
                 format!(
-                    "contract: locus `{}` exposes `{}` but has no field, \
-                     mode, or method with that name",
+                    "contract: locus `{}` exposes `{}` but has no field \
+                     or method with that name",
                     locus.name, entry.name
                 ),
             ));
@@ -15286,7 +15244,6 @@ impl<'a> Checker<'a> {
         let prev_body = self.body;
         match member {
             LocusMember::Lifecycle(lc) => self.body = lc.id,
-            LocusMember::Mode(md) => self.body = md.id,
             LocusMember::Failure(fd) => self.body = fd.id,
             LocusMember::Closure(cd) => self.body = cd.id,
             LocusMember::Fn(f) => self.body = f.id,
@@ -15599,40 +15556,6 @@ impl<'a> Checker<'a> {
                     self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true, from_let: false });
                 }
                 self.check_block(&lc.body);
-                self.locals.pop();
-                self.in_lifecycle = false;
-            }
-            LocusMember::Mode(md) => {
-                let defaults: Vec<&'a Expr> = md.params.iter().filter_map(|p| p.default.as_ref()).collect();
-                self.judge_defaults_where_declared(&defaults, &[]);
-                self.in_lifecycle = true;
-                self.locals.push();
-                for p in &md.params {
-                    self.check_type_annotation(&p.ty);
-                    let ty = self.resolve_te(&p.ty);
-                    self.locals.insert(&p.name.name, LocalSym { ty, is_mut: false, cell: None, param_place: true, from_let: false });
-                }
-                // A mode that declares `-> T` returns a value; one that
-                // does not returns nothing, like a hook. The value's
-                // type is not judged here (`Unknown`), only whether
-                // there is one to return.
-                let prev_return = std::mem::replace(
-                    &mut self.return_ctx,
-                    md.ret.as_ref().map(|_| Ty::Unknown),
-                );
-                self.check_block(&md.body);
-                self.return_ctx = prev_return;
-                // GH #1965: a mode's tail is its return, and lowering
-                // rewrites a template literal there against the declared
-                // return type. Admitted by that type; the walk above
-                // typed it.
-                if let (Some(te), Some(tail)) = (&md.ret, md.body.tail.as_deref()) {
-                    let want = self.resolve_te(te);
-                    let mark = self.walk_mark();
-                    let got = self.check_expr(tail);
-                    self.discard_since(mark);
-                    let _ = self.admit_monomorph_literal(&want, &got, tail, true);
-                }
                 self.locals.pop();
                 self.in_lifecycle = false;
             }
@@ -17619,7 +17542,7 @@ impl<'a> Checker<'a> {
                         && !self.in_fn_main
                     {
                         // A body that declares no return type returns
-                        // nothing: a lifecycle hook, or a fn or mode
+                        // nothing: a lifecycle hook, or a fn
                         // with no `-> T`, a `() fallible(E)` one
                         // included (GH #1969: its `return <a call with
                         // no value>;` passed as a `()` returned, and
@@ -17629,7 +17552,7 @@ impl<'a> Checker<'a> {
                         self.diags.push(Diag::ty(
                             e.span(),
                             "`return` carries a value, but this body returns \
-                             nothing: a fn or mode with no `-> T`, or a \
+                             nothing: a fn with no `-> T`, or a \
                              lifecycle hook, which never returns a value. \
                              Declare the return type (`fn f() -> T`), or \
                              write `return;`."
@@ -18006,6 +17929,17 @@ impl<'a> Checker<'a> {
                 ),
             ));
             return Ty::Unknown;
+        }
+        // An arm that supplies no type (one that leaves: a block ending in
+        // a `match` whose every arm returns, fails, breaks …) is no part of
+        // the join; the other arm's value is the `if`'s, as a match
+        // expression's join skips such an arm. Until GH #2111 (phase 1,
+        // family 6) a leaving `then` arm made the whole `if` `Unknown`, so
+        // its value was checked against nothing: `let s: String = v` of
+        // an `Int` checked and built, and `return v` of one from a
+        // `String` fn checked and the build refused it.
+        if then_ty == Ty::Unknown {
+            return else_ty;
         }
         then_ty
     }

@@ -9,7 +9,7 @@
 //!     its own `TokenKind`, never `Ident`.
 //!   - **contextual** — lexed as an identifier and recognized by the
 //!     parser only in position, which frees the word for ordinary
-//!     identifier use elsewhere (e.g. `topic`, `shm_ring`, `mode`).
+//!     identifier use elsewhere (e.g. `topic`, `shm_ring`, `params`).
 //!
 //! Highlighters want the union ([`all`]). Literals (`true`/`false`/`nil`)
 //! and primitive type names are coloured separately and aren't listed.
@@ -37,7 +37,7 @@ pub const HARD_KEYWORDS: &[&str] = &[
 /// `pond/heron`). Recognized by the parser in position; the parser still
 /// matches the strings inline, so this list is for tooling, not parsing.
 pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
-    // Friction sweep 2026-10-12: the locus-member, lifecycle, mode,
+    // Friction sweep 2026-10-12: the locus-member, lifecycle,
     // projection, closure, recovery, contract, bus and statement words
     // that introduce syntax in one position each and are names everywhere
     // else (spec/tokens.md § Reserved words).
@@ -46,7 +46,6 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     // field's type only.
     "clearable",
     "birth", "accept", "release", "run", "drain", "dissolve", "on_failure",
-    "bulk", "harmonic", "resolution",
     "projection", "rich", "chunked", "recognition", "tier",
     "closure", "epoch", "persists_through", "resets_on", "resets_per_epoch",
     "restart", "restart_in_place", "quarantine", "reorganize", "bubble",
@@ -54,7 +53,7 @@ pub const CONTEXTUAL_KEYWORDS: &[&str] = &[
     "subscribe", "publish", "on", "of",
     "yield", "terminate", "where",
     "topic", "ring_layout", "as", "main",
-    "mode", "bindings", "birth_check", "placement",
+    "bindings", "birth_check", "placement",
     "cooperative", "pinned", "pool", "core", "cores", "heap",
     "topology", "node", "l3", "reserve", "replicas",
     // Phase 4 (C2): `fleet locus NAME { … }` and its placement's `host("…")`.

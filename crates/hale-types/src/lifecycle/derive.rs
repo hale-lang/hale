@@ -226,10 +226,6 @@ impl LiteralWalk<'_> {
                                 self.member = Member::Handler;
                                 self.block(&f.body);
                             }
-                            LocusMember::Mode(md) => {
-                                self.member = Member::Other;
-                                self.block(&md.body);
-                            }
                             _ => {}
                         }
                     }

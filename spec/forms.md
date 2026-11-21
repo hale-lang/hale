@@ -205,7 +205,7 @@ each channel lives"):
 
 - **User-declared loci** are substrate-facing — they
   participate in the locus tower's lifecycle (bus
-  subscriptions, modes, contract reads, lifecycle methods).
+  subscriptions, contract reads, lifecycle methods).
   Their methods communicate failure structurally via
   closure assertions + `on_failure` routing.
 - **`@form(...)` loci** are application-layer storage

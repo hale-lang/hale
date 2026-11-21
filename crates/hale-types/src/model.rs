@@ -17,8 +17,7 @@
 //!    user file is a lie).
 //!  * **The phase relation** — fn → phase, with lifecycle hooks
 //!    (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`)
-//!    and modes (`bulk`, `harmonic`, `resolution`) distinguished
-//!    from ordinary methods. `during P` evaluates against this
+//!    distinguished from ordinary methods. `during P` evaluates against this
 //!    relation, and the topology artifact exports it, which is what
 //!    makes a `during` claim row independently re-derivable.
 //!  * **The seed sort** — alias → member decls, from the bundle's
@@ -63,7 +62,7 @@ pub struct PhaseEntry {
     /// The phase name — the hook/mode/method name (`birth`, `run`,
     /// `plan`, …). `during P` matches against this.
     pub phase: String,
-    /// True for lifecycle hooks and modes — the phases the RUNTIME
+    /// True for lifecycle hooks — the phases the RUNTIME
     /// drives — false for ordinary methods (a source-slice phase,
     /// per the shipped `during` doctrine).
     pub hook: bool,
@@ -130,7 +129,6 @@ impl Model {
                             let id = match m {
                                 LocusMember::Fn(fd) => fd.id,
                                 LocusMember::Lifecycle(lc) => lc.id,
-                                LocusMember::Mode(md) => md.id,
                                 _ => continue,
                             };
                             let (name, hook): (String, bool) = match m
@@ -153,19 +151,6 @@ impl Model {
                                         LifecycleKind::Drain => "drain",
                                         LifecycleKind::Dissolve => {
                                             "dissolve"
-                                        }
-                                    }
-                                    .to_string(),
-                                    true,
-                                ),
-                                LocusMember::Mode(md) => (
-                                    match md.kind {
-                                        ModeKind::Bulk => "bulk",
-                                        ModeKind::Harmonic => {
-                                            "harmonic"
-                                        }
-                                        ModeKind::Resolution => {
-                                            "resolution"
                                         }
                                     }
                                     .to_string(),

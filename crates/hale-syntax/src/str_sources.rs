@@ -194,7 +194,6 @@ fn items(items_: &mut [TopDecl], n: &mut usize) {
                     match m {
                         LocusMember::Fn(f) => body(&mut f.body, n),
                         LocusMember::Lifecycle(lc) => body(&mut lc.body, n),
-                        LocusMember::Mode(md) => body(&mut md.body, n),
                         LocusMember::Failure(f) => body(&mut f.body, n),
                         _ => {}
                     }

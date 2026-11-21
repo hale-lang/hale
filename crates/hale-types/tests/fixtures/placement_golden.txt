@@ -34,7 +34,7 @@ dynamic	CheckerL	on main	in the seed
 row	AuditL@main1	AuditL	main	default
 dynamic	CheckerL	on main	in the seed
 
-== crates/hale-codegen/tests/fixtures/examples/04-modes/main.hl#06e332e5
+== crates/hale-codegen/tests/fixtures/examples/04-child-aggregates/main.hl#4f24bc38
 row	AggregatorL@main1	AggregatorL	main	default
 dynamic	LeafL	on main	in the seed
 
@@ -121,7 +121,7 @@ row	Sink@main2	Sink	main	default
 row	Source@main3	Source	main	default
 row	Window@main1	Window	main	default
 
-== crates/hale-codegen/tests/fixtures/examples/24-default-params/main.hl#8897c240
+== crates/hale-codegen/tests/fixtures/examples/24-default-params/main.hl#233cacd1
 row	Counter@main1	Counter	main	default
 
 == crates/hale-codegen/tests/fixtures/examples/30-stats/main.hl#b1c96838
@@ -189,7 +189,7 @@ row	Sender@main2	Sender	main	default
 dynamic	Pulse	on main
 dynamic	Watcher	on main
 
-== crates/hale-codegen/tests/fixtures/examples/50-mode-defaults/main.hl#3ac5c530
+== crates/hale-codegen/tests/fixtures/examples/50-method-defaults/main.hl#2be13166
 row	AggregatorL@main1	AggregatorL	main	default
 
 == crates/hale-codegen/tests/fixtures/examples/51-geom-segment/main.hl#a78cdd0a
@@ -212,7 +212,7 @@ shared	LeadingEdge@main1	LeadingEdge #7d2fd5b4
 shared	LeadingEdge@main2	LeadingEdge #7d2fd5b4
 shared	LeadingEdge@main3	LeadingEdge #7d2fd5b4
 
-== crates/hale-codegen/tests/fixtures/examples/55-geom-triangulate/main.hl#4e8c4ffe
+== crates/hale-codegen/tests/fixtures/examples/55-geom-triangulate/main.hl#c5a1bb75
 row	Triangulator@main1	Triangulator	main	default
 dynamic	LeadingEdge	on main	in the seed
 
@@ -2764,11 +2764,11 @@ row	App@literal1.empty	Mgr	main	default
 row	App@literal1.full	Mgr	main	default
 dynamic	Worker	on main	in the seed
 
-== crates/hale-codegen/tests/children_growable.rs#6f7e14c9
+== crates/hale-codegen/tests/children_growable.rs#3370c0be
 row	AggregatorL@main1	AggregatorL	main	default
 dynamic	LeafL	on main	in the seed
 
-== crates/hale-codegen/tests/children_growable.rs#9aa99d03
+== crates/hale-codegen/tests/children_growable.rs#1ecb7edd
 row	AggregatorL@main1	AggregatorL	main	default
 dynamic	LeafL	on main	in the seed
 
@@ -4558,7 +4558,7 @@ row	SubL@main1	SubL	main	default
 row	~	Tally	main	default
 row	~.seen	Rows	main	inherited
 
-== crates/hale-codegen/tests/noalias_self.rs#20ec818f
+== crates/hale-codegen/tests/noalias_self.rs#17de3af9
 row	Counter@main1	Counter	main	default
 
 == crates/hale-codegen/tests/noalias_self.rs#6e840862
@@ -4862,19 +4862,19 @@ dynamic	Item	on main	in the seed
 row	~	Holder	main	default
 row	~.it	Item	main	inherited
 
-== crates/hale-codegen/tests/ownership_bubble.rs#3f4323a5
+== crates/hale-codegen/tests/ownership_bubble.rs#76b663ce
 root	World
 row	World@literal1	World	main	default
 -- dynamic	sites in the seed
 dynamic	Ship	on main
 dynamic	Yard	on main
 
-== crates/hale-codegen/tests/ownership_bubble.rs#e8669d1c
+== crates/hale-codegen/tests/ownership_bubble.rs#959ab4f4
 root	World
 row	World@literal1	World	main	default
 dynamic	Ship	on main	in the seed
 
-== crates/hale-codegen/tests/ownership_bubble.rs#534ee185
+== crates/hale-codegen/tests/ownership_bubble.rs#f573e30b
 root	World
 row	World@literal1	World	main	default
 -- dynamic	sites in the seed
@@ -4882,7 +4882,7 @@ dynamic	Fleet	on main
 dynamic	Ship	on main
 dynamic	Yard	on main
 
-== crates/hale-codegen/tests/ownership_bubble_crosspool.rs#bb8d1687
+== crates/hale-codegen/tests/ownership_bubble_crosspool.rs#12ae30bb
 root	World
 domain	pool:workers
 row	World@literal1	World	main	default
@@ -4898,14 +4898,14 @@ row	World@literal1.driver	Driver	pool:workers	entry	off owner
 dynamic	Barge	on pool:workers
 dynamic	Ship	on pool:workers
 
-== crates/hale-codegen/tests/ownership_bubble_crosspool.rs#72c8e05d
+== crates/hale-codegen/tests/ownership_bubble_crosspool.rs#447d441c
 root	World
 domain	pinned:World@literal1.o
 row	World@literal1	World	main	default
 dynamic	Ship	on pinned:World@literal1.o	in the seed
 shared	World@literal1.o	Owner #415028ff
 
-== crates/hale-codegen/tests/ownership_bubble_mixed.rs#8b9e625f
+== crates/hale-codegen/tests/ownership_bubble_mixed.rs#2403035b
 root	App
 domain	pinned:App@literal1.o
 row	App@literal1	App	main	default
@@ -4914,7 +4914,7 @@ row	App@literal1.r	Relay	main	default
 dynamic	I	on main|pinned:App@literal1.o	in the seed
 shared	App@literal1.o	Owner #415028ff
 
-== crates/hale-codegen/tests/ownership_bubble_multi.rs#d276883f
+== crates/hale-codegen/tests/ownership_bubble_multi.rs#8f106ce2
 root	Root
 row	Root@literal1	Root	main	default
 -- dynamic	sites in the seed
@@ -4922,7 +4922,7 @@ dynamic	Ship	on main
 dynamic	World	on main
 dynamic	Yard	on main
 
-== crates/hale-codegen/tests/ownership_bubble_multi.rs#92b301af
+== crates/hale-codegen/tests/ownership_bubble_multi.rs#29f6b6a5
 root	Root
 row	Root@literal1	Root	main	default
 -- dynamic	sites in the seed
@@ -4931,7 +4931,7 @@ dynamic	Bhold	on main
 dynamic	Ship	on main
 dynamic	World	on main
 
-== crates/hale-codegen/tests/ownership_bubble_multi.rs#3d9bf5bf
+== crates/hale-codegen/tests/ownership_bubble_multi.rs#b71219a1
 root	Root
 row	Root@literal1	Root	main	default
 -- dynamic	sites in the seed
@@ -4966,7 +4966,7 @@ hole	User@main2.db	reuse `d`
 row	DB@main1	DB	main	default
 shared	User@main2	User #d9a1863d
 
-== crates/hale-codegen/tests/phase_b_fixes.rs#fda9948c
+== crates/hale-codegen/tests/phase_b_fixes.rs#09a12e8e
 row	Grinder@main1	Grinder	main	default
 
 == crates/hale-codegen/tests/phase_b_fixes.rs#31f769b4
@@ -6676,7 +6676,7 @@ shared	App@literal1.a	A #16a5b9f9
 == crates/hale-types/tests/contract_expose_check.rs#7fca9f1d
 row	Child@main1	Child	main	default
 
-== crates/hale-types/tests/contract_expose_check.rs#9ca880af
+== crates/hale-types/tests/contract_expose_check.rs#aa3bf29e
 row	Sensor@main1	Sensor	main	default
 
 == crates/hale-types/tests/contract_expose_check.rs#c5a39c69
@@ -6831,7 +6831,7 @@ dynamic	<hole>	on main|unresolved declaration `ParseError`	in the seed
 == crates/hale-types/tests/enum_names.rs#d97c0830
 dynamic	<hole>	on main|unresolved declaration `ParseError`	in the seed
 
-== crates/hale-types/tests/fn_key_identity.rs#57279317
+== crates/hale-types/tests/fn_key_identity.rs#c9437b5f
 row	W@main1	W	main	default
 
 == crates/hale-types/tests/frontier_items.rs#3f2630e2
@@ -7217,7 +7217,7 @@ root	App
 row	App@literal1	App	main	default
 row	App@literal1.s	S	main	default
 
-== crates/hale-types/tests/model_builder.rs#0a48682b
+== crates/hale-types/tests/model_builder.rs#976b3c1f
 root	App
 row	App@literal1	App	main	default
 row	App@literal1.c	Cell	main	default
@@ -8801,11 +8801,8 @@ dynamic	__StdLogLogger	on main	in the seed
 == tests/hale/match_returns_in_every_arm_test.hl
 row	Namer@main1	Namer	main	default
 
-== tests/hale/mode_factory_return_test.hl
-root	App
-row	App@literal1	App	main	default
-row	App@literal1.b	Box	main	default
-dynamic	Mx	on main	in the seed
+== tests/hale/mode_is_a_name_test.hl
+row	Sensor@main1	Sensor	main	default
 
 == tests/hale/module_is_a_name_test.hl
 row	Loader@main1	Loader	main	default
@@ -8940,6 +8937,12 @@ dynamic	__StdProcessChild	on main|unknown (no caller)	in the seed
 row	__StdProcessChild@main1	__StdProcessChild	main	default
 row	__StdProcessChild@main2	__StdProcessChild	main	default
 row	__StdProcessChild@main3	__StdProcessChild	main	default
+
+== tests/hale/projection_factory_return_test.hl
+root	App
+row	App@literal1	App	main	default
+row	App@literal1.b	Box	main	default
+dynamic	Mx	on main	in the seed
 
 == tests/hale/rand_rng_test.hl
 row	__StdRandRng@main1	__StdRandRng	main	default

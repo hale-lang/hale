@@ -14,6 +14,6 @@ Part V covers low-level memory management, zero-allocation hot paths, lock-free 
 
 | Area | Chapters |
 |---|---|
-| **Memory, Layout & Speed** | [Arena Memory & Lifetimes](../systems/memory.md) · [Zero-Allocation Hot Paths](../systems/performance.md) · [Collection Forms Internals](../systems/forms.md) · [Zero-Copy Shared-Memory Bus](../systems/zero-copy-bus.md) · [Execution Modes (`bulk`, `harmonic`, `resolution`)](../systems/modes.md) |
+| **Memory, Layout & Speed** | [Arena Memory & Lifetimes](../systems/memory.md) · [Zero-Allocation Hot Paths](../systems/performance.md) · [Collection Forms Internals](../systems/forms.md) · [Zero-Copy Shared-Memory Bus](../systems/zero-copy-bus.md) |
 | **FFI & Targets** | [C Interoperability (`@ffi("c")`)](../systems/binding-c.md) · [WebAssembly & Browser Targets](../systems/webassembly.md) |
 | **Operations, Inspection & Replay** | [Production Operations & Runtime Knobs](../systems/operations.md) · [Iris: Live Topology & Arena Inspector](../systems/iris.md) · [Deterministic Record & Replay](../systems/replay.md) |

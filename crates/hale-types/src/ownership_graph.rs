@@ -1484,10 +1484,6 @@ fn collect_ownership_walk(
                                     }
                                 }
                             }
-                            LocusMember::Mode(md) => collect_sites_block(
-                                &md.body,
-                                &mut entry.instantiates,
-                            ),
                             LocusMember::Failure(fl) => collect_sites_block(
                                 &fl.body,
                                 &mut entry.instantiates,

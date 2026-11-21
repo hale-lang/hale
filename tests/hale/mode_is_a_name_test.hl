@@ -1,0 +1,28 @@
+// F.61: locus modes were removed (a mode compiled as an ordinary method),
+// and `mode`, `bulk`, `harmonic` and `resolution` are ordinary
+// identifiers: a record field, a locus param, a fn, a parameter, a local
+// and a locus method may all take them.
+
+type Reading { mode: String; resolution: Int = 1; }
+
+fn harmonic(bulk: Int) -> Int { return bulk * 2; }
+
+locus Sensor {
+    params { mode: String = "idle"; samples: Int = 4; }
+    fn bulk() -> Int { return self.samples * 10; }
+    fn resolution() -> Int { return self.bulk() + 1; }
+}
+
+fn main() {
+    let mode = harmonic(3);
+    std::test::assert_eq_int(mode, 6, "a local named `mode`, bound from a fn named `harmonic`");
+
+    let r = Reading { mode: "fast" };
+    std::test::assert_eq_str(r.mode, "fast", "a record field named `mode`");
+    std::test::assert_eq_int(r.resolution, 1, "a defaulted field named `resolution`");
+
+    let s = Sensor { };
+    std::test::assert_eq_str(s.mode, "idle", "a locus param named `mode`");
+    std::test::assert_eq_int(s.bulk(), 40, "a locus method named `bulk`");
+    std::test::assert_eq_int(s.resolution(), 41, "a method named `resolution` calling `bulk`");
+}

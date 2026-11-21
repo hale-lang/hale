@@ -146,7 +146,7 @@ a user-shaped payload onto the synthesized `ClosureViolation`.
 ### Lifecycle and locus member declarations are not expressions
 
 `birth`, `accept`, `run`, `drain`, `dissolve`, `on_failure`,
-`mode`, `closure`, `contract`, `params`, `bus` introduce
+`closure`, `contract`, `params`, `bus` introduce
 declaration-level constructs inside a locus body and never
 appear in expression position.
 

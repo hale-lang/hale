@@ -22,11 +22,10 @@ declaration level:
 
 - **`type`** — a static record. Pure shape. Fields, names,
   layout. Returnable by value, equal by value, no projection
-  modes, no contracts, no birth/run/dissolve.
+  class, no contracts, no birth/run/dissolve.
 - **`locus`** — dynamic flow. Lifecycle (birth → accept → run
   → drain → dissolve), contracts (expose / consume), bus
-  participation (publish / subscribe), projection (resolution
-  / harmonic / bulk views over the same instance).
+  participation (publish / subscribe), projection class.
 
 If a thing has lifecycle, it is a locus. If it is pure data,
 it is a type. There is no third category at v0; the split is
@@ -132,7 +131,7 @@ functions.
 agents and humans collaborating, often already fluent in Go.
 Surface familiarity reduces cognitive cost and lets the
 genuinely-novel parts (lifecycle, contract, projection class,
-mode, closure) carry the unfamiliarity.
+closure) carry the unfamiliarity.
 
 **Considered and rejected.**
 
@@ -180,9 +179,7 @@ locus Fitter : tier 4, projection chunked {
     drain() { ... }
     dissolve() { ... }
     on_failure(c: Strategy, err: Error) { ... }
-    mode bulk(...) -> ... { ... }
-    mode harmonic(...) -> ... { ... }
-    mode resolution(...) -> ... { ... }
+    fn volume(...) -> ... { ... }
     closure pnl_attribution { ... }
 }
 ```
@@ -192,7 +189,7 @@ locus Fitter : tier 4, projection chunked {
 from nesting; default projection class is `chunked` if the locus
 declares `accept` and the compiler cannot statically determine N.
 
-Lifecycle members, mode declarations, failure handlers, and
+Lifecycle members, member fns, failure handlers, and
 closure tests all live as members of the locus body, not as
 separate top-level declarations. This keeps the framework's
 "every locus is its own substrate-cell" commitment syntactic:
@@ -253,7 +250,7 @@ declared params are simultaneously:
    (`Aggregator { running_sum: 100 }`).
 2. *Runtime mutable state*: accessible and reassignable via
    `self.foo` throughout the locus's lifetime, from any
-   lifecycle method, mode block, closure, or member function.
+   lifecycle method, closure, or member function.
 
 There is no separate `state { ... }` block. A locus's state is
 its params; its params are its state.
@@ -406,42 +403,17 @@ frees the region; default `drain` waits for inflight messages).
 
 ---
 
-## 7. `mode` declarations
+## 7. `mode` declarations (removed)
 
-```
-mode bulk(input: [Book]) -> VolumeProfile { ... }
-mode harmonic(input: [Book]) -> StrategyProfile { ... }
-mode resolution(input: [Book]) -> SingleDecision { ... }
-```
-
-**Commits to.** Three modes (bulk / harmonic / resolution) are
-language-native; user defines any subset; compiler emits one
-implementation per declared mode.
-
-**Why.** Modes are a substrate primitive from the ancient texts —
-the commitment that one kernel has three projections. Making them
-syntactic means the compiler can:
-
-- Generate optimized code per mode (vectorization for bulk,
-  per-class projection for harmonic, lazy / tail-only access for
-  resolution).
-- Verify mode-projection invariants (e.g., bulk + harmonic
-  reconstruction equals identity within tolerance — a closure
-  test in itself).
-- Allow callers to request a specific mode by name.
-
-**Considered and rejected.**
-
-- *Modes as functions (`fn bulk(...)`).* Reject; modes are tied
-  to a specific kernel/locus, and the locus block needs to know
-  about them for type-system reasons (the kernel's signature is
-  shared across modes).
-- *More than three modes.* Reject; the framework explicitly
-  commits to three. Other shapes are not modes.
-- *Fewer than three required.* The grammar allows zero, one, two,
-  or three to be declared. The framework permits a locus that
-  doesn't operate in resolution mode (e.g., a pure aggregator
-  has only bulk).
+Locus modes (`mode bulk`, `mode harmonic`, `mode resolution`) were
+removed before 1.0 (decisions.md F.61). The rationale they were
+added under was that a compiler which knew the three projections
+could generate optimized code per mode (vectorization for `bulk`),
+verify invariants between them, and let a caller ask for one by
+name. None of that was built: a mode compiled as an ordinary
+method, which is what a program now writes. What remains of the
+idea is `bulk`'s, that a kernel must vectorize, and it is a
+property any function can state, not a member kind.
 
 ---
 
@@ -719,8 +691,7 @@ expression), the rule depends on whether the locus has any
 - **Ephemeral.** Only `birth` + `params` (or just `params`).
   The locus dissolves at the enclosing statement boundary.
   Hello-world's `Hello { };` is the canonical case.
-- **Long-lived.** Has `run`, *or* has bus subscriptions, *or*
-  has mode declarations callable from outside, *or* otherwise
+- **Long-lived.** Has `run`, *or* has bus subscriptions, *or* otherwise
   exposes a surface that can be invoked post-birth. The locus
   becomes an *anonymous child of the enclosing scope*; its
   work proceeds until the enclosing scope dissolves it
@@ -747,7 +718,7 @@ counting is rejected (no GC, no ARC).
 (Added in v0.1.1.)
 
 Inside a lifecycle block (`birth`, `accept`, `run`, `drain`,
-`dissolve`), a mode block (`mode bulk`, etc.), or a closure
+`dissolve`), a member fn, or a closure
 block, the keyword `self` refers to the enclosing locus.
 `self.greeting` accesses the `greeting` param; `self.position`
 accesses a contract-exposed field; etc.

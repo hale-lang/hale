@@ -1,6 +1,6 @@
 //! GH #1940: definite return.
 //!
-//! A body with a declared return type (a fn, a locus method, a mode with
+//! A body with a declared return type (a fn or a locus method with
 //! `-> T`) returns a value on every path that reaches its end. One that
 //! can run off its end without a value is refused at the check, located
 //! at the declaration's name, with the path that falls through as a
@@ -56,14 +56,6 @@ pub fn definite_return_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
                             LocusMember::Fn(f) => {
                                 fn_diag(&format!("method `{}.{}`", l.name.name, f.name.name), f, &mut out)
                             }
-                            LocusMember::Mode(md) => {
-                                if let Some(ret) = &md.ret {
-                                    let what = format!("mode `{}` of `{}`", mode_word(md.kind), l.name.name);
-                                    if let Some(fall) = fall_through(&md.body) {
-                                        out.push(refusal(&what, ret, md.span, fall));
-                                    }
-                                }
-                            }
                             _ => {}
                         }
                     }
@@ -73,14 +65,6 @@ pub fn definite_return_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
         }
     }
     out
-}
-
-fn mode_word(kind: hale_syntax::ast::ModeKind) -> &'static str {
-    match kind {
-        hale_syntax::ast::ModeKind::Bulk => "bulk",
-        hale_syntax::ast::ModeKind::Harmonic => "harmonic",
-        hale_syntax::ast::ModeKind::Resolution => "resolution",
-    }
 }
 
 fn fn_diag(what: &str, f: &FnDecl, out: &mut Vec<Diag>) {

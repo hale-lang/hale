@@ -83,11 +83,10 @@ reaches!(a_recursive_cycle, "@no_syscall\n\
       return f(n - 1); }\n\
     fn main() { println(f(3)); }");
 
-// A `mode` body was never collected into the callgraph, so its
-// callees were invisible and an assertion passed straight through
-// one. Modes are called like methods, so they key the same way.
-reaches!(through_a_mode, "locus L { params { s: Float = 1.0; }\n\
-      mode bulk() -> Float { println(\"io\"); return self.s; }\n\
+// A method reached through `self`, whose body performs the effect
+// (once a `mode`, whose body the callgraph never collected).
+reaches!(through_a_self_method, "locus L { params { s: Float = 1.0; }\n\
+      fn bulk() -> Float { println(\"io\"); return self.s; }\n\
       @no_syscall fn c() -> Float { return self.bulk(); } }\n\
     main locus App { params { l: L = L { }; } birth() { println(self.l.c()); } }\n\
     fn main() { App { }; }");

@@ -681,11 +681,6 @@ impl CallWalk {
                 self.opt_ty(&ld.ret);
                 self.block(&ld.body);
             }
-            LocusMember::Mode(md) => {
-                self.params(&md.params);
-                self.opt_ty(&md.ret);
-                self.block(&md.body);
-            }
             LocusMember::Failure(fd) => {
                 self.params(&fd.params);
                 self.block(&fd.body);

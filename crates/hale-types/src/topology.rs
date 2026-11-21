@@ -43,7 +43,7 @@
 //! stdlib bodies, collapsed to their user endpoints with a
 //! conservative loop flag), the declared groups, the effect labels
 //! (declared carriers), the PHASE RELATION (`phases` — lifecycle
-//! hooks and modes vs. ordinary methods, what `during` evaluates
+//! hooks vs. ordinary methods, what `during` evaluates
 //! against), the SEED SORT (`seeds` — alias → member decls, what
 //! `cover` evaluates against), the compiler-DERIVED per-fn effect
 //! sets (`effects` — the full-walk inference, what effect-class
@@ -1127,7 +1127,6 @@ pub fn dump_topology_over(
                             "method"
                         }
                         hale_model::FunctionKind::Free => "free",
-                        hale_model::FunctionKind::Mode => "mode",
                         hale_model::FunctionKind::FailureHandler => {
                             "failure"
                         }

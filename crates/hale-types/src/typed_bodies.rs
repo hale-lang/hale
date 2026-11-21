@@ -1217,7 +1217,7 @@ pub enum ViewNode<'a> {
 
 /// Visit every node of `item` a `views` row may name, in
 /// [`view_nodes`]' order, each with the id of the body it is in: a fn's,
-/// or a locus member's (a fn, a lifecycle hook, a mode, an
+/// or a locus member's (a fn, a lifecycle hook, an
 /// `on_failure`, a closure's assertion), as lowering enters it
 /// (`Cx::in_body`).
 pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, ViewNode<'a>)) {
@@ -1398,11 +1398,6 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
                         block(&f.body, out);
                     }
                     LocusMember::Lifecycle(d) => {
-                        out.body = d.id;
-                        params(&d.params, out);
-                        block(&d.body, out);
-                    }
-                    LocusMember::Mode(d) => {
                         out.body = d.id;
                         params(&d.params, out);
                         block(&d.body, out);
@@ -2580,13 +2575,6 @@ fn locus_member<'a>(m: &'a LocusMember, f: &mut Visit<'_, 'a>) {
                 ann(r, f);
             }
             block(&lc.body, f);
-        }
-        LocusMember::Mode(md) => {
-            fn_params(&md.params, f);
-            if let Some(r) = &md.ret {
-                ann(r, f);
-            }
-            block(&md.body, f);
         }
         LocusMember::Failure(fd) => {
             fn_params(&fd.params, f);

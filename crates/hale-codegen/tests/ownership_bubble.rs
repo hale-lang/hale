@@ -119,12 +119,12 @@ const BUBBLE_SRC: &str = r#"
     main locus World {
         contract { consume hull: Int; }
         accept(s: Ship) { }
-        mode harmonic() -> Int {
+        fn harmonic() -> Int {
             let mut n: Int = 0;
             for child in self.children { n = n + 1; }
             return n;
         }
-        mode bulk() -> Int {
+        fn bulk() -> Int {
             let mut t: Int = 0;
             for child in self.children { t = t + child.hull; }
             return t;
@@ -249,12 +249,12 @@ fn self_owned_control_still_works() {
         main locus World {
             contract { consume hull: Int; }
             accept(s: Ship) { }
-            mode harmonic() -> Int {
+            fn harmonic() -> Int {
                 let mut n: Int = 0;
                 for child in self.children { n = n + 1; }
                 return n;
             }
-            mode bulk() -> Int {
+            fn bulk() -> Int {
                 let mut t: Int = 0;
                 for child in self.children { t = t + child.hull; }
                 return t;
@@ -301,12 +301,12 @@ fn non_singleton_ancestor_now_bubbles_via_threading() {
         locus Fleet {
             contract { consume hull: Int; }
             accept(s: Ship) { }
-            mode harmonic() -> Int {
+            fn harmonic() -> Int {
                 let mut n: Int = 0;
                 for child in self.children { n = n + 1; }
                 return n;
             }
-            mode bulk() -> Int {
+            fn bulk() -> Int {
                 let mut t: Int = 0;
                 for child in self.children { t = t + child.hull; }
                 return t;
@@ -352,8 +352,8 @@ fn resolved_birth_bubbles(tag: &str, birth: &str, alias: &str, renames: &[(Vec<S
         "    params { yard: Yard = Yard { }; }\n",
         "    contract { consume hull: Int; }\n",
         "    accept(s: Ship) { }\n",
-        "    mode harmonic() -> Int { let mut n: Int = 0; for c in self.children { n = n + 1; } return n; }\n",
-        "    mode bulk() -> Int { let mut n: Int = 0; for c in self.children { n = n + c.hull; } return n; }\n",
+        "    fn harmonic() -> Int { let mut n: Int = 0; for c in self.children { n = n + 1; } return n; }\n",
+        "    fn bulk() -> Int { let mut n: Int = 0; for c in self.children { n = n + c.hull; } return n; }\n",
         "    run() { self.yard.spawn(); println(\"count=\", self.harmonic()); println(\"total=\", self.bulk()); }\n",
         "}\nfn main() { World { }; }\n",
     ].concat();

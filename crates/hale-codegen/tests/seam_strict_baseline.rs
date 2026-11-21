@@ -7,7 +7,8 @@
 //! anything is emitted.
 //!
 //! This test builds every corpus example, every `tests/hale` program and
-//! every `dna/tests` fixture under strict mode, and counts the sites by
+//! every `dna/tests` fixture (found as `hale test` finds them, nested
+//! directories included) under strict mode, and counts the sites by
 //! the survey's family, the expression's kind, and where the site is: the
 //! stdlib, a program's files, or a node a rewrite after the check built
 //! (`generated`, with no place in any file). A site counts once however
@@ -70,10 +71,36 @@ fn programs() -> Vec<(String, PathBuf)> {
         }
     };
     dir("crates/hale-codegen/tests/fixtures/examples", &|p| p.join("main.hl").is_file());
-    let test_file = |p: &Path| p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("_test.hl"));
-    dir("tests/hale", &test_file);
-    dir("dna/tests", &test_file);
+    for rel in ["tests/hale", "dna/tests"] {
+        let mut files = Vec::new();
+        test_files(&root.join(rel), &mut files);
+        for p in files {
+            let name = p.strip_prefix(&root).expect("under the root").display().to_string();
+            out.push((name, p));
+        }
+    }
     out
+}
+
+/// Every `*_test.hl` under `dir`, as `hale test <dir>` finds them
+/// (`collect_test_files`): depth-first in sorted order, skipping `vendor/`
+/// and dot-directories.
+fn test_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|e| e.expect("a directory entry").path())
+        .collect();
+    entries.sort();
+    for p in entries {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if p.is_dir() {
+            if name != "vendor" && !name.starts_with('.') {
+                test_files(&p, out);
+            }
+        } else if name.ends_with("_test.hl") {
+            out.push(p);
+        }
+    }
 }
 
 /// A missing row's count key: family, kind, where (`stdlib`, `program`,
@@ -307,6 +334,13 @@ fn parse(text: &str) -> BTreeMap<String, usize> {
         .collect()
 }
 
+/// Stack for a build worker: the compiler's passes recurse (the parser,
+/// the check, lowering), and a spawned thread's default (2 MiB) is well
+/// under the main thread a build otherwise runs on; the dna fixtures'
+/// largest programs overflowed it on macOS. As `hale test`'s workers
+/// (`TEST_WORKER_STACK`): a virtual reservation, committed as used.
+const WORKER_STACK: usize = 256 << 20;
+
 #[test]
 fn the_burn_down_only_moves_forward() {
     let options = BuildOptions { seam_strict: true, ..build_opts::options() };
@@ -319,19 +353,23 @@ fn the_burn_down_only_moves_forward() {
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
     std::thread::scope(|s| {
         for _ in 0..workers {
-            s.spawn(|| loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some((name, entry)) = programs.get(i) else { break };
-                match missing_rows(name, entry, &options) {
-                    Ok(rows) => {
-                        let mut sites = sites.lock().expect("the site table");
-                        for (p, r) in rows {
-                            sites.entry((p, r.kind)).or_insert(r);
+            std::thread::Builder::new()
+                .name("seam-strict-worker".to_string())
+                .stack_size(WORKER_STACK)
+                .spawn_scoped(s, || loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((name, entry)) = programs.get(i) else { break };
+                    match missing_rows(name, entry, &options) {
+                        Ok(rows) => {
+                            let mut sites = sites.lock().expect("the site table");
+                            for (p, r) in rows {
+                                sites.entry((p, r.kind)).or_insert(r);
+                            }
                         }
+                        Err(e) => failed.lock().expect("the failures").push(format!("{name}: {e}")),
                     }
-                    Err(e) => failed.lock().expect("the failures").push(format!("{name}: {e}")),
-                }
-            });
+                })
+                .expect("spawn a build worker");
         }
     });
     let failed = failed.into_inner().expect("the failures");

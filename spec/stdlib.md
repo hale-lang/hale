@@ -113,7 +113,7 @@ magic path; see [`decisions.md` § F.25](./decisions.md).
   one `std::collections::Map`, not seven. Multiple options live
   in third-party packages.
 - **Framework-aware.** Stdlib types use the language's projection
-  classes, modes, and closure tests where appropriate. The
+  classes, lifecycle and closure tests where appropriate. The
   stdlib is itself disciplined.
 - **Replaceable.** Anything in stdlib can be replaced by a
   third-party module; nothing in stdlib is tied into the
