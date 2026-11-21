@@ -1,4 +1,4 @@
-//! The `language` integration-test binary: 14 test files of this area, kept
+//! The `language` integration-test binary: 15 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -31,5 +31,7 @@ mod phase_b_fixes;
 mod seam_fusion;
 #[path = "view_coerce_e1.rs"]
 mod view_coerce_e1;
+#[path = "vectorize_assertion.rs"]
+mod vectorize_assertion;
 #[path = "view_storage_e2.rs"]
 mod view_storage_e2;

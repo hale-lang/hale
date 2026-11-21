@@ -626,7 +626,10 @@ const SITES: &[(&str, &str, Reads)] = &[
     (CG, "let opt_level = if is_wasm { ⏎ OptimizationLevel::Default", Reads::Backend),
     (CG, "lifecycle_trace: options.lifecycle_trace && !is_wasm && !is_foreign, ⏎ lc_spine: \"Instantiation\",", Reads::Backend),
     (CG, "xpool_check: !is_wasm && !options.no_xpool_backstop, ⏎ xpool_check_off: false,", Reads::Backend),
-    (CG, "if !is_wasm { ⏎ if let Some(dbg) = &options.debug {", Reads::Backend),
+    (CG, "if !is_wasm { ⏎ let dbg = options", Reads::Backend),
+    // GH #2134: whether the build checks `@vectorize` (a wasm build has no
+    // `simd128`, so its loops are not held)
+    (CG, "cx.vec_check = crate::vectorize::skipped(options.dev_profile, options.asan, is_wasm).is_none() ⏎ && program_has_vectorize(cx.program);", Reads::Backend),
     (CG, "let lto_kind = if is_wasm || is_foreign || sanitized { ⏎ LtoMode::Off", Reads::Backend),
     (CG, "if !is_wasm { ⏎ let cpu_attr = cx.context.create_string_attribute(\"target-cpu\", &cpu);", Reads::Backend),
     // the exports internalization keeps: the module's on wasm32 (GH #1993)

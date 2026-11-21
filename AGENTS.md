@@ -418,6 +418,15 @@ the diagnostic. And a handler on a `where async_io` locus is
 checked for blocking calls with no annotation at all: the
 placement is the contract.
 
+Reach for `@vectorize` on a numeric kernel fn whose loop must stay
+vectorized (a sum, a dot product, an element-wise map over a
+`bounded` or an array): the build fails at the loop, with LLVM's
+reason, when it stops vectorizing on the target you build for. Keep
+the kernel's loop free of calls with effects, allocations and early
+exits (the check refuses those), and remember a `Float` sum
+vectorizes on aarch64 but not x86-64. It is not checked in dev builds
+or `hale test` (O1).
+
 ## Binding an external C library
 
 Hale binds to non-stdlib C libraries (raylib, sqlite, curl, ...)

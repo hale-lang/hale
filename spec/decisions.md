@@ -4841,3 +4841,107 @@ their component quantity's, so a `U64` boundary denomination of
 between them would be a second narrowing beside the factor's, with two
 policies after one `or`. *Special-casing `U64`*: GH #2132's integers
 would each repeat it.
+
+### F.63 — `@vectorize`: a fn's innermost loops must vectorize, or the build says why not
+
+**Status: accepted and implemented (2026-11-21, GH #2134).**
+
+**Problem.** A hot loop that silently stops vectorizing is a 4–32x
+regression no test sees: the program computes the same thing, scalar.
+Fixed-width integers (GH #2132) and the v1 performance targets make
+which loops vectorize a property worth stating and holding. The one
+real idea in locus modes was `bulk`'s, "this kernel vectorizes", and
+modes never checked it (F.61).
+
+**Decision.** `@vectorize` and `@vectorize(min_width: N)` are fn
+contract annotations (spec/semantics.md § Vectorized loops):
+
+1. **Surface: an annotation on the fn, not an effect.** Every innermost
+   loop written in the fn's body is held, an element chain's loop
+   included. It is its own annotation rather than `@effects(vectorized)`:
+   an effect assertion is a set over what a call may do, closed under
+   the call graph and judged by the check, while this is a property of
+   the fn's own loops, judged by the build on one target and not
+   inherited by callers. The fn form is fine-grained enough for the
+   kernels it is meant for (one loop, or a few, per kernel fn); a loop
+   that should not be held moves to a fn of its own. A per-loop form
+   was not needed.
+2. **How the build knows: LLVM's own remarks, never syntax.** Measured
+   on LLVM 18 through inkwell before the surface was chosen:
+   - The loop vectorizer reports every innermost loop it looks at as a
+     remark — `vectorized loop (vectorization width: W, interleaved
+     count: I)`, `interleaved loop (interleaved count: I)` (VF 1, still
+     scalar) or `loop not vectorized[: reason]` — and a diagnostic
+     handler on the build's context receives them in-process once the
+     `-pass-remarks*` options name `loop-vectorize`
+     (`LLVMParseCommandLineOptions`, once per process, before any pass
+     runs: the patterns are process-global). With a callback handler
+     LLVM delivers every pass's remarks; the build keeps the
+     vectorizer's by their wording. Turning them on cost nothing
+     measurable (92-build-an-api: 1.2 s of passes either way).
+   - A remark starts with its location (`file:line:col`), the loop's or
+     the instruction that stopped it, so the build traces it back to
+     the loop by its debug locations: the real ones where the build
+     emits DWARF (`hale build`), else a synthetic file whose line `n` is
+     the loop's number, set on every instruction of the loop and
+     stripped before the object is written. A Hale-source stdlib fn,
+     which carries no DWARF, takes the synthetic form in every build.
+   - Spike, `@vectorize` on five kernels, host apple-m1, O3, the opt
+     tool's x86-64 run beside it on the same IR: an `Int` sum over a
+     `bounded[Int; 1024]` vectorized (width 2, interleave 4, both
+     targets); an element chain `.map(it + 1).sum(0)` vectorized; a
+     `Float` sum vectorized on aarch64 (in-order reduction) and not on
+     x86-64 ("cannot prove it is safe to reorder floating-point
+     operations"); `.map(it * 3)` over `Int` was interleaved but not
+     vectorized on NEON ("the cost-model indicates that vectorization is
+     not beneficial") and vectorized on x86-64; a loop calling a fn
+     that prints was refused ("instruction cannot be vectorized"); a
+     loop whose trip count it computes was refused on both ("could not
+     determine number of loop iterations"). `llvm.loop.isvectorized`
+     metadata survives too, but it marks interleaved-only loops the
+     same and carries no reason, so the remarks are what the build
+     reads.
+   - The reason is given in the program's terms with LLVM's words
+     beside it.
+3. **Check/build agreement.** The check refuses what no target's
+   vectorizer takes, each at its place: a `break` or `return` beside
+   the loop's own exit (LLVM 18 vectorizes a loop with one exit), a call
+   to a fn with effects, an allocation, a locus built, a publish or a
+   send (calls into the runtime), a call to a fn with a loop (inlined,
+   it makes the loop an outer one, which also would pass unseen: an
+   outer loop gets no remark), and a `@vectorize` fn with no loop. The
+   issue's other candidates are left to the build, because they do
+   vectorize at times: `v.get(j) or raise` in `for j in 0..v.len()`
+   over an unmutated local `@form(vec)` loses its failure branch to
+   bounds-check elimination and vectorizes (the bench's `form_vec_get`),
+   a loop-invariant text read is hoisted (`len(name)` in an `Int` sum
+   vectorized, width 2), and a fn value known where the fn is inlined
+   is called directly. What remains is a target-dependent build
+   assertion, and the check/build parity gate counts it apart
+   (`Verdict::TargetAssertion`), never as a divergence.
+4. **Targets and optimization levels.** The assertion is judged on the
+   build's target and CPU (the host's by default, `--target-cpu`, a
+   cross target's generic CPU) at the build's level. The pipeline
+   vectorizes at O2 and above (measured: `default<O1>` reports every
+   loop "loop not vectorized" with no reason), so a dev build (`--dev`,
+   `HALE_DEV`, `hale test`, all O1), an AddressSanitizer build (no
+   pipeline) and a wasm build (no `simd128`) do not check it, and
+   `hale build` prints a note saying which and why. A cross build
+   reports on the target it builds for, naming it.
+4b. **Width.** `min_width: N` was cheap: the remark names the width. A
+   loop vectorized narrower than `N` lanes (in any copy) fails the
+   build with the width it got.
+
+**What it does not do.** It asks no transformation: no
+`llvm.loop.vectorize.enable` hint, which would make LLVM reassociate
+`Float` reductions (changing results) and override the cost model,
+turning an assertion into a behaviour change. A loop the optimizer
+removed (folded, fully unrolled) passes, and is judged in each inlined
+copy; a fn nothing calls is not built and asserts nothing.
+
+**Considered and rejected.** *`@effects(vectorized)`* (above). *Reading
+vector types in the optimized IR* to decide: it cannot tell a
+vectorized loop from SLP-vectorized straight-line code nor give a
+reason. *Forcing vectorization at O1* so `hale test` checks it: the
+hint changes `Float` results. *Refusing fallible steps and text values
+at check*: unsound, as measured above.

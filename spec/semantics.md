@@ -5242,6 +5242,101 @@ names the compiler claims at a BARE call site — `sum`, `prod`,
 the rule and the diagnostic. A locus method may still carry any
 of them (2026-09-20, GH #863 / GH #880).
 
+## Vectorized loops
+
+`@vectorize` on a fn (a free fn or a locus method) asserts that every
+innermost loop written in its body — each `for` and `while` that holds
+no loop, an element chain's loop included — is vectorized by the build's
+optimizer on the build's target. `@vectorize(min_width: N)` asks too that
+each is vectorized at least `N` lanes wide (`N` from 2 to 1024). It
+changes nothing the program computes: it asks no transformation of the
+optimizer, permits no reordering of `Float` arithmetic, and overrides
+no cost model (spec/decisions.md F.63).
+
+```hale
+@vectorize
+fn total(xs: bounded[Int; 1024]) -> Int {
+    let mut s = 0;
+    for x in xs {
+        s = s + x;
+    }
+    return s;
+}
+```
+
+**What the check refuses.** `hale check` cannot run the optimizer, so
+it refuses what it can see that no target's vectorizer takes, at the
+thing that stops the loop:
+
+- a loop that leaves by a `break` or `return` besides its own condition
+  (a vectorized loop has one exit; `while true { … }` with one `break`,
+  which is how an element chain's loop is written, has one);
+- a call to a fn with effects (`println`, I/O, time, randomness, an
+  allocating fn), an allocation, a locus built and a publish or bus
+  send: each a call into the runtime;
+- a call to a fn with a loop of its own: inlined, it makes the loop an
+  outer one, which the vectorizer never takes;
+- and a `@vectorize` fn with no loop at all.
+
+```text
+main.hl:6:17: type error: `@vectorize` on `f`: this loop cannot vectorize on any target: it holds a call to `noisy`, which has effects (syscall, stdio). Move it out of the loop, or drop `@vectorize` (spec/semantics.md § Vectorized loops)
+```
+
+A fallible step, a text value read in the loop and a call through a fn
+value are not refused: each may still vectorize (bounds-check
+elimination removes a `get … or …`'s failure branch, an unchanging text
+read is hoisted out of the loop, a fn value known where the fn is
+inlined is called directly), so the build answers for them.
+
+**What the build checks.** What is left depends on the target, and is
+a build assertion: the build reads what LLVM's loop vectorizer reported
+of each loop (its optimization remarks, traced back to the loop through
+its debug locations; a build that emits no DWARF gives the loops
+locations for the check alone and strips them before the object is
+written). A loop it did not vectorize fails the build at the loop, with
+the target, the reason in the program's terms and LLVM's own words:
+
+```text
+main.hl:5:5: codegen error: `@vectorize` on `until`: this loop does not vectorize on x86_64-unknown-linux-gnu (x86-64-v3): its trip count is not known when the loop starts (an exit that depends on what the loop computes) (LLVM: could not determine number of loop iterations)
+```
+
+The same loop can pass on one target and fail on another. A `Float`
+sum or product keeps its written order (Hale does not reassociate
+floating-point arithmetic), so it vectorizes only where the target has
+an in-order vector reduction (aarch64) and not where it has none
+(x86-64). The cost model decides as well: a 64-bit integer multiply has
+no fast vector form on NEON. The assertion holds on the target the
+build is for — the host's CPU by default, `--target-cpu`, or a cross
+target's (generic) CPU — and a build for another target is judged on
+its own.
+
+Where the loop is judged:
+
+- Only innermost loops are held: an outer loop is never vectorized by
+  LLVM's loop vectorizer, and may do what it likes between its inner
+  loops.
+- The loop as it is in the optimized program: a `@vectorize` fn
+  inlined into its callers is judged in each copy, and every copy must
+  vectorize. A loop the optimizer removed (a trip count it folded, a
+  loop fully unrolled) has nothing left to run scalar and passes, and
+  a fn nothing calls is not built and asserts nothing.
+- The assertion is checked where the pipeline vectorizes: at the
+  release optimization level. A dev build (`--dev`, `HALE_DEV`, and
+  `hale test`, which build at O1), an AddressSanitizer build (which runs
+  no optimization pipeline) and a wasm build (built without `simd128`)
+  do not check it, and `hale build` says so:
+
+  ```text
+  note: `@vectorize` was not checked: a dev build (`--dev`, `HALE_DEV`, `hale test`) optimizes at O1, which does not vectorize
+  ```
+
+**Check/build agreement.** A program the check accepts that the build
+refuses only by this assertion is the target's answer, not a gap
+between them: the check/build parity gate counts such a refusal apart
+(`Verdict::TargetAssertion` in
+`crates/hale-codegen/tests/parity/gate.rs`) and never lists it as a
+divergence.
+
 ## Bus subscription dispatch
 
 A `bus { subscribe SUBJECT as HANDLER of type T; }` declaration
