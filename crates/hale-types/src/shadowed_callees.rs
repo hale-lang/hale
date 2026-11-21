@@ -53,8 +53,19 @@ pub(crate) fn rewrite_shadowed_callees(programs: &mut [&mut Program], context: &
         .collect();
     let mut program_fns = BTreeSet::new();
     let mut variants: BTreeMap<(String, String), Vec<TypeExpr>> = BTreeMap::new();
+    // GH #2069: how many enums, generic ones included, declare each variant
+    // name: a `.V` whose scrutinee's enum the pass cannot see names the
+    // one enum that declares `V`, or none.
+    let mut owners: BTreeMap<String, usize> = BTreeMap::new();
     for p in programs.iter().map(|p| &**p).chain(context.iter().copied()) {
         for item in p.items.iter() {
+            if let TopDecl::Type(t) = item {
+                if let TypeDeclBody::Enum(vs) = &t.body {
+                    for v in vs {
+                        *owners.entry(v.name.name.clone()).or_default() += 1;
+                    }
+                }
+            }
             match item {
                 TopDecl::Fn(f) => {
                     program_fns.insert(f.name.name.clone());
@@ -72,7 +83,14 @@ pub(crate) fn rewrite_shadowed_callees(programs: &mut [&mut Program], context: &
     }
     fns.extend(program_fns.iter().cloned());
     for p in programs.iter_mut() {
-        let mut w = Walk { fns: &fns, program_fns: &program_fns, variants: &variants, scopes: Vec::new() };
+        let mut w = Walk {
+            fns: &fns,
+            program_fns: &program_fns,
+            variants: &variants,
+            owners: &owners,
+            scopes: Vec::new(),
+            enum_scopes: Vec::new(),
+        };
         for item in &mut p.items {
             w.top_decl(item);
         }
@@ -86,9 +104,16 @@ struct Walk<'f> {
     /// Each (non-generic) enum variant's declared payload types: what a
     /// constructor pattern's bindings are declared as.
     variants: &'f BTreeMap<(String, String), Vec<TypeExpr>>,
+    /// GH #2069: how many enums (generic ones too) declare each variant
+    /// name.
+    owners: &'f BTreeMap<String, usize>,
     /// The bindings in scope, innermost last, each with whether it is
     /// declared as a fn value ([`Walk::fn_valued`]).
     scopes: Vec<BTreeMap<String, bool>>,
+    /// GH #2069: beside each scope, the bindings in it whose enum their
+    /// declaration names (`o: Op`, `let o = Op::Use(f)`): what a match on
+    /// one of them reads a `.Variant`'s payload types from.
+    enum_scopes: Vec<BTreeMap<String, String>>,
 }
 
 impl Walk<'_> {
@@ -101,12 +126,64 @@ impl Walk<'_> {
         if let Some(s) = self.scopes.last_mut() {
             s.insert(name.to_string(), is_fn);
         }
+        if let Some(s) = self.enum_scopes.last_mut() {
+            s.remove(name);
+        }
     }
 
     fn scoped(&mut self, names: Vec<(String, bool)>, f: impl FnOnce(&mut Self)) {
+        // a name the scope binds hides an outer binding's enum
+        // (`enum_of`), until `note_enum` gives it its own
+        self.enum_scopes.push(BTreeMap::new());
         self.scopes.push(names.into_iter().collect());
         f(self);
         self.scopes.pop();
+        self.enum_scopes.pop();
+    }
+
+    /// GH #2069: the binding `name`, in the innermost scope, is declared
+    /// as a value of the enum `e`.
+    fn note_enum(&mut self, name: &str, e: String) {
+        if let Some(s) = self.enum_scopes.last_mut() {
+            s.insert(name.to_string(), e);
+        }
+    }
+
+    /// GH #2069: the enum the binding `name` in scope is declared as, if
+    /// its declaration names one; `None` once a binding of the name
+    /// without one shadows it.
+    fn enum_of(&self, name: &str) -> Option<&str> {
+        for (vals, enums) in self.scopes.iter().zip(&self.enum_scopes).rev() {
+            if let Some(e) = enums.get(name) {
+                return Some(e);
+            }
+            if vals.contains_key(name) {
+                return None;
+            }
+        }
+        None
+    }
+
+    /// GH #2069: the (non-generic) enum a written type names, if one.
+    fn enum_named(&self, t: &TypeExpr) -> Option<String> {
+        let TypeExpr::Named { path, generic_args, .. } = t else { return None };
+        let [one] = path.segments.as_slice() else { return None };
+        (generic_args.is_empty() && self.variants.keys().any(|(e, _)| *e == one.name)).then(|| one.name.clone())
+    }
+
+    /// GH #2069: the enum a value's spelling constructs (`Op::Use(f)`,
+    /// `Op::Nothing`), if one.
+    fn enum_constructed(&self, e: &Expr) -> Option<String> {
+        let qn = match e {
+            Expr::Path(qn) => qn,
+            Expr::Call { callee, .. } => match callee.as_ref() {
+                Expr::Path(qn) => qn,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let [en, v] = qn.segments.as_slice() else { return None };
+        self.variants.contains_key(&(en.name.clone(), v.name.clone())).then(|| en.name.clone())
     }
 
     /// Is a value spelled `e` a fn value, as far as its spelling says: a
@@ -310,7 +387,14 @@ impl Walk<'_> {
     fn body(&mut self, ps: &mut [Param], b: &mut Block) {
         self.params(ps);
         let names = ps.iter().map(|p| (p.name.name.clone(), matches!(p.ty, TypeExpr::Function { .. }))).collect();
-        self.scoped(names, |w| w.block(b));
+        let enums: Vec<(String, String)> =
+            ps.iter().filter_map(|p| Some((p.name.name.clone(), self.enum_named(&p.ty)?))).collect();
+        self.scoped(names, |w| {
+            for (n, e) in enums {
+                w.note_enum(&n, e);
+            }
+            w.block(b)
+        });
     }
 
     /// An array type's size is an expression.
@@ -369,6 +453,13 @@ impl Walk<'_> {
                 self.expr(value);
                 let is_fn = self.fn_valued(ty.as_ref(), Some(value));
                 self.bind(&name.name, is_fn);
+                let declared = match ty.as_ref() {
+                    Some(t) => self.enum_named(t),
+                    None => self.enum_constructed(value),
+                };
+                if let Some(e) = declared {
+                    self.note_enum(&name.name, e);
+                }
             }
             Stmt::LetTuple { names, ty, value, .. } => {
                 self.expr(value);
@@ -450,12 +541,26 @@ impl Walk<'_> {
 
     fn match_stmt(&mut self, ms: &mut MatchStmt) {
         self.expr(&mut ms.scrutinee);
+        // GH #2069: the enum a `.Variant` arm names its variant of: one an
+        // arm spells (`Op::Nothing`), or the one the scrutinee's binding
+        // is declared as.
+        let spelled = ms.arms.iter().flat_map(|a| a.pattern.alternatives()).find_map(|p| match p {
+            Pattern::Constructor { path, .. } => match path.segments.as_slice() {
+                [e, v] if self.variants.contains_key(&(e.name.clone(), v.name.clone())) => Some(e.name.clone()),
+                _ => None,
+            },
+            _ => None,
+        });
+        let enum_hint: Option<String> = spelled.or_else(|| match &ms.scrutinee {
+            Expr::Ident(id) => self.enum_of(&id.name).map(str::to_string),
+            other => self.enum_constructed(other),
+        });
         for arm in &mut ms.arms {
             // A pattern's binding is declared as its variant's payload
             // declares it (`Op::Use(f)` with `Use(fn(Int) -> Int)`); any
             // other says nothing of its type.
             let mut names = Vec::new();
-            self.pattern_bindings(&arm.pattern, None, &mut names);
+            self.pattern_bindings(&arm.pattern, None, enum_hint.as_deref(), &mut names);
             self.scoped(names, |w| {
                 if let Some(g) = &mut arm.guard {
                     w.expr(g);
@@ -539,7 +644,13 @@ impl Walk<'_> {
     /// The names a pattern binds, each with whether it is declared as a fn
     /// value: what `declared` (the type the place it matches is declared
     /// with, where known) or a constructor's variant declares there.
-    fn pattern_bindings(&self, p: &Pattern, declared: Option<&TypeExpr>, out: &mut Vec<(String, bool)>) {
+    fn pattern_bindings(
+        &self,
+        p: &Pattern,
+        declared: Option<&TypeExpr>,
+        enum_hint: Option<&str>,
+        out: &mut Vec<(String, bool)>,
+    ) {
         match p {
             Pattern::Binding(i) => out.push((i.name.clone(), matches!(declared, Some(TypeExpr::Function { .. })))),
             Pattern::Constructor { path, args, .. } => {
@@ -548,21 +659,26 @@ impl Walk<'_> {
                     _ => None,
                 };
                 for (i, a) in args.iter().enumerate() {
-                    self.pattern_bindings(a, fields.and_then(|f| f.get(i)), out);
+                    self.pattern_bindings(a, fields.and_then(|f| f.get(i)), None, out);
                 }
             }
             // GH #2069: `.V(…)` names its enum through the scrutinee's
             // type, which this pass, before the check, does not have: the
-            // one enum the program declares a variant `V` in, or none (the
-            // binding then says nothing of its type, as a tuple pattern's).
+            // enum the match spells or its scrutinee's binding is declared
+            // as (`enum_hint`), else the one enum (generic ones counted) the
+            // program declares a variant `V` in, else none: the binding then
+            // says nothing of its type, as a tuple pattern's, and the check
+            // refuses a call of its name that may be a call through it.
             Pattern::DotVariant { variant, args, .. } => {
-                let mut of = self.variants.iter().filter(|((_, v), _)| *v == variant.name);
-                let fields = match (of.next(), of.next()) {
-                    (Some((_, fields)), None) => Some(fields),
-                    _ => None,
+                let fields = match enum_hint.and_then(|e| self.variants.get(&(e.to_string(), variant.name.clone()))) {
+                    Some(fields) => Some(fields),
+                    None if self.owners.get(&variant.name) == Some(&1) => {
+                        self.variants.iter().find(|((_, v), _)| *v == variant.name).map(|(_, fields)| fields)
+                    }
+                    None => None,
                 };
                 for (i, a) in args.iter().enumerate() {
-                    self.pattern_bindings(a, fields.and_then(|f| f.get(i)), out);
+                    self.pattern_bindings(a, fields.and_then(|f| f.get(i)), None, out);
                 }
             }
             Pattern::Tuple(args, _) => {
@@ -571,12 +687,12 @@ impl Walk<'_> {
                     _ => None,
                 };
                 for (i, a) in args.iter().enumerate() {
-                    self.pattern_bindings(a, parts.and_then(|ps| ps.get(i)), out);
+                    self.pattern_bindings(a, parts.and_then(|ps| ps.get(i)), None, out);
                 }
             }
             Pattern::Or(alts, _) => {
                 for a in alts {
-                    self.pattern_bindings(a, declared, out);
+                    self.pattern_bindings(a, declared, enum_hint, out);
                 }
             }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}

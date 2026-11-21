@@ -300,8 +300,9 @@ const CALL_LINES_ONLY: [(&str, usize); 39] = [
     // `lib::Mode::name(v)` calls the function written for it, by its own
     // name)
     // GH #2069's test: the library's `weight`, called through the alias,
-    // which only the renames name
-    ("tests/hale/dot_variant_patterns_test.hl", 1),
+    // which only the renames name, and its four calls of a `fn(Int) -> Int`
+    // a `Use(f)` pattern binds, which name the fn values of that type
+    ("tests/hale/dot_variant_patterns_test.hl", 5),
     ("tests/hale/enum_names_test.hl", 2),
     // 5: the generics parity test (GH #1964): an imported seed's generic
     // fns and their specializations, called through the alias, which

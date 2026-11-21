@@ -24023,8 +24023,9 @@ impl<'a> Checker<'a> {
                                     format!(
                                         "`{n}` is {bound}, and a call of the name runs the {what} `{n}`: \
                                          a binding shadows it in a call only where it is declared as a fn value (a \
-                                         parameter or a `let` written with a `fn(..)` type, a `let` of a fn's name) \
-                                         — write its type, or rename it",
+                                         parameter or a `let` written with a `fn(..)` type, a `let` of a fn's name, \
+                                         a variant's `fn(..)` value in a pattern whose enum is spelled, `E::V(f)`, or \
+                                         is the declared type of the value matched) — write its type, or rename it",
                                         n = id.name,
                                         bound = bound,
                                         what = if self.top.lookup(&id.name).is_some() || self.generic_fns.contains_key(id.name.as_str()) {

@@ -435,7 +435,7 @@ fn unreached(target: &str, stdlib: &BTreeSet<FnKey>) -> Option<Unreached> {
     })
 }
 
-/// The four targets pinned below are the only ones whose own fns or leak
+/// The five targets pinned below are the only ones whose own fns or leak
 /// sites the reached correction moves.
 #[test]
 fn reached_no_other_target_changes() {
@@ -453,6 +453,7 @@ fn reached_no_other_target_changes() {
             "crates/hale-codegen/tests/fixtures/examples/90-unowned-literal-positions",
             "dna/oidc",
             "tests/hale/codegen_gaps_test.hl",
+            "tests/hale/dot_variant_patterns_test.hl",
             "tests/hale/is_route_test.hl",
         ]
     );
@@ -1388,6 +1389,21 @@ fn startable_only_the_verb_program_runs_to_exit() {
                 "the stdlib's copy: 1",
             ])
         )]
+    );
+}
+
+/// GH #2069's test calls a `fn(Int) -> Int` payload a `.Use(f)` arm binds,
+/// and starts no loop: as in GH #1942's below, the appended HTTP
+/// dispatch's fallback site, one of that type's fn values, is no longer
+/// counted as invoked without bound.
+#[test]
+fn reached_dot_variant_patterns_test() {
+    pinned_unreached(
+        "tests/hale/dot_variant_patterns_test.hl",
+        (131, 0),
+        &[],
+        &["__http_fn_unset StructLit(\"std::http::Response\") #1 InvokedUnboundedly"],
+        &[],
     );
 }
 

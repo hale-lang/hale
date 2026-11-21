@@ -154,6 +154,67 @@ fn shout(e: CtlError) -> String {
     return loud + "!";
 }
 
+// a fn-valued payload whose variant name another enum shares: the
+// binding is the payload's fn value, called by its name over the
+// program's own fn of that name, as `Apply::Use(f)` would bind it
+type Apply = enum { Use(fn (Int) -> Int), Skip };
+type Count = enum { Use(Int), Skip };
+
+fn f(n: Int) -> Int {
+    return n + 1;
+}
+
+fn tenfold(n: Int) -> Int {
+    return n * 10;
+}
+
+fn applied(a: Apply) -> Int {
+    return match a {
+        .Use(f) -> f(2),
+        .Skip -> f(2),
+    };
+}
+
+fn counted(c: Count) -> Int {
+    return match c {
+        .Use(f) -> f + 100,
+        .Skip -> f(1),
+    };
+}
+
+fn applied_local() -> Int {
+    let a = Apply::Use(tenfold);
+    if let .Use(f) = a { f(4) } else { 0 }
+}
+
+// a scrutinee no binding declares: an arm that spells the enum names it
+fn make_apply() -> Apply {
+    return Apply::Use(tenfold);
+}
+
+fn mixed() -> Int {
+    return match make_apply() {
+        .Use(f) -> f(1),
+        Apply::Skip -> 0,
+    };
+}
+
+// spelled with the enum, so the parity gate's `dot_variant_spelling`
+// respells these shared-name patterns with a dot
+fn applied_spelled(a: Apply) -> Int {
+    return match a {
+        Apply::Use(f) -> f(5),
+        Apply::Skip -> 0,
+    };
+}
+
+fn counted_spelled(c: Count) -> Int {
+    return match c {
+        Count::Use(f) -> f,
+        Count::Skip -> f(0),
+    };
+}
+
 // a match on a record's field
 type Order { side: Side; qty: Int; }
 
@@ -223,4 +284,21 @@ fn main() {
     std::test::assert_eq_str(shout(CtlError::NotReady(1)), "none", "its else");
 
     std::test::assert_eq_int(signed(Order { side: Side::Sell, qty: 4 }), -4, "a field scrutinee");
+
+    std::test::assert_eq_int(applied(Apply::Use(tenfold)), 20, "a fn-valued payload");
+    std::test::assert_eq_int(
+        applied(Apply::Skip),
+        3,
+        "the program's fn where nothing binds the name",
+    );
+    std::test::assert_eq_int(counted(Count::Use(5)), 105, "the other enum's Int payload");
+    std::test::assert_eq_int(counted(Count::Skip), 2, "the program's fn");
+    std::test::assert_eq_int(applied_local(), 40, "a local constructed as the enum");
+    std::test::assert_eq_int(mixed(), 10, "an arm spelling the enum names it");
+    std::test::assert_eq_int(applied_spelled(Apply::Use(tenfold)), 50, "spelled with the enum");
+    std::test::assert_eq_int(
+        counted_spelled(Count::Use(7)) + counted_spelled(Count::Skip),
+        8,
+        "the other enum",
+    );
 }

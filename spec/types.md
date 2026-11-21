@@ -2549,7 +2549,13 @@ as a fn value when its declaration says so: a parameter or a `let`
 written with a `fn(..)` type, a `let` (or a tuple `let`'s part) of a
 fn's name or of another such binding, a `for` over an array literal of
 fns' names, a `match` pattern's binding of a variant's value whose
-declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`). So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
+declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`).
+The rule is read before the check, so a `.Use(f)` pattern (F.58) names
+its variant's enum through what the match shows of it: an arm spelling
+the enum, the matched value's binding declared as the enum (`o: Op`,
+`let o = Op::Use(ten);`), or the one enum declaring a variant `Use`; with
+none of them the binding says nothing of its type, as a tuple pattern's
+part (below). So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
 beside a `fn f` calls the parameter, and `{ let helper = zero; helper() }`
 calls `zero`.
 
