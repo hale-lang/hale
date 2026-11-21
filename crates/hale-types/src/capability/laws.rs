@@ -465,6 +465,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("str_helpers.hl", &["str"]),
         ("net.hl", &["net"]),
         ("u64.hl", &["u64"]),
+        ("fixed_ints.hl", &["i32", "u32", "i16", "u16", "i8", "u8"]),
     ];
     // Codegen's native stdlib modules, by the namespace each lowers.
     const CG: &[(&str, &[&str])] = &[
@@ -498,6 +499,7 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("time.rs", &["time"]),
         ("wide.rs", &["u256", "i256"]),
         ("u64.rs", &["u64"]),
+        ("fixed.rs", &["i32", "u32", "i16", "u16", "i8", "u8"]),
     ];
     let m = derive_capability_matrix();
     let has_row = |ns: &str| m.behaviours.iter().any(|r| r.capability == Capability::StdNamespace(leak(ns)));
@@ -558,7 +560,9 @@ fn the_tables_have_the_reviewed_shape() {
         .filter(|(_, _, b)| !b.is_lower())
         .map(|(c, cap, _)| format!("{} × {}", cap.label(), c.name()))
         .collect();
-    assert_eq!((m.behaviours.len(), std), (115, 56), "behaviour rows (all, std::)");
+    // GH #2132: the fixed-width integers' six namespaces and their FFI
+    // class's two rows.
+    assert_eq!((m.behaviours.len(), std), (123, 62), "behaviour rows (all, std::)");
     assert_eq!(m.invocations.len(), 3);
     assert_eq!(m.obligations.len(), 10);
     // On wasm32: 19 namespaces (the 11 browser-unavailable, `std::net`'s

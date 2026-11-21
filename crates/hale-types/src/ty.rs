@@ -138,6 +138,12 @@ pub fn inline_array_scalar(p: PrimType) -> bool {
         p,
         PrimType::Int
             | PrimType::U64
+            | PrimType::I32
+            | PrimType::U32
+            | PrimType::I16
+            | PrimType::U16
+            | PrimType::I8
+            | PrimType::U8
             | PrimType::Float
             | PrimType::Bool
             | PrimType::Decimal(_)
@@ -151,6 +157,12 @@ pub fn prim_name(p: PrimType) -> &'static str {
     match p {
         PrimType::Int => "Int",
         PrimType::U64 => "U64",
+        PrimType::I32 => "I32",
+        PrimType::U32 => "U32",
+        PrimType::I16 => "I16",
+        PrimType::U16 => "U16",
+        PrimType::I8 => "I8",
+        PrimType::U8 => "U8",
         PrimType::Float => "Float",
         PrimType::Decimal(scale) => decimal_name(scale),
         PrimType::U256 => "U256",
@@ -244,6 +256,12 @@ pub fn prim_of_mangle_token(tok: &str) -> Option<PrimType> {
 pub const GENERIC_ARG_PRIMS: &[PrimType] = &[
     PrimType::Int,
     PrimType::U64,
+    PrimType::I32,
+    PrimType::U32,
+    PrimType::I16,
+    PrimType::U16,
+    PrimType::I8,
+    PrimType::U8,
     PrimType::Float,
     PrimType::Bool,
     PrimType::String,
@@ -268,6 +286,12 @@ pub fn generic_arg_mangle_token(p: PrimType) -> Option<&'static str> {
     match p {
         PrimType::Int
         | PrimType::U64
+        | PrimType::I32
+        | PrimType::U32
+        | PrimType::I16
+        | PrimType::U16
+        | PrimType::I8
+        | PrimType::U8
         | PrimType::Float
         | PrimType::Bool
         | PrimType::String
@@ -346,6 +370,12 @@ fn is_flat_shapeable_inner(
         Ty::Prim(p) => match p {
             PrimType::Int
             | PrimType::U64
+            | PrimType::I32
+            | PrimType::U32
+            | PrimType::I16
+            | PrimType::U16
+            | PrimType::I8
+            | PrimType::U8
             | PrimType::Float
             | PrimType::Decimal(_)
             | PrimType::U256
@@ -368,6 +398,12 @@ fn is_flat_shapeable_inner(
             Ty::Prim(
                 PrimType::Int
                     | PrimType::U64
+                    | PrimType::I32
+                    | PrimType::U32
+                    | PrimType::I16
+                    | PrimType::U16
+                    | PrimType::I8
+                    | PrimType::U8
                     | PrimType::Float
                     | PrimType::Bool
                     | PrimType::Decimal(_)
@@ -392,6 +428,12 @@ fn is_flat_shapeable_inner(
             Ty::Prim(
                 PrimType::Int
                     | PrimType::U64
+                    | PrimType::I32
+                    | PrimType::U32
+                    | PrimType::I16
+                    | PrimType::U16
+                    | PrimType::I8
+                    | PrimType::U8
                     | PrimType::Float
                     | PrimType::Bool
                     | PrimType::Decimal(_)

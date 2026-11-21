@@ -681,6 +681,9 @@ dynamic	<hole>	on unknown (no caller)|unresolved declaration `CryptoError`	in th
 
 == crates/hale-stdlib/hl/file.hl#f57ba351
 
+== crates/hale-stdlib/hl/fixed_ints.hl#d4dbb46d
+dynamic	<hole>	on unknown (no caller)|unresolved declaration `ArithError`	in the seed
+
 == crates/hale-stdlib/hl/hex.hl#d83ba4a5
 dynamic	<hole>	on unknown (no caller)|unresolved declaration `ParseError`	in the seed
 
@@ -8184,6 +8187,15 @@ row	Desk@literal1.probe	Probe	main	default
 shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
 shared	dynamic	sites in the seed #d81b1982
 
+== tests/hale/api/pb_fixed_int_test.hl
+root	Desk
+domain	pool:__api_grpc	async_io
+row	Desk@literal1	Desk	main	default
+row	Desk@literal1.bearer	Tokens	main	default
+row	Desk@literal1.probe	Probe	main	default
+shared	Desk@literal1.__rpc_g_1	__StdIoH2Listener #b0c4764c
+shared	dynamic	sites in the seed #d81b1982
+
 == tests/hale/api/pb_json_value_test.hl
 root	Desk
 domain	pool:__api_grpc	async_io
@@ -8656,6 +8668,13 @@ dynamic	Wrap	on main
 -- Svc@main1	Svc
 row	~	Svc	main	default
 row	~.backend	Backend	main	inherited
+
+== tests/hale/fixed_int_storage_test.hl
+row	Holder@main1	Holder	main	default
+row	Samples@main3	Samples	main	default
+row	Seen@main2	Seen	main	default
+row	Sink@main4	Sink	main	default
+row	Source@main5	Source	main	default
 
 == tests/hale/float_cast_test.hl
 root	App

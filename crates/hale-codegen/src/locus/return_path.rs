@@ -42,6 +42,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match ty {
             CodegenTy::Int
             | CodegenTy::U64
+            | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -436,6 +437,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             CodegenTy::Int
             | CodegenTy::U64
+            | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -1173,6 +1175,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let compound = match slot_ty {
             CodegenTy::Int
             | CodegenTy::U64
+            | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)

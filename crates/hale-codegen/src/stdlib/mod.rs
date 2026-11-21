@@ -38,3 +38,4 @@ pub(crate) mod text;
 pub(crate) mod time;
 pub(crate) mod wide;
 pub(crate) mod u64;
+pub(crate) mod fixed;

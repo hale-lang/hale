@@ -1505,6 +1505,12 @@ fn signature_text(path: &str) -> String {
     let t = |s: &SigTy| match s {
         SigTy::Int => "Int".to_string(),
         SigTy::U64 => "U64".to_string(),
+        SigTy::I32 => "I32".to_string(),
+        SigTy::U32 => "U32".to_string(),
+        SigTy::I16 => "I16".to_string(),
+        SigTy::U16 => "U16".to_string(),
+        SigTy::I8 => "I8".to_string(),
+        SigTy::U8 => "U8".to_string(),
         SigTy::Float => "Float".to_string(),
         SigTy::Bool => "Bool".to_string(),
         SigTy::Str => "String".to_string(),

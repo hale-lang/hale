@@ -360,6 +360,12 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                 | (CodegenTy::Bytes, CodegenTy::BytesView)
                                 | (CodegenTy::Int, CodegenTy::U64)
                         );
+                        // GH #2132: an integer literal into a narrower
+                        // integer's param is one, at its width (the check
+                        // held it to the range): the constant is fitted
+                        // where the field is stored (`fit_int`)
+                        let literal_to_view = literal_to_view
+                            || matches!((&default_ty, &asc_ty), (CodegenTy::Int, CodegenTy::Narrow(_)));
                         if asc_ty != default_ty && !literal_to_view {
                             return Err(CodegenError::Unsupported(format!(
                                 "locus `{}` param `{}`: declared {}, \
@@ -1872,6 +1878,7 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                                     .context
                                     .i64_type()
                                     .fn_type(&llvm_param_tys, false),
+                                CodegenTy::Narrow(p) => self.narrow_int_type(*p).fn_type(&llvm_param_tys, false),
                                 CodegenTy::Float => self
                                     .context
                                     .f64_type()

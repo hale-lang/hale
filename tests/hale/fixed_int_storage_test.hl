@@ -1,0 +1,150 @@
+// tests/hale/fixed_int_storage_test.hl — the fixed-width integers (GH
+// #2132, F.64) where a value is stored, each at its declared width: a
+// record field, a locus param written from a method, a `bounded[T; N]`
+// buffer, a fixed array (inline), an enum payload, a hashmap cell, a
+// generic record's field, a fn's parameter and return, a `@form(vec)`
+// slot, and a bus payload (its fields and a buffer). Each value sits at an
+// end of its range, so a field read back at the wrong width or with the
+// wrong extension shows.
+
+type Counter {
+    hits: U16;
+    small: I8;
+    mid: I32;
+    wide: U32;
+    name: String;
+}
+
+type Amount = enum { Nothing, Exact(U8), Pair(Int, I16) };
+type Bag { items: bounded[U8; 4]; }
+type Words { w: [U32; 3]; }
+type Box<T> { value: T; }
+type Cell { key: String = ""; seen: U32 = 0; }
+
+@form(hashmap)
+locus Seen {
+    capacity { pool rows of Cell indexed_by key; }
+}
+
+@form(vec)
+locus Samples {
+    capacity { heap xs of I16; }
+}
+
+locus Holder {
+    params { total: U16 = 0; low: I8 = -3; }
+    fn add(x: U16) {
+        self.total = self.total + x;
+    }
+}
+
+type Tick {
+    from: String = "";
+    seq: U32 = 0;
+    flag: I8 = 0;
+    batch: bounded[I16; 2];
+}
+topic Ticks { payload: Tick; }
+
+locus Sink {
+    params { got: String = ""; }
+    bus { subscribe Ticks as h; }
+    fn h(t: Tick) {
+        let first = at(t.batch, 0) or 0;
+        self.got = t.from + " " + to_string(t.seq) + " " + to_string(t.flag) + " "
+            + to_string(first);
+    }
+}
+
+locus Source {
+    bus { publish Ticks; }
+    birth() {
+        let t = Tick { from: "a", seq: U32::max(), flag: -128 };
+        push(t.batch, I16::min()) or raise;
+        Ticks <- t;
+    }
+}
+
+fn exact_of(a: Amount) -> Int {
+    return match a {
+        Amount::Exact(v) -> Int(v),
+        Amount::Pair(_, v) -> Int(v),
+        _ -> 0,
+    };
+}
+
+fn top(n: U8) -> U8 {
+    return U8::max() - n;
+}
+
+fn main() {
+    let c = Counter { hits: 65535, small: -128, mid: -2147483648, wide: 4294967295, name: "x" };
+    std::test::assert_eq_str(
+        "" + c,
+        "Counter { hits: 65535, small: -128, mid: -2147483648, wide: 4294967295, name: \"x\" }",
+        "a record's fields at each end, and the field after them",
+    );
+    let d = c;
+    std::test::assert(
+        d.hits == c.hits && d.small == -128 && d.wide == U32::max(),
+        "a copied record",
+    );
+
+    std::test::assert(exact_of(Amount::Exact(255)) == 255, "an enum payload at the top");
+    std::test::assert(
+        exact_of(Amount::Pair(7, -32768)) == -32768,
+        "a payload after an Int, at the bottom",
+    );
+
+    // a bounded buffer and a fixed array
+    let bag = Bag { };
+    push(bag.items, 1) or raise;
+    push(bag.items, 255) or raise;
+    push(bag.items, 3) or raise;
+    std::test::assert_eq_int(count(bag.items), 3, "three pushed");
+    let mut sum: U32 = 0;
+    for x in bag.items {
+        sum = sum + U32(x);
+    }
+    std::test::assert(sum == 259, "each element read back");
+    std::test::assert((at(bag.items, 1) or 0) == 255, "an element at the top");
+    std::test::assert_eq_str(
+        to_string(bag.items),
+        "[1, 255, 3]",
+        "a bounded list prints its elements",
+    );
+    let w = Words { w: [1, 4294967295, 2] };
+    std::test::assert(w.w[1] == U32::max() && w.w[2] == 2, "a fixed array, inline");
+    std::test::assert_eq_str("" + w.w, "[1, 4294967295, 2]", "a fixed array prints its elements");
+
+    // a generic record, a fn's parameter and return, a locus param, a
+    // hashmap cell, a vec slot
+    let bx: Box<I8> = Box { value: -128 };
+    std::test::assert(bx.value == I8::min(), "Box<I8>");
+    std::test::assert(top(5) == 250, "a parameter and a return");
+    let h = Holder { };
+    h.add(65530);
+    h.add(5);
+    std::test::assert(
+        h.total == U16::max() && h.low == -3,
+        "a locus param written from a method, and a default",
+    );
+    let seen = Seen { };
+    seen.set(Cell { key: "a", seen: 4294967295 });
+    seen.set(Cell { key: "b", seen: 2 });
+    let got = seen.get("a") or Cell { };
+    std::test::assert(got.seen == U32::max(), "a hashmap cell");
+    let v = Samples { };
+    v.push(-32768);
+    v.push(32767);
+    std::test::assert((v.get(0) or 0) == I16::min() && (v.get(1) or 0) == I16::max(), "a vec slot");
+
+    // a bus payload
+    let sink = Sink { };
+    Source { };
+    std::test::assert_eq_str(
+        sink.got,
+        "a 4294967295 -128 -32768",
+        "a bus payload's fixed-width fields and buffer",
+    );
+}

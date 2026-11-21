@@ -816,8 +816,9 @@ struct Elem {
 }
 
 /// The element types a probe can carry: the primitives the corpus
-/// steers around least (Decimal, U256, U64, String), the unit dialect's
-/// scalars over a `U64`, a payload enum, and the program's own records and
+/// steers around least (Decimal, U256, U64, the fixed-width integers,
+/// String), the unit dialect's scalars over a `U64` and a `U32`, a payload
+/// enum, and the program's own records and
 /// enums, valued from a literal the program writes.
 fn elem_types(src: &str, program: &Program) -> Vec<Elem> {
     let mut out = vec![
@@ -833,6 +834,20 @@ fn elem_types(src: &str, program: &Program) -> Vec<Elem> {
         // one is one only where its place is
         Elem { ty: "U64".into(), value: "18446744073709551615".into(), decls: vec![] },
         Elem { ty: "U64".into(), value: "7".into(), decls: vec![] },
+        // GH #2132: each fixed-width integer narrower than 64 bits, at an
+        // end of its range (a literal is one where its place is; a
+        // negative one is `-` of a literal), and a quantity over one
+        Elem { ty: "I32".into(), value: "-2147483648".into(), decls: vec![] },
+        Elem { ty: "U32".into(), value: "4294967295".into(), decls: vec![] },
+        Elem { ty: "I16".into(), value: "-32768".into(), decls: vec![] },
+        Elem { ty: "U16".into(), value: "65535".into(), decls: vec![] },
+        Elem { ty: "I8".into(), value: "-128".into(), decls: vec![] },
+        Elem { ty: "U8".into(), value: "255".into(), decls: vec![] },
+        Elem {
+            ty: "__PgTicks".into(),
+            value: "7pgtick".into(),
+            decls: vec!["unit pgtick;".into(), "type __PgTicks = quantity U32 in pgtick;".into()],
+        },
         // GH #2131: the unit dialect's scalars over a `U64`: a quantity, an
         // identity and a range
         Elem {

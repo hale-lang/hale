@@ -379,10 +379,11 @@ parse error.
 ### Predefined type names (NOT keywords)
 
 ```
-Int             U64             Float           Decimal
-U256            I256            String          Bool
-Time            Duration        Bytes           BytesView
-StringView      BytesMut
+Int             U64             I32             U32
+I16             U16             I8              U8
+Float           Decimal         U256            I256
+String          Bool            Time            Duration
+Bytes           BytesView       StringView      BytesMut
 ```
 
 `U256` / `I256` (GH #1934) are the 256-bit integers; in expression
@@ -393,6 +394,10 @@ have no literal of their own (spec/types.md § U256 and I256). `U64`
 of `std::u64`, an integer literal whose place is a `U64` is one, and a
 decimal integer literal past `Int`'s max (`2^63` through `2^64 - 1`) is
 one by itself; past `2^64 - 1` it is a lex error (spec/types.md § U64).
+`I32`, `U32`, `I16`, `U16`, `I8` and `U8` (GH #2132) are the
+fixed-width integers: `U8::f` names the functions of `std::u8` (and so
+on), and an integer literal whose place is one is one, held to its
+range where it is written (spec/types.md § Fixed-width integers).
 
 `BytesView` / `StringView` (F.30) are non-owning views over a
 `BytesBuilder`'s buffer; `BytesMut` (#3) is a raw `{ptr, len}`
@@ -821,7 +826,8 @@ Anywhere else, after a type (`T?`) included, it is a parse error.
     `f64`. Maximum 17.
   - `kind` `x` / `X` renders an `Int` or a `U64` in hexadecimal,
     from the unsigned bit pattern (so `-1` is `ffffffffffffffff`, as
-    is `U64::max()`).
+    is `U64::max()`), and a fixed-width integer from its own width's
+    bits (`-5` as an `I8` is `fb`, GH #2132).
   - `kind` `?` (RFC #2035, decisions F.54) renders any printable
     value in its **structural** form, `Name { field: v }` /
     `Enum::Variant(p)`, past every `@display` template at every

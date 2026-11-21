@@ -322,11 +322,13 @@ fn own_scope_let_block_scope_test() {
             // `net.hl` came (GH #1908: `std::net::resolve`); 535 since a
             // chain over a text source compares a part with the best one in
             // place (`__str_view_cmp`, GH #1995 S2, chain sources); 544
-            // since `u64.hl` came (GH #2121: std::u64's nine fallible calls)
+            // since `u64.hl` came (GH #2121: std::u64's nine fallible calls);
+            // 568 since `fixed_ints.hl` came (GH #2132: the fixed-width
+            // integers' 24 `checked_*` calls)
             changed_lines(&stable_dump(&old.render()), &stable_dump(&now.render())),
             [
-                "- # 544 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 544 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 568 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 568 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -734,8 +736,10 @@ fn own_entries_run_to_exit_programs() {
     // and call a locus's methods that build arrays (GH #2068); 33:
     // `tests/hale/u64_arith_test.hl`, whose loop over refused texts builds
     // its messages, and 34: `tests/hale/u64_codec_test.hl`, whose codecs of
-    // `U64`s decode the same way (GH #2121).
-    assert_eq!(moved, 34, "the run-to-exit programs among the targets that lose a site");
+    // `U64`s decode the same way (GH #2121); 35:
+    // `tests/hale/fixed_int_codec_test.hl`, whose codecs of the fixed-width
+    // integers decode the same way (GH #2132).
+    assert_eq!(moved, 35, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1043,6 +1047,18 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/crypto_sha256_stream_test.hl: main StringConcat #8 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads
             "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") #1 InvokedUnboundedly",
+            // `tests/hale/fixed_int_codec_test.hl`: its codecs of the fixed-width
+            // integers decode the same way (GH #2132)
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #2 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #4 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #6 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #8 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #13 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #14 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __api_decode_Stats StructLit(\"JsonError\") #15 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __json_parse_Stats StructLit(\"JsonError\") #3 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __json_parse_Stats StructLit(\"JsonError\") #4 InUnboundedLoop",
+            "tests/hale/fixed_int_codec_test.hl: __json_parse_Stats StructLit(\"JsonError\") #5 InUnboundedLoop",
             // `tests/hale/json_defaults_test.hl`: its JSON codec of a record with
             // defaults, decoding the same way, and since 2026-11-07 its api codec
             // too (null is absence through both); its Decimal field's reader grew
@@ -1263,8 +1279,9 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
     // 34 since `time_rfc3339.hl` came (GH #1948: `std::time::parse_rfc3339`);
     // 35 since `str_helpers.hl` came (GH #1995: std::str's splits and trims);
     // 36 since `net.hl` came (GH #1908: std::net::resolve); 37 since
-    // `u64.hl` came (GH #2121: std::u64's fallible calls).
-    assert_eq!(sharing, 37, "the stdlib source files that share a name with the copy");
+    // `u64.hl` came (GH #2121: std::u64's fallible calls); 38 since
+    // `fixed_ints.hl` came (GH #2132: the fixed-width integers' checked calls).
+    assert_eq!(sharing, 38, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

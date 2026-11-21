@@ -786,6 +786,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         match elem_ty {
             CodegenTy::Int
             | CodegenTy::U64
+            | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Time
@@ -793,8 +794,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             | CodegenTy::Decimal(_)
             | CodegenTy::U256
             | CodegenTy::I256 => {
-                let elem_bytes =
-                    codegen_ty_size_bytes(self.context, elem_ty);
+                let elem_bytes = wire_scalar_bytes(elem_ty);
                 let total_bytes = n * elem_bytes;
                 let total_iv = i64_t.const_int(total_bytes, false);
                 let cursor_iv = self
@@ -973,6 +973,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         match elem_ty {
             CodegenTy::Int
             | CodegenTy::U64
+            | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Time
@@ -980,8 +981,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
             | CodegenTy::Decimal(_)
             | CodegenTy::U256
             | CodegenTy::I256 => {
-                let elem_bytes =
-                    codegen_ty_size_bytes(self.context, elem_ty);
+                let elem_bytes = wire_scalar_bytes(elem_ty);
                 let total_bytes = n * elem_bytes;
                 let total_iv = i64_t.const_int(total_bytes, false);
                 let cursor_iv = self
@@ -1287,6 +1287,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match ty {
             CodegenTy::Int
             | CodegenTy::U64
+            | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -1315,7 +1316,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn wire_fixed_size(&self, t: &CodegenTy) -> u64 {
         match t {
             CodegenTy::Enum(_) => 4,
-            _ => codegen_ty_size_bytes(self.context, t),
+            _ => wire_scalar_bytes(t),
         }
     }
 }
@@ -1973,6 +1974,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 }
 
+/// A scalar's bytes on the wire and in an inline array: its own width
+/// (GH #2132: a narrower integer's 4, 2 or 1), where an enum body prices
+/// every field at 8 (`codegen_ty_size_bytes`).
+fn wire_scalar_bytes(t: &CodegenTy) -> u64 {
+    match t {
+        CodegenTy::Narrow(p) => u64::from(p.machine_int().expect("a machine integer").0 / 8),
+        CodegenTy::Decimal(_) => 16,
+        CodegenTy::U256 | CodegenTy::I256 => 32,
+        _ => 8,
+    }
+}
+
 /// The refusal of a value the wire format has no form for, naming where it
 /// is and what the wire carries (`hale_types::wire_carriage::carried_list`,
 /// the table the check's refusal prints).
@@ -1993,6 +2006,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(match ty {
             CodegenTy::Int
             | CodegenTy::U64
+            | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Time
@@ -2108,6 +2122,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             elem,
             CodegenTy::Int
                 | CodegenTy::U64
+                | CodegenTy::Narrow(_)
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Time

@@ -4841,3 +4841,84 @@ their component quantity's, so a `U64` boundary denomination of
 between them would be a second narrowing beside the factor's, with two
 policies after one `or`. *Special-casing `U64`*: GH #2132's integers
 would each repeat it.
+
+### F.64 — The fixed-width integers `I32`, `U32`, `I16`, `U16`, `I8` and `U8`
+
+**Status: accepted and implemented (2026-11-21; GH #2132).**
+
+**Problem.** `Int` is 64-bit everywhere. A `bounded[Int; N]` of small
+values is four to eight times larger than its values need, a 128-bit
+vector register holds two `i64` lanes against four `i32` or sixteen
+`u8`, and aarch64 has no `i64` vector multiply at all (F.63's spike:
+`.map(it * 3).sum(0)` over `Int` is interleaved scalar code there). FFI
+and binary protocols had no exact-width type.
+
+**Decision.** Six primitives, `I32`, `U32`, `I16`, `U16`, `I8` and
+`U8`, signed two's complement and unsigned, generalizing F.60's `U64`
+over width and signedness (spec/types.md § Fixed-width integers). There
+are no aliases. Each is its declared width wherever it is stored: a
+record field, a `bounded` element, a fixed array, a locus field, a
+topic payload and a local. `PrimType::machine_int` (F.62) lists them,
+so the unit dialect takes each as a base with no rule of its own
+changed, and every rule elsewhere that F.60 wrote for `U64` reads the
+width and the signedness from it: literal adoption, the operator rule,
+the flow rule, the conversions' names, the topic tag and the codecs.
+
+Where this decision chose:
+
+- **Overflow is a violation**, as F.60's: `+ - *` past either end, `/`
+  or `%` by zero, a signed `/` of the minimum by `-1` and a signed unary
+  `-` of the minimum stop the process where they happen;
+  `T::wrapping_*` wrap modulo the width and `T::checked_*` fail into an
+  `or`. The minimum's remainder by `-1` is `0`, which is what it is.
+- **A widening is implicit only where nothing is lost**: into a wider
+  type of the same signedness, an unsigned type into a strictly wider
+  signed one, and anything into `Int` that fits (`U32` into `Int`, never
+  `U64`). It applies wherever a value flows (a binding, an argument, a
+  return, a field, an assignment, an element), as F.23's `Int → Float`
+  does, and nowhere else.
+- **Operands never widen.** An operator over two different integer
+  types is refused naming the conversion, so the width an expression
+  computes in is always the one written; only an integer literal takes
+  the other operand's type. (Widening at an operator would make `a + b`
+  of a `U8` and a `U32` silently a `U32` sum, and `a + b` of an `I8` and
+  a `U8` would have no type at all.)
+- **A narrowing is a cast with an `or`**, the same narrowing a range
+  type's is (GH #1076's conversion rows, its `RangeError`, its
+  policies, spec/units.md § Conversions):
+  `U8(n) or clamp`, `or wrap` (the low bits), `or <value>`, `or
+  handler(err)`, `or raise`, `or fail`. A bare one is refused, at the
+  cast or where the value flows. `RangeError` is in scope wherever a
+  program spells a cast into one of these.
+- **Literals** are typed from their place, as F.60's are, and held to
+  the type's range where they are written; a negated literal is held as
+  its value (`-128` is an `I8`).
+- **A signed `>>` is arithmetic** (it keeps the sign, as `I256`'s does);
+  an unsigned one's is logical. A shift's count is an `Int`, and one
+  outside 0 through the width less one is a violation.
+- **Wire.** JSON carries each as a number (every width is exact below
+  2^53) and reads it back with its range held: out of range is
+  `wrong_type`, as a range type's is. Protobuf carries a signed one as an
+  `int32` and an unsigned one as a `uint32`, range-checked on decode, so
+  an 8- or 16-bit field never truncates a writer's larger value. A topic
+  shape tags each by width and signedness (`u8`, `i32`), never an
+  `Int`'s `i`. Across `@ffi("c")` each is the C integer of its width (an
+  8- or 16-bit one `signext` / `zeroext`, as clang marks a prototype);
+  across `@ffi("js")`, a number.
+- **An enum's payload keeps its eight-byte slot**: the payload layout is
+  a uniform stride, and the storage this decision is about is the bulk
+  kind (records, buffers, fields, payloads).
+- **The element chain's `.sum(seed)` sums in its seed's type**, so a
+  sum of one names it (`.sum(U32(0))`). Its `+` is checked, so its loop
+  carries an overflow branch per element and does not vectorize; a
+  kernel that wants lanes writes `T::wrapping_add` / `wrapping_mul`,
+  plain adds and multiplies at the width, which do (four `i32` lanes a
+  NEON instruction on aarch64, where `Int`'s multiply has none).
+
+**Considered and rejected.** *Aliases* (`Byte`, `Word`): two names for
+one type, and `type Byte = Int { range: 0..256; }` already means
+something else. *Wrapping arithmetic, as `Int`'s*: a byte counter that
+wraps at 256 is the bug these types are most likely to carry, and the
+explicit `wrapping_*` costs nothing where it is meant. *Widening at the
+operators*: see above. *Packing range types by width* (spec/units.md §
+What the dialect does not do) and `F32`: separate decisions.

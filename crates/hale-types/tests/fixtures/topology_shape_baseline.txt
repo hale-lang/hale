@@ -647,9 +647,10 @@ crates/hale-codegen/tests/fallible_method_scratch_order.rs#0 0cfa26e91a2f2423
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#1 93756fc7f6d36501
 crates/hale-codegen/tests/fallible_method_scratch_order.rs#2 c03de755dbc52e6f
 crates/hale-codegen/tests/ffi_basic.rs#0 9a278e6af6bcb540
-crates/hale-codegen/tests/ffi_basic.rs#2 4a54a956390b3f50
-crates/hale-codegen/tests/ffi_basic.rs#4 ceb28a8c93d4d5a9
-crates/hale-codegen/tests/ffi_basic.rs#6 5604dd3ef027928a
+crates/hale-codegen/tests/ffi_basic.rs#2 715491f3c1ded8a0
+crates/hale-codegen/tests/ffi_basic.rs#4 4a54a956390b3f50
+crates/hale-codegen/tests/ffi_basic.rs#6 ceb28a8c93d4d5a9
+crates/hale-codegen/tests/ffi_basic.rs#8 5604dd3ef027928a
 crates/hale-codegen/tests/ffi_string_return.rs#0 c79667429ab69d45
 crates/hale-codegen/tests/file_locus.rs#3 da0869e4cc146b09
 crates/hale-codegen/tests/fixtures/examples/01-locus-with-run/main.hl a281c51126e02e85
@@ -1739,6 +1740,7 @@ crates/hale-stdlib/hl/core.hl 5bd71359097e00e6
 crates/hale-stdlib/hl/crypto.hl 13559839fa62968e
 crates/hale-stdlib/hl/crypto_sha256.hl b68948b7c74811dd
 crates/hale-stdlib/hl/file.hl 59c75ee097af9bd8
+crates/hale-stdlib/hl/fixed_ints.hl 040a7aaad9c77fc2
 crates/hale-stdlib/hl/hex.hl eb377492db5d27b1
 crates/hale-stdlib/hl/http.hl 67a1c930833df0a8
 crates/hale-stdlib/hl/http_client.hl eb5d0299409b2bc6

@@ -344,6 +344,12 @@ fn member_scratch_elidable(
         Some(TypeExpr::Primitive(
             PrimType::Int
             | PrimType::U64
+            | PrimType::I32
+            | PrimType::U32
+            | PrimType::I16
+            | PrimType::U16
+            | PrimType::I8
+            | PrimType::U8
             | PrimType::Float
             | PrimType::Bool
             | PrimType::Duration,
@@ -624,6 +630,12 @@ fn type_expr_is_scratch_scalar(ty: &TypeExpr) -> bool {
         TypeExpr::Primitive(
             PrimType::Int
                 | PrimType::U64
+                | PrimType::I32
+                | PrimType::U32
+                | PrimType::I16
+                | PrimType::U16
+                | PrimType::I8
+                | PrimType::U8
                 | PrimType::Float
                 | PrimType::Bool
                 | PrimType::Duration
@@ -1284,7 +1296,7 @@ fn type_expr_is_numeric_scalar(ty: &TypeExpr) -> bool {
     matches!(
         ty,
         TypeExpr::Primitive(
-            PrimType::Int | PrimType::U64 | PrimType::Float | PrimType::Duration,
+            PrimType::Int | PrimType::U64 | PrimType::I32 | PrimType::U32 | PrimType::I16 | PrimType::U16 | PrimType::I8 | PrimType::U8 | PrimType::Float | PrimType::Duration,
             _,
         )
     )
@@ -1852,6 +1864,12 @@ fn ret_is_scalar_or_unit(ret: Option<&TypeExpr>) -> bool {
         None | Some(TypeExpr::Primitive(
             PrimType::Int
                 | PrimType::U64
+                | PrimType::I32
+                | PrimType::U32
+                | PrimType::I16
+                | PrimType::U16
+                | PrimType::I8
+                | PrimType::U8
                 | PrimType::Float
                 | PrimType::Bool
                 | PrimType::Duration,
@@ -1932,6 +1950,12 @@ fn elidable_methods(
                         Some(TypeExpr::Primitive(
                             PrimType::Int
                             | PrimType::U64
+                            | PrimType::I32
+                            | PrimType::U32
+                            | PrimType::I16
+                            | PrimType::U16
+                            | PrimType::I8
+                            | PrimType::U8
                             | PrimType::Float
                             | PrimType::Duration,
                             _,
