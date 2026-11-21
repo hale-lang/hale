@@ -248,7 +248,9 @@ Phase 2b entry in `spec/stdlib.md`.
   wherever a diverging expression is: a match expression's block arm
   (beside arms that supply the value, or beside none, as a match
   whose every arm returns is), an `if` expression's arm beside one
-  that supplies the value, an `or { … }` substitute (the call's
+  that supplies the value (the `if` is that arm's value and has its
+  type; until GH #2111 a leaving `then` arm left the `if` untyped, so
+  `let s: String = v` of an `Int` arm checked), an `or { … }` substitute (the call's
   success is the value). Where a value is required of the block and
   nothing else supplies one — a `let`'s block, a call argument, a
   `return`, an assignment, a field, a condition, an operand of `&&`
