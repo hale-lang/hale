@@ -10,43 +10,44 @@ measure	value+type lowerings	372
 measure	CodegenTy built in an expression	993
 measure	seam fallbacks (static)	32
 measure	seam reads	15
-total	268994
+total	319708
 2	call	program	no row	4
 2	call	program	unknown	14
 3	field	program	no layout	10
-3	field	program	no row	37
+3	field	program	no row	38
 3	field	program	unknown	2
 3	field	stdlib	no row	2
-3	path	program	unknown	197
-3	self	program	no row	2
+3	path	program	no row	3
+3	path	program	unknown	257
+3	self	program	no row	4
 4	ident	program	no layout	34
 4	ident	program	no row	8
-4	ident	program	unknown	37
+4	ident	program	unknown	32
 4	ident	stdlib	no row	1
 5	array	program	no layout	9
 5	array	stdlib	no layout	1
 5	struct	generated	no body	2
+5	struct	generated	unknown	1
 5	struct	program	no body	5
 5	struct	program	no layout	16
 5	struct	stdlib	no row	1
-6	block	generated	no layout	403
-6	block	program	no layout	129
+6	block	generated	no layout	631
+6	block	program	no layout	232
 6	block	program	unknown	36
 6	block	stdlib	no layout	2
-6	if	program	unknown	3
 6	match	program	unknown	1
 6	or	program	no layout	13
-6	or	program	no row	1
+6	or	program	no row	7
 6	or	program	unknown	2
 6	or	stdlib	no row	1
-7	binary	generated	no row	31880
-7	binary	program	no row	53855
+7	binary	generated	no row	42550
+7	binary	program	no row	58717
 7	binary	stdlib	no row	2229
 7	literal	generated	no body	2
-7	literal	generated	no row	41197
+7	literal	generated	no row	57392
 7	literal	program	no body	2
-7	literal	program	no row	127132
+7	literal	program	no row	144176
 7	literal	stdlib	no row	3283
-7	unary	generated	no row	1989
-7	unary	program	no row	6278
+7	unary	generated	no row	2786
+7	unary	program	no row	7028
 7	unary	stdlib	no row	174

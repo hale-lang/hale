@@ -7,7 +7,8 @@
 //! anything is emitted.
 //!
 //! This test builds every corpus example, every `tests/hale` program and
-//! every `dna/tests` fixture under strict mode, and counts the sites by
+//! every `dna/tests` fixture (found as `hale test` finds them, nested
+//! directories included) under strict mode, and counts the sites by
 //! the survey's family, the expression's kind, and where the site is: the
 //! stdlib, a program's files, or a node a rewrite after the check built
 //! (`generated`, with no place in any file). A site counts once however
@@ -16,7 +17,9 @@
 //! `fixtures/seam_strict_baseline.txt`:
 //!
 //! - a count above its baseline fails: a change made lowering type
-//!   something itself that the checker did not record;
+//!   something itself that the checker did not record. A count is held by
+//!   family, kind and place; the reason a site lacks its row (none, or
+//!   `Unknown`, or no layout) is the file's information, and moves freely;
 //! - a count below its baseline fails too, until the baseline is
 //!   regenerated in the same change, so the file always says where the
 //!   burn-down stands:
@@ -68,10 +71,36 @@ fn programs() -> Vec<(String, PathBuf)> {
         }
     };
     dir("crates/hale-codegen/tests/fixtures/examples", &|p| p.join("main.hl").is_file());
-    let test_file = |p: &Path| p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with("_test.hl"));
-    dir("tests/hale", &test_file);
-    dir("dna/tests", &test_file);
+    for rel in ["tests/hale", "dna/tests"] {
+        let mut files = Vec::new();
+        test_files(&root.join(rel), &mut files);
+        for p in files {
+            let name = p.strip_prefix(&root).expect("under the root").display().to_string();
+            out.push((name, p));
+        }
+    }
     out
+}
+
+/// Every `*_test.hl` under `dir`, as `hale test <dir>` finds them
+/// (`collect_test_files`): depth-first in sorted order, skipping `vendor/`
+/// and dot-directories.
+fn test_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|e| e.expect("a directory entry").path())
+        .collect();
+    entries.sort();
+    for p in entries {
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if p.is_dir() {
+            if name != "vendor" && !name.starts_with('.') {
+                test_files(&p, out);
+            }
+        } else if name.ends_with("_test.hl") {
+            out.push(p);
+        }
+    }
 }
 
 /// A missing row's count key: family, kind, where (`stdlib`, `program`,
@@ -354,7 +383,22 @@ fn the_burn_down_only_moves_forward() {
         return;
     }
     let held = std::fs::read_to_string(&path).unwrap_or_default();
-    let (was, is) = (parse(&held), parse(&now));
+    // a row's reason is what the site still lacks; a site moving from one
+    // reason to another (no row to `unknown`, once the checker records
+    // one) is held to the same count, so the ratchet reads the rows by
+    // family, kind and place, reasons summed
+    let by_place = |m: BTreeMap<String, usize>| -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        for (k, n) in m {
+            let k = match k.rfind(", ") {
+                Some(at) if k.starts_with("family ") => format!("{})", &k[..at]),
+                _ => k,
+            };
+            *out.entry(k).or_insert(0) += n;
+        }
+        out
+    };
+    let (was, is) = (by_place(parse(&held)), by_place(parse(&now)));
     let goes_up: BTreeSet<&str> = measures.iter().filter(|m| m.2).map(|m| m.0).collect();
     let keys: BTreeSet<_> = was.keys().chain(is.keys()).cloned().collect();
     let mut worse = Vec::new();
@@ -380,10 +424,10 @@ fn the_burn_down_only_moves_forward() {
         worse.join("\n")
     );
     assert!(
-        better.is_empty(),
+        better.is_empty() && held == now,
         "the burn-down moved: regenerate the baseline in this change \
          (HALE_SEAM_BASELINE_REGEN=1, see the file's head):\n{}",
-        better.join("\n")
+        if better.is_empty() { "(the reasons the sites lack a row moved)".to_string() } else { better.join("\n") }
     );
 }
 
