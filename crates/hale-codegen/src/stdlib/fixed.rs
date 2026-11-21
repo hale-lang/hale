@@ -311,15 +311,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok((r, CodegenTy::Narrow(p)))
     }
 
-    /// The operands of an intrinsic call, each lowered and fitted to `p`.
-    fn fixed_args(&mut self, args: &[Expr], want: usize, scope: &Scope<'ctx>) -> Result<Vec<(BasicValueEnum<'ctx>, CodegenTy)>, CodegenError> {
-        if args.len() != want {
+    /// The operands of an intrinsic call, each lowered and fitted to
+    /// `want` (an operand the check typed `p`, or a literal of it).
+    fn fixed_args(&mut self, args: &[Expr], want: &[CodegenTy], scope: &Scope<'ctx>) -> Result<Vec<IntValue<'ctx>>, CodegenError> {
+        if args.len() != want.len() {
             return Err(CodegenError::Unsupported(format!(
-                "a fixed-width integer's intrinsic takes {want} argument(s), got {}",
+                "a fixed-width integer's intrinsic takes {} argument(s), got {}",
+                want.len(),
                 args.len()
             )));
         }
-        args.iter().map(|a| self.lower_expr(a, scope)).collect()
+        let mut out = Vec::with_capacity(args.len());
+        for (a, w) in args.iter().zip(want) {
+            let (v, t) = self.lower_expr(a, scope)?;
+            out.push(self.fit_int(v, &t, w)?.into_int_value());
+        }
+        Ok(out)
     }
 
     /// The natively lowered `std::i32::*` … `std::u8::*` functions.
@@ -333,9 +340,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (bits, signed) = p.machine_int().expect("a machine integer");
         let int_t = self.context.custom_width_int_type(bits);
         let ty = CodegenTy::Narrow(p);
-        let value = |cx: &mut Self, (v, t): (BasicValueEnum<'ctx>, CodegenTy)| -> Result<IntValue<'ctx>, CodegenError> {
-            Ok(cx.fit_int(v, &t, &CodegenTy::Narrow(p))?.into_int_value())
-        };
         let v = match op {
             FixedIntOp::Max => {
                 if signed {
@@ -352,9 +356,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             FixedIntOp::WrappingAdd | FixedIntOp::WrappingSub | FixedIntOp::WrappingMul => {
-                let mut a = self.fixed_args(args, 2, scope)?.into_iter();
-                let l = value(self, a.next().expect("two"))?;
-                let r = value(self, a.next().expect("two"))?;
+                let a = self.fixed_args(args, &[ty.clone(), ty.clone()], scope)?;
+                let (l, r) = (a[0], a[1]);
                 match op {
                     FixedIntOp::WrappingAdd => emit(self.builder.build_int_add(l, r, "fixed.wadd"))?,
                     FixedIntOp::WrappingSub => emit(self.builder.build_int_sub(l, r, "fixed.wsub"))?,
@@ -363,10 +366,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // the count modulo the width, as Rust's `wrapping_shl` takes it
             FixedIntOp::WrappingShl | FixedIntOp::WrappingShr => {
-                let mut a = self.fixed_args(args, 2, scope)?.into_iter();
-                let l = value(self, a.next().expect("two"))?;
-                let (c, _) = a.next().expect("two");
-                let c = c.into_int_value();
+                let a = self.fixed_args(args, &[ty.clone(), CodegenTy::Int], scope)?;
+                let (l, c) = (a[0], a[1]);
                 let masked = emit(self.builder.build_and(c, c.get_type().const_int(u64::from(bits - 1), false), "fixed.wsh.n"))?;
                 let n = self.count_at(masked, bits)?;
                 if op == FixedIntOp::WrappingShl {

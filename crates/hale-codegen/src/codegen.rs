@@ -27476,18 +27476,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                     }
                 }
-                // GH #2132: a negated integer literal of a signed narrower
-                // integer is its value (`-128` is an `I8`, though `128` is
-                // not), never the checked negation of the literal's bits
-                if *op == UnaryOp::Neg {
-                    if let Expr::Literal(Literal::Int(n), _) = operand.as_ref() {
-                        if let Some(CodegenTy::Narrow(p)) = self.ty_or_fallback(operand) {
-                            let v = self.narrow_int_type(p).const_int(n.wrapping_neg() as u64, true);
-                            return Ok((v.into(), CodegenTy::Narrow(p)));
-                        }
-                    }
-                }
                 let (v, t) = self.lower_expr(operand, scope)?;
+                // GH #2132: a negated integer literal of a signed narrower
+                // integer (the literal lowered at its width) is its value
+                // (`-128` is an `I8`, though `128` is not), never the checked
+                // negation of the literal's bits
+                if let (UnaryOp::Neg, Expr::Literal(Literal::Int(n), _), CodegenTy::Narrow(p)) = (op, operand.as_ref(), &t) {
+                    let v = self.narrow_int_type(*p).const_int(n.wrapping_neg() as u64, true);
+                    return Ok((v.into(), t.clone()));
+                }
                 // GH #1076 (U4): the checker's refusal, where it is.
                 if *op == UnaryOp::Neg && t == CodegenTy::Time {
                     return Err(CodegenError::UnsupportedAt(
