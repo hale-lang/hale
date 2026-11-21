@@ -22961,10 +22961,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         bindings: &mut Vec<(String, BasicValueEnum<'ctx>, CodegenTy)>,
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
+        // GH #2069 (F.58): `.Variant` is lowered as the `E::Variant` the
+        // check resolved it to (`dot_variant_pattern`).
+        if let Pattern::DotVariant { variant, args, span } = pat {
+            let resolved = self.dot_variant_pattern(variant, args, *span, scrutinee_ty)?;
+            return self.lower_arm_pattern_test(
+                &resolved,
+                i,
+                scrutinee_val,
+                scrutinee_ty,
+                on_match,
+                on_fail,
+                bindings,
+                scope,
+            );
+        }
         match pat {
             // the parser makes an or-pattern only of a whole arm, and
             // `lower_or_pattern_test` tests its alternatives
-            Pattern::Or(..) => {
+            Pattern::Or(..) | Pattern::DotVariant { .. } => {
                 return Err(CodegenError::Unsupported(
                     "an or-pattern is a whole match arm's pattern, never one inside another".into(),
                 ));
@@ -23105,6 +23120,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                         Pattern::Tuple(_, _)
                         | Pattern::Constructor { .. }
+                        | Pattern::DotVariant { .. }
                         | Pattern::Or(..) => {
                             return Err(CodegenError::Unsupported(
                                 "nested tuple / constructor sub-pattern \
@@ -26226,6 +26242,53 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
+    }
+
+    /// GH #2069 (F.58): the `E::Variant` pattern a `.Variant` means, read
+    /// from the check's row for it (`typed_bodies`' `variant_patterns`):
+    /// the variant the check resolved, of the enum the scrutinee lowered
+    /// as. Lowering names no enum from the spelling. The check's enum is
+    /// the scrutinee's own; a pattern in a generic body against a value of
+    /// a type in its parameters has none, and each specialization's value
+    /// is its enum (the check resolved it on the walk per monomorph). A row
+    /// naming another enum is refused, as is a pattern with no row (the
+    /// check refused it, or never walked its body).
+    fn dot_variant_pattern(
+        &self,
+        variant: &Ident,
+        args: &[Pattern],
+        span: hale_syntax::Span,
+        scrutinee_ty: &CodegenTy,
+    ) -> Result<Pattern, CodegenError> {
+        let row = self.current_body.and_then(|body| self.typed.variant_pattern_in(body, span)).ok_or_else(|| {
+            CodegenError::UnsupportedAt(
+                format!("`.{}`: the check resolved no variant for this pattern", variant.name),
+                span,
+            )
+        })?;
+        let CodegenTy::Enum(name) = scrutinee_ty else {
+            return Err(CodegenError::UnsupportedAt(
+                format!("`.{}` against a value of {}, which lowered as no enum", variant.name, scrutinee_ty),
+                span,
+            ));
+        };
+        if let Some(enumeration) = row.enumeration.as_ref().filter(|e| *e != name) {
+            return Err(CodegenError::UnsupportedAt(
+                format!(
+                    "`.{}`: the check resolved it in the enum `{}`, and the value matched lowered as `{}`",
+                    variant.name, enumeration, name
+                ),
+                span,
+            ));
+        }
+        Ok(Pattern::Constructor {
+            path: QualifiedName {
+                segments: vec![Ident::new(name.clone(), span), Ident::new(row.variant.clone(), variant.span)],
+                span,
+            },
+            args: args.to_vec(),
+            span,
+        })
     }
 
     /// GH #1530 step 1: a member's value where the checker flowed it into

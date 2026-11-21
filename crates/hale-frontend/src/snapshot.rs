@@ -554,6 +554,9 @@ pub struct Snapshot {
     dependency_index: OnceCell<Result<DependencyIndex, Blocked>>,
     builds: [Cell<u32>; FAMILIES.len()],
     stage_builds: [Cell<u32>; STAGES.len()],
+    /// Whether what the check decides that a pass before it could not
+    /// has been written into the programs ([`Snapshot::settle`]).
+    settled: bool,
 }
 
 /// What [`Snapshot::from_program`]'s program is keyed and minted by:
@@ -733,6 +736,7 @@ impl Snapshot {
             dependency_index: OnceCell::new(),
             builds,
             stage_builds: Default::default(),
+            settled: false,
         };
         snap.count("seed_loading");
         if snap.config.wrap_main {
@@ -859,6 +863,13 @@ impl Snapshot {
                  adopted into the entry's `main locus` and evaluated in the world it closes",
                 entry.display()
             )));
+        }
+        // What the check decides that a pass before it could not (GH
+        // #2069), written in once. The editor's load settles once it is
+        // offered the seed's previous snapshot, or none (`reusing_typing`,
+        // `settled`), so its walk reuses what it can.
+        if mode != Some(LoadMode::Editor) {
+            snap.settle();
         }
         Ok(snap)
     }
@@ -1393,10 +1404,87 @@ impl Snapshot {
     /// [`Snapshot::take_previous`]. A previous snapshot whose typing never
     /// ran, or that loaded another seed or under another config, offers
     /// nothing and the typing is whole ([`TypingReuse::Whole`]).
-    pub fn reusing_typing(self, previous: Snapshot) -> Snapshot {
+    pub fn reusing_typing(mut self, previous: Snapshot) -> Snapshot {
         drop(previous.previous.take());
         self.previous.set(Some(Box::new(previous)));
+        self.settle();
         self
+    }
+
+    /// The editor's snapshot with no previous snapshot to reuse, settled
+    /// as every other load is ([`Snapshot::settle`]).
+    pub fn settled(mut self) -> Snapshot {
+        self.settle();
+        self
+    }
+
+    /// Write into the programs, once, what the check decides that a pass
+    /// before it could not, before any family past the walk reads them
+    /// ([`hale_types::checked_rewrites`]): GH #2069, a call of a fn value a
+    /// `.Variant` arm binds, whose enum the shadowing desugar did not see,
+    /// is the call through the binding. A program the check has nothing to
+    /// decide for is not typed for it; one whose walk decides nothing keeps
+    /// that walk; one rewritten forgets every family derived so far and is
+    /// typed again.
+    fn settle(&mut self) {
+        if std::mem::replace(&mut self.settled, true) || self.has_hole() {
+            return;
+        }
+        let programs: Vec<&Program> = self.programs.values().collect();
+        if !hale_types::checked_rewrites::any_dot_binding(&programs) {
+            return;
+        }
+        let calls = match self.final_walk() {
+            Ok(w) => w.walk.record.binding_calls.clone(),
+            Err(_) => return,
+        };
+        if calls.is_empty() {
+            return;
+        }
+        let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
+        hale_types::checked_rewrites::rewrite_binding_calls(&mut refs, &calls);
+        self.forget_derived();
+    }
+
+    /// Every family derived from the programs, forgotten: what
+    /// [`Snapshot::settle`] does once it has rewritten them.
+    fn forget_derived(&mut self) {
+        self.demangler = OnceCell::new();
+        self.entry = OnceCell::new();
+        self.target = OnceCell::new();
+        self.capability_uses = OnceCell::new();
+        self.scope = OnceCell::new();
+        self.partial_scope = OnceCell::new();
+        self.bindings = OnceCell::new();
+        self.forms = OnceCell::new();
+        self.typing = OnceCell::new();
+        self.walking = OnceCell::new();
+        self.verifying = OnceCell::new();
+        self.typed_bodies = OnceCell::new();
+        self.owned_views = OnceCell::new();
+        self.bus_graph = OnceCell::new();
+        self.ownership_graph = OnceCell::new();
+        self.handlers = OnceCell::new();
+        self.flows = OnceCell::new();
+        self.alloc_summary = OnceCell::new();
+        self.law_selection = OnceCell::new();
+        self.role_rows = OnceCell::new();
+        self.surface_rows = OnceCell::new();
+        self.units = OnceCell::new();
+        self.effects = OnceCell::new();
+        self.placement = OnceCell::new();
+        self.arrangement = OnceCell::new();
+        self.dispatch_gates = OnceCell::new();
+        self.dispatch_plan = OnceCell::new();
+        self.lifecycle = OnceCell::new();
+        self.model = OnceCell::new();
+        self.typing_stage = OnceCell::new();
+        self.laws = OnceCell::new();
+        self.check = OnceCell::new();
+        self.intra_locus = OnceCell::new();
+        self.lowering = OnceCell::new();
+        self.declarations = OnceCell::new();
+        self.dependency_index = OnceCell::new();
     }
 
     /// The previous snapshot [`Snapshot::reusing_typing`] offered, if the

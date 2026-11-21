@@ -208,7 +208,7 @@ impl Walk<'_> {
     fn bind_pattern(&mut self, p: &Pattern, held: Held) {
         match p {
             Pattern::Binding(i) => self.declare(i.id, held),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => {
+            Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } | Pattern::Tuple(args, _) => {
                 for a in args {
                     self.bind_pattern(a, held.path());
                 }
@@ -670,7 +670,9 @@ mod tests {
         fn pattern_binds(p: &Pattern) -> &'static str {
             match p {
                 Pattern::Binding(_) => "installed",
-                Pattern::Constructor { .. } | Pattern::Tuple(..) => "its parts, installed",
+                Pattern::Constructor { .. } | Pattern::DotVariant { .. } | Pattern::Tuple(..) => {
+                    "its parts, installed"
+                }
                 Pattern::Or(alts, _) => alts.first().map_or("binds nothing", pattern_binds),
                 Pattern::Literal(..) | Pattern::Wildcard(_) => "binds nothing",
             }

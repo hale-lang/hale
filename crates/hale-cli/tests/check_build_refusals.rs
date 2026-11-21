@@ -760,3 +760,131 @@ fn a_variant_a_generic_enums_alias_does_not_declare_is_refused_at_the_path() {
     assert!(ok, "check: {out}");
     assert!(built, "build: {bout}");
 }
+
+/// GH #2069 (F.58): a `.Variant` pattern names a variant of the value's
+/// enum, so one that names no variant of it is refused by the check where
+/// it is written, with the nearest variant (as `E::Wrok` is, GH #2023),
+/// in every pattern form: an arm, an or-pattern's alternative, `if let`,
+/// `let … else`; through an alias of a generic enum's instantiation the
+/// enum is shown as written. The build stops at the same message.
+#[test]
+fn a_dot_variant_the_enum_does_not_declare_is_refused_where_it_is_written() {
+    let decl = "type Place = enum { Work(Int), Home };\n";
+    refused(
+        &format!("{decl}fn f(s: Place) -> Int {{\n    return match s {{\n        .Wrok(n) -> n,\n        _ -> 0,\n    }};\n}}\nfn main() {{ println(f(Place::Home)); }}\n"),
+        "dot_variant_arm",
+        "4:9",
+        "`.Wrok(…)`: enum `Place` has no variant `Wrok` — did you mean `.Work`?",
+    );
+    refused(
+        &format!("{decl}fn f(s: Place) -> Int {{\n    return match s {{\n        .Work(n) | .Hme -> 1,\n        _ -> 0,\n    }};\n}}\nfn main() {{ println(f(Place::Home)); }}\n"),
+        "dot_variant_alternative",
+        "4:20",
+        "`.Hme`: enum `Place` has no variant `Hme` — did you mean `.Home`?",
+    );
+    refused(
+        &format!("{decl}fn f(s: Place) -> Int {{\n    if let .Wrk(n) = s {{ n }} else {{ 0 }}\n}}\nfn main() {{ println(f(Place::Home)); }}\n"),
+        "dot_variant_if_let",
+        "3:12",
+        "`.Wrk(…)`: enum `Place` has no variant `Wrk` — did you mean `.Work`?",
+    );
+    refused(
+        &format!("{decl}fn f(s: Place) -> Int {{\n    let .Wrok(n) = s else {{\n        return 0;\n    }};\n    return n;\n}}\nfn main() {{ println(f(Place::Home)); }}\n"),
+        "dot_variant_let_else",
+        "3:9",
+        "`.Wrok(…)`: enum `Place` has no variant `Wrok` — did you mean `.Work`?",
+    );
+    refused(
+        &format!("{decl}fn f(s: Place) -> Int {{\n    return match s {{\n        .Elsewhere -> 1,\n        _ -> 0,\n    }};\n}}\nfn main() {{ println(f(Place::Home)); }}\n"),
+        "dot_variant_far",
+        "4:9",
+        "`.Elsewhere`: enum `Place` has no variant `Elsewhere`; its variants are Work, Home",
+    );
+    refused(
+        "type E<T> = enum { Work(T), Home };\ntype I = E<Int>;\nfn f(x: I) -> Int {\n    return match x {\n        .Wrok(n) -> n,\n        _ -> 0,\n    };\n}\nfn main() { println(f(I::Home)); }\n",
+        "dot_variant_generic_alias",
+        "5:9",
+        "`.Wrok(…)`: enum `E<Int>` has no variant `Wrok` — did you mean `.Work`?",
+    );
+}
+
+/// GH #2069 (F.58): against a value whose type is no enum, a `.Variant`
+/// names nothing, and the check refuses it at the pattern: an `Int`, a
+/// set (whose members are matched by their types' names), and a generic
+/// body's type parameter, once a call specializes the body.
+#[test]
+fn a_dot_variant_against_a_value_of_no_enum_is_refused_at_the_pattern() {
+    refused(
+        "fn f(n: Int) -> Int {\n    return match n {\n        .Work(x) -> x,\n        _ -> 0,\n    };\n}\nfn main() { println(f(1)); }\n",
+        "dot_variant_int",
+        "3:9",
+        "`.Work(…)` names a variant of the value's enum, and the value matched is of type `Int`, which is no enum",
+    );
+    refused(
+        "type Book { title: String; }\ntype Film { title: String; }\ntype Item = Book | Film;\nfn f(i: Item) -> Int {\n    return match i {\n        .Book(b) -> 1,\n        _ -> 0,\n    };\n}\nfn main() { println(f(Book { title: \"t\" })); }\n",
+        "dot_variant_set",
+        "6:9",
+        "`.Book(…)` names a variant of an enum, and the value matched is of the set `Item`: a set's member is matched by its type's name alone, `Book(…)`",
+    );
+    refused(
+        "type Job = enum { Work(Int), Rest };\nfn f<T>(t: T) -> Int {\n    return match t {\n        .Work(x) -> 1,\n        _ -> 0,\n    };\n}\nfn main() { println(f(3)); }\n",
+        "dot_variant_type_param",
+        "4:9",
+        "`.Work(…)` names a variant of the value's enum, and the value matched is of type `Int`, which is no enum (in this generic body, specialized for `Int`)",
+    );
+}
+
+/// GH #2069: a variant's pattern that names its values names each of
+/// them. The check passed `Job::Work(1, 2)` against `Work(Int)` and the
+/// build refused it (`has 2 arg(s); variant declares 1`); `.Work(1, 2)`
+/// and `.Rest(x)` are the same pattern, refused the same way.
+#[test]
+fn a_variant_pattern_naming_the_wrong_number_of_values_is_refused_at_the_pattern() {
+    let decl = "type Job = enum { Work(Int), Rest };\n";
+    for (pat, tag) in [("Job::Work(1, 2)", "arity_qualified"), (".Work(1, 2)", "arity_dot")] {
+        refused(
+            &format!("{decl}fn f(j: Job) -> Int {{\n    return match j {{\n        {pat} -> 2,\n        _ -> 0,\n    }};\n}}\nfn main() {{ println(f(Job::Rest)); }}\n"),
+            tag,
+            "4:9",
+            "the variant `Work` carries 1 value, and this pattern names 2",
+        );
+    }
+    refused(
+        &format!("{decl}fn f(j: Job) -> Int {{\n    return match j {{\n        .Rest(x) -> 2,\n        _ -> 0,\n    }};\n}}\nfn main() {{ println(f(Job::Rest)); }}\n"),
+        "arity_none",
+        "4:9",
+        "the variant `Rest` carries no value, so its pattern takes no parentheses, and this pattern names 1",
+    );
+}
+
+/// GH #2069, on review: the shadowing desugar runs before the check, so
+/// against a value whose enum the match does not show (a field, a call,
+/// an element) and several enums declaring `Use`, it cannot tell whether
+/// `.Use(f)`'s `f` is a fn value. The check can: a call of `f` is the call
+/// through the binding where `f` is the payload's fn, and the program's fn
+/// where `f` is an `Int`, exactly as `Apply::Use(f)` and `Count::Use(f)`.
+#[test]
+fn a_dot_variant_binding_of_a_fns_name_calls_what_the_spelled_pattern_does() {
+    let decl = "type Apply = enum { Use(fn(Int) -> Int), Skip };\ntype Count = enum { Use(Int), Skip };\ntype Holder { a: Apply; c: Count; }\nfn f(n: Int) -> Int { return n + 1; }\nfn tenfold(n: Int) -> Int { return n * 10; }\n";
+    let main = "fn main() {\n    let h = Holder { a: Apply::Use(tenfold), c: Count::Use(3) };\n    println(viaa(h), \" \", viac(h));\n}\n";
+    for (pa, pc, tag) in [
+        ((".Use(f)", ".Skip"), (".Use(f)", ".Skip"), "dot_shadow_dotted"),
+        (("Apply::Use(f)", "Apply::Skip"), ("Count::Use(f)", "Count::Skip"), "dot_shadow_spelled"),
+    ] {
+        let src = format!(
+            "{decl}fn viaa(h: Holder) -> Int {{\n    return match h.a {{\n        {} -> f(2),\n        {} -> 0,\n    }};\n}}\nfn viac(h: Holder) -> Int {{\n    return match h.c {{\n        {} -> f(1) + f,\n        {} -> 0,\n    }};\n}}\n{main}",
+            pa.0, pa.1, pc.0, pc.1
+        );
+        let d: PathBuf = std::env::temp_dir().join(format!("hale_check_build_refusals_{}_{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("main.hl");
+        std::fs::write(&f, &src).unwrap();
+        let bin = d.join("bin");
+        let (built, bout) = hale(&["build", &f.to_string_lossy(), "-o", &bin.to_string_lossy()]);
+        assert!(built, "{tag}: {bout}");
+        let run = Command::new(&bin).output().expect("run");
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "20 5", "{tag}");
+    }
+}

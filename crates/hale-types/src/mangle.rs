@@ -2308,6 +2308,13 @@ impl<'a> Mangler<'a> {
                     self.walk_pattern(a);
                 }
             }
+            // GH #2069: `.Variant` names no enum; the checker reads it from
+            // the scrutinee's type, already merged.
+            Pattern::DotVariant { args, .. } => {
+                for a in args {
+                    self.walk_pattern(a);
+                }
+            }
             Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => {
                 for p in ps {
                     self.walk_pattern(p);

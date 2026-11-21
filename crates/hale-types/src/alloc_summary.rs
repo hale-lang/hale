@@ -7944,7 +7944,7 @@ fn pattern_bindings(p: &Pattern, out: &mut BTreeMap<String, Local>) {
         Pattern::Binding(id) => {
             out.insert(id.name.clone(), Local::Unresolved);
         }
-        Pattern::Constructor { args: ps, .. } | Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => {
+        Pattern::Constructor { args: ps, .. } | Pattern::DotVariant { args: ps, .. } | Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => {
             for p in ps {
                 pattern_bindings(p, out);
             }

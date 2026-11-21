@@ -251,7 +251,7 @@ fn no_other_target_changes() {
 
 /// The targets whose dump only names more of what it calls: no verdict,
 /// no fn's tag and no advisory site moves.
-const CALL_LINES_ONLY: [(&str, usize); 38] = [
+const CALL_LINES_ONLY: [(&str, usize); 39] = [
     // The two programs that start `std::io::tcp::Listener`: since it is
     // the TCP connection substrate's, appended to the program that names
     // it, the program alone holds its connection loop too, and its call
@@ -299,6 +299,10 @@ const CALL_LINES_ONLY: [(&str, usize); 38] = [
     // through the alias, which only the renames name (an imported enum's
     // `lib::Mode::name(v)` calls the function written for it, by its own
     // name)
+    // GH #2069's test: the library's `weight`, called through the alias,
+    // which only the renames name, and its seven calls of a `fn(Int) ->
+    // Int` a `Use(f)` pattern binds, which name the fn values of that type
+    ("tests/hale/dot_variant_patterns_test.hl", 8),
     ("tests/hale/enum_names_test.hl", 2),
     // 5: the generics parity test (GH #1964): an imported seed's generic
     // fns and their specializations, called through the alias, which

@@ -2779,7 +2779,7 @@ pub fn fresh_factories(
     fn pattern_ok(p: &Pattern, x: &str) -> bool {
         match p {
             Pattern::Binding(i) => i.name != x,
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+            Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
                 args.iter().all(|a| pattern_ok(a, x))
             }
             Pattern::Literal(..) | Pattern::Wildcard(_) => true,

@@ -847,6 +847,12 @@ fn pattern<'a>(p: &'a Pattern, f: &mut Visit<'_, 'a>) {
                 pattern(a, f);
             }
         }
+        Pattern::DotVariant { variant, args, span: _ } => {
+            name(variant, f);
+            for a in args {
+                pattern(a, f);
+            }
+        }
         Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
             for a in args {
                 pattern(a, f);
