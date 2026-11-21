@@ -552,7 +552,9 @@ other, so the loop carries an overflow branch per element and is not
 vectorized; a kernel that wants lanes says `U32::wrapping_add` /
 `wrapping_mul`, which are plain adds and multiplies at the width (on
 aarch64 four `i32` lanes a NEON instruction, where an `Int`'s
-`.map(it * 3)` has no vector multiply).
+`.map(it * 3)` has no vector multiply). `@vectorize(min_width: 4)` holds
+for such a `U32` fold on aarch64 and x86-64, and refuses the checked one
+at its loop (spec/semantics.md § Vectorized loops).
 
 **Where it goes.** Everywhere a `U64` goes (§ U64), at its own width:
 a record or locus field, a `bounded` buffer, a fixed array, an enum's

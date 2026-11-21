@@ -8699,6 +8699,11 @@ dynamic	Wrap	on main
 row	~	Svc	main	default
 row	~.backend	Backend	main	inherited
 
+== tests/hale/fixed_int_arith_test.hl
+-- dynamic	sites in the seed
+dynamic	<hole>	on main|unresolved declaration `ArithError`
+dynamic	Acc	on main
+
 == tests/hale/fixed_int_storage_test.hl
 row	Holder@main1	Holder	main	default
 row	Samples@main3	Samples	main	default

@@ -5017,7 +5017,11 @@ Where this decision chose:
   carries an overflow branch per element and does not vectorize; a
   kernel that wants lanes writes `T::wrapping_add` / `wrapping_mul`,
   plain adds and multiplies at the width, which do (four `i32` lanes a
-  NEON instruction on aarch64, where `Int`'s multiply has none).
+  NEON instruction on aarch64, where `Int`'s multiply has none), and
+  F.63's `@vectorize(min_width: 4)` holds for them.
+- **No stdlib body.** Every `T::f`, `checked_*` included, is lowered
+  natively at its call, so a program that names none of these types
+  carries nothing of them but the violation's declaration.
 
 **Considered and rejected.** *Aliases* (`Byte`, `Word`): two names for
 one type, and `type Byte = Int { range: 0..256; }` already means
