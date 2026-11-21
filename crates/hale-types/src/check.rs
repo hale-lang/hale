@@ -392,6 +392,19 @@ enum Operator {
     Unary(UnaryOp),
 }
 
+/// GH #2132: the conversion a fixed-width integer's narrowing names where
+/// a value flows (empty for every other pair, whose messages are as they
+/// were): `wide_conversion_hint`'s, for the pairs one side of which is a
+/// narrower integer.
+fn narrowing_hint(want: &Ty, got: &Ty) -> String {
+    let narrow = |t: &Ty| matches!(t, Ty::Prim(p) if p.is_narrow_int());
+    if narrow(want) || narrow(got) {
+        wide_conversion_hint(want, got)
+    } else {
+        String::new()
+    }
+}
+
 /// What an operand is to the operators (`operand_class`).
 /// GH #1934: the conversion a 256-bit place's mismatch names, appended
 /// to the message (empty when neither side is a 256-bit integer). An
@@ -399,6 +412,26 @@ enum Operator {
 fn wide_conversion_hint(want: &Ty, got: &Ty) -> String {
     let wide = |t: &Ty| matches!(t, Ty::Prim(PrimType::U256 | PrimType::I256));
     match (want, got) {
+        // GH #2132: a fixed-width integer narrows by a cast with an `or`
+        (Ty::Prim(w), Ty::Prim(g)) if w.is_narrow_int() && g.machine_int().is_some() => {
+            let (w, g) = (crate::ty::prim_name(*w), crate::ty::prim_name(*g));
+            format!(
+                ": `{g}` does not narrow to `{w}` implicitly; write `{w}(x) or ...`, which says what becomes of a \
+                 value outside `{w}`'s range"
+            )
+        }
+        (Ty::Prim(PrimType::U64), Ty::Prim(g)) if g.is_narrow_int() => {
+            let g = crate::ty::prim_name(*g);
+            format!(": a `{g}` may be negative, which no `U64` holds; write `U64(x) or ...`")
+        }
+        (Ty::Prim(w), Ty::Prim(PrimType::Float)) if w.is_narrow_int() => {
+            let w = crate::ty::prim_name(*w);
+            format!(": a `Float` never converts implicitly; write `{w}(Int(f)) or ...`")
+        }
+        (Ty::Prim(PrimType::Float), Ty::Prim(g)) if g.is_narrow_int() => {
+            let g = crate::ty::prim_name(*g);
+            format!(": only an `Int` widens to a `Float` implicitly; write `Float(x)` for the `{g}`")
+        }
         // GH #2121: a `U64` converts to and from an `Int` by name.
         (Ty::Prim(PrimType::U64), Ty::Prim(PrimType::Int)) => {
             ": a `U64` never converts implicitly; write `U64::from_int(n)`".to_string()
@@ -438,8 +471,8 @@ enum OperandClass {
     Decimal,
     /// GH #1934: `U256` (false) or `I256` (true).
     Wide(bool),
-    /// GH #2121: `U64`.
-    U64,
+    /// GH #2121, #2132: a fixed-width integer (`U64`, `I32` … `U8`).
+    Fixed(PrimType),
     Bool,
     String,
     Enum,
@@ -1417,7 +1450,7 @@ fn walk_bundle(
         array_elements: std::collections::HashMap::new(),
         decimal_literals: Vec::new(),
         decimal_scales: std::collections::HashMap::new(),
-        u64_negations: std::collections::HashSet::new(),
+        fixed_literals_judged: std::collections::HashSet::new(),
         met_rows: Default::default(),
         met_scoped_rows: Vec::new(),
     };
@@ -8366,7 +8399,7 @@ impl<'a> StoreDecls<'a> {
         match t {
             TypeExpr::Primitive(p, _) => matches!(
                 p,
-                PrimType::Int | PrimType::U64 | PrimType::Float | PrimType::Decimal(_) | PrimType::Bool
+                PrimType::Int | PrimType::U64 | PrimType::I32 | PrimType::U32 | PrimType::I16 | PrimType::U16 | PrimType::I8 | PrimType::U8 | PrimType::Float | PrimType::Decimal(_) | PrimType::Bool
                     | PrimType::U256 | PrimType::I256 | PrimType::Time | PrimType::Duration
             ),
             TypeExpr::Named { .. } => match self.named(t).and_then(|n| self.types.get(n)).map(|d| &d.body) {
@@ -11701,7 +11734,7 @@ struct Checker<'a> {
     decimal_scales: std::collections::HashMap<(usize, usize), u8>,
     /// GH #2121: the negations refused as a `U64`, by span: a value is
     /// walked more than once, and each is refused once.
-    u64_negations: std::collections::HashSet<(usize, usize)>,
+    fixed_literals_judged: std::collections::HashSet<(usize, usize)>,
     /// GH #2111 (phase 1, family 7): the expressions whose row a place
     /// decided (`meet_row`): by node in the `views` column, by body, scope
     /// and key in a monomorph's or a default's walk. Another walk of one
@@ -11905,7 +11938,7 @@ impl<'a> Checker<'a> {
                 // `Decimal<S>`: a scale-less Decimal initializer takes the
                 // ascription's scale; two scales are refused there.
                 if self.decimal_flow(&want, &got, &c.value).is_none()
-                    && self.u64_flow(&want, &got, &c.value).is_none()
+                    && self.fixed_flow(&want, &got, &c.value).is_none()
                     && !want.assignable_from(&got)
                 {
                     self.diags.push(Diag::ty(
@@ -15760,6 +15793,14 @@ impl<'a> Checker<'a> {
                             &p.ty,
                             Ty::Prim(PrimType::Int)
                                 | Ty::Prim(PrimType::U64)
+                                | Ty::Prim(
+                                    PrimType::I32
+                                        | PrimType::U32
+                                        | PrimType::I16
+                                        | PrimType::U16
+                                        | PrimType::I8
+                                        | PrimType::U8
+                                )
                                 | Ty::Prim(PrimType::Float)
                                 | Ty::Prim(PrimType::Decimal(_))
                         );
@@ -17318,7 +17359,7 @@ impl<'a> Checker<'a> {
                     // counts; an integer literal is one.
                     let counted = self.scalars.counted(&w);
                     let mut int = got == Ty::Prim(counted);
-                    if !int && got == Ty::Prim(PrimType::Int) && Self::u64_adoptable(value) {
+                    if !int && got == Ty::Prim(PrimType::Int) && Self::int_adoptable(value) {
                         if matches!(bin, BinOp::Mul | BinOp::Div) {
                             self.adopt_int(value, counted);
                         }
@@ -17958,32 +17999,35 @@ impl<'a> Checker<'a> {
                     _ => (then_ty, else_ty),
                 }
             }
-            // GH #2121: an integer literal arm beside a `U64` one is a `U64`
-            (Ty::Prim(PrimType::U64), Ty::Prim(PrimType::Int), Some(else_branch))
-            | (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::U64), Some(else_branch)) => {
+            // GH #2121, #2132: an integer literal arm beside a fixed-width
+            // integer's is one
+            (Ty::Prim(a), Ty::Prim(b), Some(else_branch))
+                if (a.is_fixed_int() && *b == PrimType::Int) || (*a == PrimType::Int && b.is_fixed_int()) =>
+            {
+                let p = if a.is_fixed_int() { *a } else { *b };
                 let else_value: Expr = match else_branch {
                     ElseBranch::Else(blk) => Expr::Block(blk.clone()),
                     ElseBranch::ElseIf(nested) => Expr::If(Box::new(nested.clone())),
                 };
                 let then_value = Expr::Block(stmt.then_block.clone());
-                let u64_ty = Ty::Prim(PrimType::U64);
+                let fixed_ty = Ty::Prim(p);
                 // judged on the copies, adopted on the program's own nodes
                 // (a literal's row is keyed by its node)
-                if then_ty == u64_ty && Self::u64_adoptable(&else_value) {
+                if then_ty == fixed_ty && Self::int_adoptable(&else_value) {
                     match else_branch {
                         ElseBranch::Else(blk) => {
                             if let Some(t) = blk.tail.as_deref() {
-                                self.adopt_u64(t);
+                                self.adopt_fixed(t, p);
                             }
                         }
-                        ElseBranch::ElseIf(nested) => self.adopt_if_u64(nested),
+                        ElseBranch::ElseIf(nested) => self.adopt_if_fixed(nested, p),
                     }
-                    (u64_ty.clone(), u64_ty)
-                } else if else_ty == u64_ty && Self::u64_adoptable(&then_value) {
+                    (fixed_ty.clone(), fixed_ty)
+                } else if else_ty == fixed_ty && Self::int_adoptable(&then_value) {
                     if let Some(t) = stmt.then_block.tail.as_deref() {
-                        self.adopt_u64(t);
+                        self.adopt_fixed(t, p);
                     }
-                    (u64_ty.clone(), u64_ty)
+                    (fixed_ty.clone(), fixed_ty)
                 } else {
                     (then_ty, else_ty)
                 }
@@ -18238,14 +18282,17 @@ impl<'a> Checker<'a> {
                         } else if matches!((prev, &arm_ty), (Ty::Prim(PrimType::Decimal(_)), Ty::Prim(PrimType::Decimal(_)))) {
                             // `Decimal<S>`: joined below, once every arm
                             // is typed.
-                        } else if matches!(
-                            (prev, &arm_ty),
-                            (Ty::Prim(PrimType::U64), Ty::Prim(PrimType::Int))
-                                | (Ty::Prim(PrimType::Int), Ty::Prim(PrimType::U64))
-                        ) {
-                            // GH #2121: an integer literal arm beside a
-                            // `U64` one is a `U64`; joined below.
-                            joined = Some(Ty::Prim(PrimType::U64));
+                        } else if let Some(p) = match (prev, &arm_ty) {
+                            (Ty::Prim(p), Ty::Prim(PrimType::Int)) | (Ty::Prim(PrimType::Int), Ty::Prim(p))
+                                if p.is_fixed_int() =>
+                            {
+                                Some(*p)
+                            }
+                            _ => None,
+                        } {
+                            // GH #2121, #2132: an integer literal arm beside
+                            // a fixed-width integer's is one; joined below.
+                            joined = Some(Ty::Prim(p));
                         } else if arm_ty != Ty::Unknown && arm_ty != *prev {
                             mismatched = true;
                             let message = if matches!(stmt.form, MatchForm::IfLet | MatchForm::IfLetElse) {
@@ -18276,7 +18323,11 @@ impl<'a> Checker<'a> {
         // `U64`; an `Int` arm that is no literal is the mismatch.
         // Adopted on the arms as written (`written`): a literal's row is keyed
         // by its node, and `stmt` is a copy when an arm writes `.Variant`.
-        if as_expr && !mismatched && joined == Some(Ty::Prim(PrimType::U64)) {
+        let fixed = match joined {
+            Some(Ty::Prim(p)) if p.is_fixed_int() => Some(p),
+            _ => None,
+        };
+        if let (true, false, Some(p)) = (as_expr, mismatched, fixed) {
             for (arm, t) in written.arms.iter().zip(&arm_tys) {
                 if *t != Ty::Prim(PrimType::Int) {
                     continue;
@@ -18286,14 +18337,18 @@ impl<'a> Checker<'a> {
                     MatchArmBody::Block(b) => b.tail.as_deref(),
                 };
                 match value {
-                    Some(e) if Self::u64_adoptable(e) => self.adopt_u64(e),
+                    Some(e) if Self::int_adoptable(e) => self.adopt_fixed(e, p),
                     _ => {
                         mismatched = true;
+                        let name = crate::ty::prim_name(p);
+                        let way = if p == PrimType::U64 {
+                            "a `U64` never converts implicitly; write `U64::from_int(n)`".to_string()
+                        } else {
+                            format!("an `Int` does not narrow to `{name}` implicitly; write `{name}(n) or ...`")
+                        };
                         self.diags.push(Diag::ty(
                             stmt.span,
-                            "match expression arms have mismatched types: `U64` vs `Int`: a `U64` never converts \
-                             implicitly; write `U64::from_int(n)`"
-                                .to_string(),
+                            format!("match expression arms have mismatched types: `{name}` vs `Int`: {way}"),
                         ));
                         break;
                     }
@@ -20927,7 +20982,7 @@ impl<'a> Checker<'a> {
         }
         // GH #2121: an `Int` literal into a `U64` place is a `U64`; a
         // literal past `Int`'s max is one anywhere else.
-        if let Some(handled) = self.u64_flow(want, got, value) {
+        if let Some(handled) = self.fixed_flow(want, got, value) {
             return handled;
         }
         // GH #1076 (U3): a value counted in a denomination no declaration
@@ -21050,7 +21105,7 @@ impl<'a> Checker<'a> {
             return handled;
         }
         if let Some(v) = crate::unit_values::int_literal(value) {
-            if matches!(got, Ty::Prim(PrimType::Int | PrimType::U64)) {
+            if matches!(got, Ty::Prim(p) if p.machine_int().is_some()) {
                 match self.scalars.literal(want, v, value.span()) {
                     Some(Ok(())) => {
                         // GH #2131: the literal is a value of the integer
@@ -21767,6 +21822,9 @@ impl<'a> Checker<'a> {
     /// types as before: `Int(x)` of anything but a scalar included, whose
     /// argument is walked again there.
     fn scalar_cast(&mut self, call: NodeId, span: Span, callee: &Ident, args: &[Expr]) -> Option<Ty> {
+        if let Some(t) = self.fixed_cast(call, span, callee, args) {
+            return Some(t);
+        }
         if self.scalars.is_empty()
             || self.generic_params.contains(&callee.name)
             || self.locals.lookup(&callee.name).is_some()
@@ -21841,13 +21899,67 @@ impl<'a> Checker<'a> {
         // GH #2131: an integer literal cast into a scalar counting another
         // integer than `Int` (`Nonce(5)`) is a value of that integer.
         if let Some(int) = self.scalars.int_of(&to).filter(|p| *p != PrimType::Int) {
-            if from == Ty::Prim(PrimType::Int) && Self::u64_adoptable(&args[0]) {
+            if from == Ty::Prim(PrimType::Int) && Self::int_adoptable(&args[0]) {
                 self.adopt_int(&args[0], int);
                 from = Ty::Prim(int);
             }
         }
         let target = callee.name.clone();
         Some(self.check_cast(call, span, to, from, &target))
+    }
+
+    /// GH #2132 (F.64): `T(x)`, `T` a machine integer and `x` a value of
+    /// another, one of the two narrower than 64 bits (`U8(n)`, `Int(b)`,
+    /// `U64(i)`): a conversion, its row recorded in the typed bodies'
+    /// `conversions` column and typed as `T`. Into a type that holds every
+    /// value of `x`'s (`PrimType::widens_to`) it is a widening; into any
+    /// other a narrowing into `T`'s range, which an `or` discharges as a
+    /// range type's does (`or clamp`, `or wrap`, `or <value>`, `or
+    /// handler(err)` with the `RangeError`, `or raise`). An integer literal
+    /// argument is a value of `T`, held to its range where it is written.
+    /// `None` for every other call: an `Int` and a `U64` keep their own
+    /// conversions (`U64::from_int`, `U64::to_int`).
+    fn fixed_cast(&mut self, call: NodeId, span: Span, callee: &Ident, args: &[Expr]) -> Option<Ty> {
+        use crate::typed_bodies::{ConversionKind, ConversionRow};
+        let to = hale_syntax::parser::primitive_from_name(&callee.name).filter(|p| p.machine_int().is_some())?;
+        if args.len() != 1
+            || self.generic_params.contains(&callee.name)
+            || self.locals.lookup(&callee.name).is_some()
+            || self.top.lookup(&callee.name).is_some()
+        {
+            return None;
+        }
+        let mark = self.walk_mark();
+        let got = self.check_expr(&args[0]);
+        let from = match self.through_aliases(got.clone()) {
+            Ty::Prim(p) if p.machine_int().is_some() && (p.is_narrow_int() || to.is_narrow_int()) => p,
+            _ => {
+                self.discard_since(mark);
+                return None;
+            }
+        };
+        let kind = if from == PrimType::Int && to.is_fixed_int() && Self::int_adoptable(&args[0]) {
+            // `U8(200)`: the literal is the value
+            self.adopt_fixed(&args[0], to);
+            ConversionKind::Total
+        } else if from == to {
+            ConversionKind::Total
+        } else if from.widens_to(to) {
+            ConversionKind::Widening
+        } else {
+            ConversionKind::Narrowing
+        };
+        let from_ty = if kind == ConversionKind::Total { Ty::Prim(to) } else { Ty::Prim(from) };
+        if self.specializing.is_none() {
+            let mut row = ConversionRow::new(span, from_ty, Ty::Prim(to), kind, callee.name.clone());
+            if kind == ConversionKind::Narrowing {
+                let (lo, hi) = to.int_bounds().expect("a machine integer");
+                row.range = Some((lo, hi + 1));
+            }
+            let site = self.site(SiteKind::Cast(call.0));
+            self.typed.conversion(self.body, site, row);
+        }
+        Some(Ty::Prim(to))
     }
 
     /// The cast `to(x)` of a value of `from`, classified by the scalar
@@ -22211,6 +22323,12 @@ impl<'a> Checker<'a> {
             Ty::Prim(
                 P::Int
                 | P::U64
+                | P::I32
+                | P::U32
+                | P::I16
+                | P::U16
+                | P::I8
+                | P::U8
                 | P::Float
                 | P::Bool
                 | P::Decimal(_)
@@ -24271,91 +24389,114 @@ impl<'a> Checker<'a> {
     /// `-` or `~` of one, an arithmetic or bit operator over two of them
     /// (a shift's count stays an `Int`), and a block, an `if` or a `match`
     /// whose every value is one. A `U64` place takes it as a `U64`.
-    fn u64_adoptable(e: &Expr) -> bool {
+    fn int_adoptable(e: &Expr) -> bool {
         match e {
             Expr::Literal(Literal::Int(_), _) => true,
-            Expr::Unary { op: UnaryOp::Neg | UnaryOp::BitNot, operand, .. } => Self::u64_adoptable(operand),
+            Expr::Unary { op: UnaryOp::Neg | UnaryOp::BitNot, operand, .. } => Self::int_adoptable(operand),
             Expr::Binary { op: BinOp::Shl | BinOp::Shr, left, right, .. } => {
-                Self::u64_adoptable(left) && matches!(right.as_ref(), Expr::Literal(Literal::Int(_), _))
+                Self::int_adoptable(left) && matches!(right.as_ref(), Expr::Literal(Literal::Int(_), _))
             }
             Expr::Binary {
                 op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor,
                 left,
                 right,
                 ..
-            } => Self::u64_adoptable(left) && Self::u64_adoptable(right),
-            Expr::Block(b) => b.tail.as_deref().is_some_and(Self::u64_adoptable),
-            Expr::If(i) => Self::if_u64_adoptable(i),
+            } => Self::int_adoptable(left) && Self::int_adoptable(right),
+            Expr::Block(b) => b.tail.as_deref().is_some_and(Self::int_adoptable),
+            Expr::If(i) => Self::if_int_adoptable(i),
             Expr::Match(m) => {
                 !m.arms.is_empty()
                     && m.arms.iter().all(|a| match &a.body {
-                        MatchArmBody::Expr(e) => Self::u64_adoptable(e),
-                        MatchArmBody::Block(b) => b.tail.as_deref().is_some_and(Self::u64_adoptable),
+                        MatchArmBody::Expr(e) => Self::int_adoptable(e),
+                        MatchArmBody::Block(b) => b.tail.as_deref().is_some_and(Self::int_adoptable),
                     })
             }
             _ => false,
         }
     }
 
-    fn if_u64_adoptable(i: &IfStmt) -> bool {
-        i.then_block.tail.as_deref().is_some_and(Self::u64_adoptable)
+    fn if_int_adoptable(i: &IfStmt) -> bool {
+        i.then_block.tail.as_deref().is_some_and(Self::int_adoptable)
             && match i.else_block.as_deref() {
-                Some(ElseBranch::Else(b)) => b.tail.as_deref().is_some_and(Self::u64_adoptable),
-                Some(ElseBranch::ElseIf(nested)) => Self::if_u64_adoptable(nested),
+                Some(ElseBranch::Else(b)) => b.tail.as_deref().is_some_and(Self::int_adoptable),
+                Some(ElseBranch::ElseIf(nested)) => Self::if_int_adoptable(nested),
                 None => false,
             }
     }
 
-    /// GH #2121: type the `u64_adoptable` `e` a `U64`. Each literal's row
-    /// says so, so lowering lays it out as one (an `i64` either way; what
-    /// the row decides is the operators and the printing over it). A `U64`
-    /// is never negative, so `-` is refused where it is written: `-5`
-    /// into a `U64` place is a check error at the literal, never a wrap.
-    fn adopt_u64(&mut self, e: &Expr) {
-        let u64_ty = Ty::Prim(PrimType::U64);
+    /// GH #2121, #2132: type the `int_adoptable` `e` a value of the
+    /// fixed-width integer `p` (`U64`, `I32` … `U8`). Each literal's row
+    /// says so, so lowering lays it out as one (its width, and the
+    /// operators and the printing over it). A literal is held to `p`'s
+    /// range where it is written: an unsigned type is never negative, so
+    /// `-` is refused there, and a literal outside a narrower type's range
+    /// is a check error at the literal, never a wrap. A `U64`'s radix
+    /// literal is its 64-bit pattern, as an `Int`'s is.
+    fn adopt_fixed(&mut self, e: &Expr, p: PrimType) {
+        let (_, signed) = p.machine_int().expect("a machine integer");
         // GH #2111 (family 7): an operator, a block, an `if` or a `match`
-        // over adopted literals is a `U64` too, and its row says so
-        if !matches!(e, Expr::Literal(..)) && Self::u64_adoptable(e) {
-            self.meet_row(e, u64_ty.clone());
+        // over adopted literals is one too, and its row says so
+        if !matches!(e, Expr::Literal(..)) && Self::int_adoptable(e) {
+            self.meet_row(e, Ty::Prim(p));
         }
         match e {
-            Expr::Literal(Literal::Int(_), _) => self.meet_row(e, u64_ty),
-            Expr::Unary { op: UnaryOp::Neg, operand, span } => {
+            Expr::Literal(Literal::Int(n), span) => {
+                if p.is_narrow_int() {
+                    self.fixed_literal_range(i128::from(*n), p, *span);
+                }
+                self.note_fixed_literal(e, p);
+            }
+            Expr::Unary { op: UnaryOp::Neg, operand, span } if !signed => {
                 let judged = (span.start.as_usize(), span.end.as_usize());
-                if self.u64_negations.insert(judged) {
+                if self.fixed_literals_judged.insert(judged) {
                     let text = match operand.as_ref() {
                         Expr::Literal(Literal::Int(n), _) => format!("`-{n}`"),
                         _ => "a negated value".to_string(),
                     };
+                    let (_, hi) = p.int_bounds().expect("a machine integer");
+                    let name = crate::ty::prim_name(p);
+                    let top = match p {
+                        PrimType::U64 => "2^64 - 1 (18446744073709551615)".to_string(),
+                        _ => hi.to_string(),
+                    };
                     self.diags.push(Diag::ty(
                         *span,
                         format!(
-                            "{text} cannot be a `U64`: a `U64` is 0 through 2^64 - 1 (18446744073709551615) and has \
-                             no unary `-`; write the value itself, or keep it an `Int`"
+                            "{text} cannot be a `{name}`: a `{name}` is 0 through {top} and has no unary `-`; write \
+                             the value itself, or keep it an `Int`"
                         ),
                     ));
                 }
-                self.adopt_u64(operand);
+                self.adopt_fixed_inner(operand, p);
             }
-            Expr::Unary { operand, .. } => self.adopt_u64(operand),
-            Expr::Binary { op: BinOp::Shl | BinOp::Shr, left, .. } => self.adopt_u64(left),
+            // a negated literal is held to the range as the value it is
+            // (`-128` is an `I8`, though `128` is not)
+            Expr::Unary { op: UnaryOp::Neg, operand, span } => match operand.as_ref() {
+                Expr::Literal(Literal::Int(n), _) => {
+                    self.fixed_literal_range(-i128::from(*n), p, *span);
+                    self.note_fixed_literal(operand, p);
+                }
+                _ => self.adopt_fixed(operand, p),
+            },
+            Expr::Unary { operand, .. } => self.adopt_fixed(operand, p),
+            Expr::Binary { op: BinOp::Shl | BinOp::Shr, left, .. } => self.adopt_fixed(left, p),
             Expr::Binary { left, right, .. } => {
-                self.adopt_u64(left);
-                self.adopt_u64(right);
+                self.adopt_fixed(left, p);
+                self.adopt_fixed(right, p);
             }
             Expr::Block(b) => {
                 if let Some(t) = b.tail.as_deref() {
-                    self.adopt_u64(t);
+                    self.adopt_fixed(t, p);
                 }
             }
-            Expr::If(i) => self.adopt_if_u64(i),
+            Expr::If(i) => self.adopt_if_fixed(i, p),
             Expr::Match(m) => {
                 for arm in &m.arms {
                     match &arm.body {
-                        MatchArmBody::Expr(e) => self.adopt_u64(e),
+                        MatchArmBody::Expr(e) => self.adopt_fixed(e, p),
                         MatchArmBody::Block(b) => {
                             if let Some(t) = b.tail.as_deref() {
-                                self.adopt_u64(t);
+                                self.adopt_fixed(t, p);
                             }
                         }
                     }
@@ -24365,39 +24506,92 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn adopt_if_u64(&mut self, i: &IfStmt) {
+    /// The operand of a refused negation: typed as `p` with no second
+    /// error at its literal.
+    fn adopt_fixed_inner(&mut self, e: &Expr, p: PrimType) {
+        match e {
+            Expr::Literal(Literal::Int(_), _) => self.note_fixed_literal(e, p),
+            _ => self.adopt_fixed(e, p),
+        }
+    }
+
+    /// The literal `e`'s row: a value of `p`.
+    fn note_fixed_literal(&mut self, e: &Expr, p: PrimType) {
+        self.meet_row(e, Ty::Prim(p));
+    }
+
+    /// GH #2132: an integer literal of the value `v` where a `p` is
+    /// expected, held to `p`'s range at `span` (once per span: a value is
+    /// walked more than once).
+    fn fixed_literal_range(&mut self, v: i128, p: PrimType, span: Span) {
+        let (lo, hi) = p.int_bounds().expect("a machine integer");
+        if (lo..=hi).contains(&v) {
+            return;
+        }
+        let judged = (span.start.as_usize(), span.end.as_usize());
+        if !self.fixed_literals_judged.insert(judged) {
+            return;
+        }
+        let name = crate::ty::prim_name(p);
+        let wider = match p.machine_int() {
+            Some((_, false)) if v < 0 => "a negative value is an `Int`, or a signed type's".to_string(),
+            _ => "a wider type holds it (`Int`, or a wider fixed-width integer)".to_string(),
+        };
+        self.diags.push(Diag::ty(
+            span,
+            format!("integer literal {v} does not fit `{name}`, which is {lo} through {hi}: {wider}"),
+        ));
+    }
+
+    fn adopt_if_fixed(&mut self, i: &IfStmt, p: PrimType) {
         if let Some(t) = i.then_block.tail.as_deref() {
-            self.adopt_u64(t);
+            self.adopt_fixed(t, p);
         }
         match i.else_block.as_deref() {
             Some(ElseBranch::Else(b)) => {
                 if let Some(t) = b.tail.as_deref() {
-                    self.adopt_u64(t);
+                    self.adopt_fixed(t, p);
                 }
             }
-            Some(ElseBranch::ElseIf(nested)) => self.adopt_if_u64(nested),
+            Some(ElseBranch::ElseIf(nested)) => self.adopt_if_fixed(nested, p),
             None => {}
         }
     }
 
-    /// GH #2121: a value of `got`, the expression `value`, into a place of
-    /// `want`, when either is a `U64`. An integer literal (`u64_adoptable`)
-    /// into a `U64` is one, as is an array literal of them into an array
-    /// of `U64`; a literal past `Int`'s max into any other place is
-    /// refused naming the range. `None` leaves the pair to the general
-    /// rule (which refuses `Int` into `U64` and back, naming the
-    /// conversion).
-    fn u64_flow(&mut self, want: &Ty, got: &Ty, value: &Expr) -> Option<bool> {
-        let u64_ty = Ty::Prim(PrimType::U64);
-        let want_u64 = self.through_aliases(want.clone()) == u64_ty;
-        if want_u64 && matches!(got, Ty::Prim(PrimType::Int)) && Self::u64_adoptable(value) {
-            self.adopt_u64(value);
-            return Some(true);
+    /// A fixed-width integer (`U64`, `I32` … `U8`), seen through aliases.
+    fn fixed_int_of(&self, t: &Ty) -> Option<PrimType> {
+        match self.through_aliases(t.clone()) {
+            Ty::Prim(p) if p.is_fixed_int() => Some(p),
+            _ => None,
+        }
+    }
+
+    /// GH #2121, #2132: a value of `got`, the expression `value`, into a
+    /// place of `want`, when either is a fixed-width integer. An integer
+    /// literal (`int_adoptable`) into one is one, as is an array literal
+    /// of them into an array of one; a value of a machine integer widens
+    /// into another where nothing is lost (`PrimType::widens_to`); a
+    /// literal past `Int`'s max into any place but a `U64` is refused
+    /// naming the range. `None` leaves the pair to the general rule (which
+    /// refuses a narrowing, naming the conversion).
+    fn fixed_flow(&mut self, want: &Ty, got: &Ty, value: &Expr) -> Option<bool> {
+        let want_fixed = self.fixed_int_of(want);
+        if let Some(p) = want_fixed {
+            if matches!(got, Ty::Prim(PrimType::Int)) && Self::int_adoptable(value) {
+                self.adopt_fixed(value, p);
+                return Some(true);
+            }
+        }
+        // GH #2132: a lossless widening (`U8` into `U32`, `I32` into `Int`)
+        if let (Ty::Prim(w), Ty::Prim(g)) = (self.through_aliases(want.clone()), self.through_aliases(got.clone())) {
+            if g.widens_to(w) {
+                return Some(true);
+            }
         }
         // GH #2131: a scalar counting a `U64` takes the literal as its
         // own rules say (its range).
         let scalar_u64 = self.scalars.int_of(want) == Some(PrimType::U64);
-        if !want_u64 && !scalar_u64 && !matches!(want, Ty::Unknown) {
+        if want_fixed != Some(PrimType::U64) && !scalar_u64 && !matches!(want, Ty::Unknown) {
             if let Expr::Literal(Literal::U64(n), span) = value {
                 self.diags.push(Diag::ty(
                     *span,
@@ -24411,26 +24605,50 @@ impl<'a> Checker<'a> {
             }
         }
         // `[1, 2]` / `[0; 4]` into `[U64; N]` (or a `bounded`, whose
-        // literal flows element by element where it is judged)
+        // literal flows element by element where it is judged); GH #2132:
+        // an element of a narrower integer widens into the array's
+        // integer as a value does (`[b, 7]` into `[U32; 2]`, `b` a `U8`)
+        if let (Ty::Array(we, wn), Expr::Array(elems, _)) = (want, value) {
+            let int_elem = match self.through_aliases((**we).clone()) {
+                Ty::Prim(p) if p.machine_int().is_some() => Some(p),
+                _ => None,
+            };
+            if let (Some(p), true) = (int_elem, wn.is_none_or(|n| n == elems.len() as u64)) {
+                let widens = |t: &Ty| matches!(t, Ty::Prim(g) if g.widens_to(p));
+                let tys: Vec<Ty> = elems.iter().map(|e| self.view_expr_ty(e)).collect();
+                if tys.iter().any(&widens) {
+                    let mut all = true;
+                    for (e, t) in elems.iter().zip(&tys) {
+                        if Self::int_adoptable(e) {
+                            self.adopt_int(e, p);
+                        } else {
+                            all &= *t == Ty::Prim(p) || matches!(t, Ty::Unknown) || widens(t);
+                        }
+                    }
+                    return Some(all);
+                }
+            }
+        }
         if let Ty::Array(we, wn) = want {
-            if self.through_aliases((**we).clone()) == u64_ty {
+            if let Some(p) = self.fixed_int_of(we) {
+                let elem_ty = Ty::Prim(p);
                 match value {
                     Expr::Array(elems, _) if wn.is_none_or(|n| n == elems.len() as u64) => {
-                        if elems.iter().any(Self::u64_adoptable) {
+                        if elems.iter().any(Self::int_adoptable) {
                             let mut all = true;
                             for e in elems {
-                                if Self::u64_adoptable(e) {
-                                    self.adopt_u64(e);
+                                if Self::int_adoptable(e) {
+                                    self.adopt_fixed(e, p);
                                 } else {
                                     let t = self.view_expr_ty(e);
-                                    all &= t == u64_ty || matches!(t, Ty::Unknown);
+                                    all &= t == elem_ty || matches!(t, Ty::Unknown);
                                 }
                             }
                             return Some(all);
                         }
                     }
-                    Expr::ArrayRepeat { val, count, .. } if wn.is_none_or(|n| n == *count) && Self::u64_adoptable(val) => {
-                        self.adopt_u64(val);
+                    Expr::ArrayRepeat { val, count, .. } if wn.is_none_or(|n| n == *count) && Self::int_adoptable(val) => {
+                        self.adopt_fixed(val, p);
                         return Some(true);
                     }
                     _ => {}
@@ -24444,8 +24662,8 @@ impl<'a> Checker<'a> {
     /// unit-dialect scalar counts is expected is one: a `U64`'s is adopted
     /// as a `U64` (`adopt_u64`), and an `Int`'s is one already.
     fn adopt_int(&mut self, e: &Expr, int: PrimType) {
-        if int == PrimType::U64 {
-            self.adopt_u64(e);
+        if int.is_fixed_int() {
+            self.adopt_fixed(e, int);
         }
     }
 
@@ -24460,27 +24678,29 @@ impl<'a> Checker<'a> {
         }
         let counted = |t: &Ty| self.scalars.quantity(t).map(|q| self.scalars.counted(&q)).filter(|p| *p != PrimType::Int);
         let int = Ty::Prim(PrimType::Int);
-        if let (Some(p), true) = (counted(lt), *rt == int && Self::u64_adoptable(operands.1)) {
+        if let (Some(p), true) = (counted(lt), *rt == int && Self::int_adoptable(operands.1)) {
             self.adopt_int(operands.1, p);
             r = Ty::Prim(p);
-        } else if let (Some(p), true, BinOp::Mul) = (counted(rt), *lt == int && Self::u64_adoptable(operands.0), op) {
+        } else if let (Some(p), true, BinOp::Mul) = (counted(rt), *lt == int && Self::int_adoptable(operands.0), op) {
             self.adopt_int(operands.0, p);
             l = Ty::Prim(p);
         }
         (l, r)
     }
 
-    /// GH #2121: `min(x, 0)` / `max(x, 1)` over a `U64`: an integer
-    /// literal operand is a `U64`, as an operator's is.
-    fn adopt_operand_u64(&mut self, args: &[Expr], mut tys: Vec<Ty>) -> Vec<Ty> {
-        let u64_ty = Ty::Prim(PrimType::U64);
-        if !tys.contains(&u64_ty) {
+    /// GH #2121, #2132: `min(x, 0)` / `max(x, 1)` over a fixed-width
+    /// integer: an integer literal operand is one, as an operator's is.
+    fn adopt_operand_fixed(&mut self, args: &[Expr], mut tys: Vec<Ty>) -> Vec<Ty> {
+        let Some(p) = tys.iter().find_map(|t| match t {
+            Ty::Prim(p) if p.is_fixed_int() => Some(*p),
+            _ => None,
+        }) else {
             return tys;
-        }
+        };
         for (a, t) in args.iter().zip(tys.iter_mut()) {
-            if matches!(t, Ty::Prim(PrimType::Int)) && Self::u64_adoptable(a) {
-                self.adopt_u64(a);
-                *t = u64_ty.clone();
+            if matches!(t, Ty::Prim(PrimType::Int)) && Self::int_adoptable(a) {
+                self.adopt_fixed(a, p);
+                *t = Ty::Prim(p);
             }
         }
         tys
@@ -25168,7 +25388,11 @@ impl<'a> Checker<'a> {
                                     let repr = self.through_aliases(
                                         self.scalars.representation(&self.through_aliases(at.clone())),
                                     );
-                                    if matches!(repr, Ty::Prim(PrimType::Int | PrimType::Float) | Ty::Unknown) {
+                                    // GH #2132: a narrower integer's `Int` and
+                                    // `Float` are exact (F.64).
+                                    if matches!(repr, Ty::Prim(PrimType::Int | PrimType::Float) | Ty::Unknown)
+                                        || matches!(repr, Ty::Prim(p) if p.is_narrow_int())
+                                    {
                                         continue;
                                     }
                                     // GH #2121: a `U64`'s `Float` is exact up to
@@ -25239,6 +25463,12 @@ impl<'a> Checker<'a> {
                                             Ty::Prim(
                                                 PrimType::Int
                                                     | PrimType::U64
+                                                    | PrimType::I32
+                                                    | PrimType::U32
+                                                    | PrimType::I16
+                                                    | PrimType::U16
+                                                    | PrimType::I8
+                                                    | PrimType::U8
                                                     | PrimType::Float
                                                     | PrimType::Duration
                                                     | PrimType::Decimal(_)
@@ -25393,7 +25623,7 @@ impl<'a> Checker<'a> {
                                     );
                                     if !widen_ok
                                         && self.decimal_flow(&elem, &xt, x).is_none()
-                                        && self.u64_flow(&elem, &xt, x).is_none()
+                                        && self.fixed_flow(&elem, &xt, x).is_none()
                                         && !elem.assignable_from(&xt)
                                     {
                                         self.diags.push(Diag::ty(
@@ -25451,7 +25681,7 @@ impl<'a> Checker<'a> {
                                         // takes the bounded element's scale.
                                         if !widen_ok
                                             && self.decimal_flow(&elem, &xt, x).is_none()
-                                        && self.u64_flow(&elem, &xt, x).is_none()
+                                        && self.fixed_flow(&elem, &xt, x).is_none()
                                             && !elem.assignable_from(&xt)
                                         {
                                             self.diags.push(Diag::ty(
@@ -25980,10 +26210,11 @@ impl<'a> Checker<'a> {
                                 callee.span(),
                                 format!(
                                     "argument {} type mismatch: expected \
-                                     `{}`, got `{}`",
+                                     `{}`, got `{}`{}",
                                     i,
                                     param_ty.display(),
-                                    arg_ty.display()
+                                    arg_ty.display(),
+                                    narrowing_hint(param_ty, arg_ty)
                                 ),
                             ));
                         }
@@ -26053,7 +26284,7 @@ impl<'a> Checker<'a> {
                         // takes the other's scale.
                         let arg_tys = if matches!(id.name.as_str(), "min" | "max") {
                             let tys = self.adopt_operand_decimal_scale(args, arg_tys.clone());
-                            self.adopt_operand_u64(args, tys)
+                            self.adopt_operand_fixed(args, tys)
                         } else {
                             arg_tys.clone()
                         };
@@ -27938,14 +28169,16 @@ impl<'a> Checker<'a> {
         );
         // `?` (RFC #2035) takes any printable value, checked above.
         // GH #2121: a `U64`'s hex is its 64 bits', which is what an
-        // `Int`'s rendering prints too (unsigned)
+        // `Int`'s rendering prints too (unsigned); GH #2132: a narrower
+        // integer's is its own width's bits
         if matches!(spec.kind, SpecKind::HexLower | SpecKind::HexUpper)
-            && !matches!(vt, Ty::Prim(PrimType::Int | PrimType::U64) | Ty::Unknown)
+            && !matches!(vt, Ty::Prim(p) if p.machine_int().is_some())
+            && !matches!(vt, Ty::Unknown)
         {
             self.diags.push(Diag::ty(
                 args[0].span(),
                 format!(
-                    "hexadecimal formatting applies to `Int` or `U64`, not \
+                    "hexadecimal formatting applies to an integer (`Int`, `U64`, `I32` … `U8`), not \
                      `{}` — drop the `x`, or convert first",
                     vt.display()
                 ),
@@ -28152,16 +28385,21 @@ impl<'a> Checker<'a> {
         Some(if compared { Ty::Prim(PrimType::Bool) } else { Ty::Unknown })
     }
 
-    /// GH #2121: a binary operator with a `U64` operand, when the general
-    /// rule would not answer it: a shift's count is an `Int`; an integer
-    /// literal operand is a `U64` (`x + 1`, `x < 10`); any other mix with
-    /// a different type is refused naming the conversion. `None` leaves
-    /// the operator to the general rule (two `U64`s).
-    fn u64_binop(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span, operands: (&Expr, &Expr)) -> Option<Ty> {
+    /// GH #2121, #2132: a binary operator with a fixed-width integer
+    /// operand (`U64`, `I32` … `U8`), when the general rule would not
+    /// answer it: a shift's count is an `Int`; an integer literal operand
+    /// is the other's type (`x + 1`, `x < 10`); any other mix with a
+    /// different type is refused naming the conversion (operands never
+    /// widen: F.64). `None` leaves the operator to the general rule (two of
+    /// one type).
+    fn fixed_binop(&mut self, op: BinOp, lt: &Ty, rt: &Ty, span: Span, operands: (&Expr, &Expr)) -> Option<Ty> {
         use BinOp::*;
-        let u64_ty = Ty::Prim(PrimType::U64);
-        let is_u64 = |t: &Ty| *t == u64_ty;
-        if !is_u64(lt) && !is_u64(rt) {
+        let fixed = |t: &Ty| match t {
+            Ty::Prim(p) if p.is_fixed_int() => Some(*p),
+            _ => None,
+        };
+        let (lf, rf) = (fixed(lt), fixed(rt));
+        if lf.is_none() && rf.is_none() {
             return None;
         }
         // GH #2131: a scalar of the unit dialect beside a `U64` (a count
@@ -28169,26 +28407,29 @@ impl<'a> Checker<'a> {
         if self.scalars.int_of(lt).is_some() || self.scalars.int_of(rt).is_some() {
             return None;
         }
-        if matches!(op, Shl | Shr) && is_u64(lt) {
+        if let (Shl | Shr, Some(p)) = (op, lf) {
             if !matches!(rt, Ty::Prim(PrimType::Int) | Ty::Unknown) {
                 self.diags.push(Diag::ty(
                     span,
                     format!(
-                        "`{}`: a `U64` shifts by an `Int` count, not a `{}`",
+                        "`{}`: a `{}` shifts by an `Int` count, not a `{}`",
                         crate::unit_quantities::op_symbol(op),
+                        crate::ty::prim_name(p),
                         rt.display()
                     ),
                 ));
             }
-            return Some(u64_ty);
+            return Some(Ty::Prim(p));
         }
         // a shift's count is an `Int`, whatever is shifted
-        if matches!(op, Shl | Shr) && is_u64(rt) {
+        if let (Shl | Shr, Some(p)) = (op, rf) {
+            let way = if p == PrimType::U64 { "`U64::to_int(n) or ...`" } else { "`Int(n)`" };
             self.diags.push(Diag::ty(
                 span,
                 format!(
-                    "`{}`: a shift's count is an `Int`, not a `U64`; write `U64::to_int(n) or ...`",
-                    crate::unit_quantities::op_symbol(op)
+                    "`{}`: a shift's count is an `Int`, not a `{}`; write {way}",
+                    crate::unit_quantities::op_symbol(op),
+                    crate::ty::prim_name(p)
                 ),
             ));
             return Some(Ty::Unknown);
@@ -28198,38 +28439,58 @@ impl<'a> Checker<'a> {
         }
         let compared = matches!(op, Eq | NotEq | Lt | Gt | LtEq | GtEq);
         let int = |t: &Ty| matches!(t, Ty::Prim(PrimType::Int));
-        let adopted = if is_u64(lt) && int(rt) && Self::u64_adoptable(operands.1) {
-            Some(operands.1)
-        } else if is_u64(rt) && int(lt) && Self::u64_adoptable(operands.0) {
-            Some(operands.0)
-        } else {
-            None
+        let adopted = match (lf, rf) {
+            (Some(p), _) if int(rt) && Self::int_adoptable(operands.1) => Some((operands.1, p)),
+            (_, Some(p)) if int(lt) && Self::int_adoptable(operands.0) => Some((operands.0, p)),
+            _ => None,
         };
-        if let Some(lit) = adopted {
-            self.adopt_u64(lit);
-            if let Some(why) = self.operator_refusal(Operator::Binary(op), &u64_ty) {
+        if let Some((lit, p)) = adopted {
+            self.adopt_fixed(lit, p);
+            if let Some(why) = self.operator_refusal(Operator::Binary(op), &Ty::Prim(p)) {
                 self.diags.push(Diag::ty(span, why));
                 return Some(if compared { Ty::Prim(PrimType::Bool) } else { Ty::Unknown });
             }
-            return Some(if compared { Ty::Prim(PrimType::Bool) } else { u64_ty });
+            return Some(if compared { Ty::Prim(PrimType::Bool) } else { Ty::Prim(p) });
         }
-        let other = if is_u64(lt) { rt } else { lt };
+        let (p, other) = match (lf, rf) {
+            (Some(p), _) => (p, rt),
+            (_, Some(p)) => (p, lt),
+            _ => unreachable!("one side is a fixed-width integer"),
+        };
+        let name = crate::ty::prim_name(p);
         let hint = match other {
-            Ty::Prim(PrimType::Int) => {
-                "make the `Int` a `U64` with `U64::from_int(n)`, or the `U64` an `Int` with `U64::to_int(x) or ...`"
+            Ty::Prim(PrimType::String) if matches!(op, Add) => return None,
+            Ty::Prim(PrimType::Int) if p == PrimType::U64 => {
+                "a `U64` never converts implicitly; make the `Int` a `U64` with `U64::from_int(n)`, or the `U64` an \
+                 `Int` with `U64::to_int(x) or ...`"
                     .to_string()
             }
-            Ty::Prim(PrimType::Float) => "make the `U64` a `Float` with `Float(x)`".to_string(),
-            Ty::Prim(PrimType::String) if matches!(op, Add) => return None,
-            _ => "convert the other operand to a `U64` explicitly".to_string(),
+            Ty::Prim(PrimType::Int) => format!(
+                "operands never widen; make the `{name}` an `Int` with `Int(x)`, or the `Int` a `{name}` with \
+                 `{name}(n) or ...`"
+            ),
+            Ty::Prim(PrimType::Float) if p == PrimType::U64 => {
+                "a `U64` never converts implicitly; make the `U64` a `Float` with `Float(x)`".to_string()
+            }
+            Ty::Prim(PrimType::Float) => format!("operands never widen; make the `{name}` a `Float` with `Float(x)`"),
+            Ty::Prim(q) if q.machine_int().is_some() => {
+                let qn = crate::ty::prim_name(*q);
+                if p.widens_to(*q) {
+                    format!("operands never widen; make the `{name}` a `{qn}` with `{qn}(x)`")
+                } else if q.widens_to(p) {
+                    format!("operands never widen; make the `{qn}` a `{name}` with `{name}(x)`")
+                } else {
+                    format!("operands never widen; convert one with a cast and an `or`: `{name}(x) or ...`")
+                }
+            }
+            _ if p == PrimType::U64 => {
+                "a `U64` never converts implicitly; convert the other operand to a `U64` explicitly".to_string()
+            }
+            _ => format!("convert the other operand to a `{name}` explicitly"),
         };
         self.diags.push(Diag::ty(
             span,
-            format!(
-                "binary op: `{}` and `{}` do not mix: a `U64` never converts implicitly; {hint}",
-                lt.display(),
-                rt.display()
-            ),
+            format!("binary op: `{}` and `{}` do not mix: {hint}", lt.display(), rt.display()),
         ));
         Some(if compared { Ty::Prim(PrimType::Bool) } else { Ty::Unknown })
     }
@@ -28257,7 +28518,7 @@ impl<'a> Checker<'a> {
         // converts implicitly, in either direction.
         // GH #2121: a `U64` shifts by an `Int` count, takes an integer
         // literal as a `U64`, and mixes with nothing else.
-        if let Some(t) = self.u64_binop(op, lt, rt, span, operands) {
+        if let Some(t) = self.fixed_binop(op, lt, rt, span, operands) {
             return t;
         }
         if let Some(t) = self.wide_binop(op, lt, rt, span) {
@@ -28442,9 +28703,16 @@ impl<'a> Checker<'a> {
                 };
                 let (Some(want), Some(have)) = (self.pattern_repr(scrut), self.pattern_repr(&got)) else { return };
                 // GH #2121: an integer literal matched against a `U64` is
-                // one (its digits, or a radix literal's bit pattern)
+                // one (its digits, or a radix literal's bit pattern);
+                // GH #2132: against a narrower integer, one held to its range
                 if want == "U64" && matches!(lit, Literal::Int(_)) {
                     return;
+                }
+                if let (Some(p), Literal::Int(n)) = (hale_syntax::parser::primitive_from_name(&want), lit) {
+                    if p.is_narrow_int() {
+                        self.fixed_literal_range(i128::from(*n), p, *span);
+                        return;
+                    }
                 }
                 if want != have {
                     self.diags.push(Diag::ty(
@@ -28605,7 +28873,7 @@ impl<'a> Checker<'a> {
             Ty::Prim(PrimType::Int) => OperandClass::Int,
             Ty::Prim(PrimType::Float) => OperandClass::Float,
             Ty::Prim(PrimType::Decimal(_)) => OperandClass::Decimal,
-            Ty::Prim(PrimType::U64) => OperandClass::U64,
+            Ty::Prim(p) if p.is_fixed_int() => OperandClass::Fixed(*p),
             Ty::Prim(PrimType::U256) => OperandClass::Wide(false),
             Ty::Prim(PrimType::I256) => OperandClass::Wide(true),
             Ty::Prim(PrimType::Bool) => OperandClass::Bool,
@@ -28722,8 +28990,13 @@ impl<'a> Checker<'a> {
             // a sign.
             (Operator::Binary(b), OperandClass::Wide(_)) => !matches!(b, And | Or),
             // GH #2121: an Int's operators, and no sign to negate.
-            (Operator::Binary(b), OperandClass::U64) => !matches!(b, And | Or),
-            (Operator::Unary(u), OperandClass::U64) => matches!(u, UnaryOp::BitNot),
+            (Operator::Binary(b), OperandClass::Fixed(_)) => !matches!(b, And | Or),
+            // unary `-` only where there is a sign
+            (Operator::Unary(u), OperandClass::Fixed(p)) => match u {
+                UnaryOp::Neg => p.machine_int().is_some_and(|(_, signed)| signed),
+                UnaryOp::BitNot => true,
+                UnaryOp::Not => false,
+            },
             (Operator::Unary(u), OperandClass::Wide(signed)) => match u {
                 UnaryOp::Neg => signed,
                 UnaryOp::BitNot => true,
@@ -28771,9 +29044,17 @@ impl<'a> Checker<'a> {
                 "a `U256` has `+ - * / %`, `& | ^ ~`, `<<` and `>>` by an `Int` count, and the comparisons; \
                  it has no sign to negate (`I256` does)"
             }
-            OperandClass::U64 => {
+            OperandClass::Fixed(PrimType::U64) => {
                 "a `U64` has `+ - * / %`, `& | ^ ~`, `<<` and `>>` by an `Int` count, and the comparisons; \
                  it is never negative, so it has no unary `-`"
+            }
+            OperandClass::Fixed(p) if p.machine_int().is_some_and(|(_, signed)| signed) => {
+                "a signed fixed-width integer has `+ - * / %`, unary `-`, `& | ^ ~`, `<<` and `>>` by an `Int` \
+                 count, and the comparisons"
+            }
+            OperandClass::Fixed(_) => {
+                "an unsigned fixed-width integer has `+ - * / %`, `& | ^ ~`, `<<` and `>>` by an `Int` count, and \
+                 the comparisons; it is never negative, so it has no unary `-`"
             }
             OperandClass::Wide(true) => "an `I256` has `+ - * / %`, unary `-`, `& | ^ ~`, `<< >>`, and the comparisons",
             OperandClass::Bool => "a `Bool` has `==`, `!=`, `&&`, `||` and `!`",

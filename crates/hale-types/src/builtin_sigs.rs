@@ -127,13 +127,23 @@ impl BuiltinSig {
             (Operands::IntOrFloat, Ty::Prim(p)) => {
                 // GH #2121: `Float(x)` of a `U64` (`uitofp`); its `Int` is
                 // `U64::to_int(x) or ...`, which can fail
-                matches!(p, PrimType::Int | PrimType::Float) || (self.name == "Float" && *p == PrimType::U64)
+                // GH #2132: `Int(x)` and `Float(x)` of a narrower integer are
+                // exact (sign- or zero-extended, `sitofp` / `uitofp`)
+                matches!(p, PrimType::Int | PrimType::Float)
+                    || p.is_narrow_int()
+                    || (self.name == "Float" && *p == PrimType::U64)
             }
             (Operands::Numeric, Ty::Prim(p)) => {
                 matches!(
                     p,
                     PrimType::Int
                         | PrimType::U64
+                        | PrimType::I32
+                        | PrimType::U32
+                        | PrimType::I16
+                        | PrimType::U16
+                        | PrimType::I8
+                        | PrimType::U8
                         | PrimType::Float
                         | PrimType::Duration
                         | PrimType::Decimal(_)

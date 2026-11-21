@@ -40,7 +40,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     e,
                     CodegenTy::Enum(_)
                         | CodegenTy::Int
-                        | CodegenTy::U64
+                        | CodegenTy::U64 | CodegenTy::Narrow(_)
                         | CodegenTy::Float
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)
@@ -65,6 +65,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             TypeExpr::Primitive(p, _) => match p {
                 PrimType::Int => Ok(CodegenTy::Int),
                 PrimType::U64 => Ok(CodegenTy::U64),
+                PrimType::I32 | PrimType::U32 | PrimType::I16 | PrimType::U16 | PrimType::I8 | PrimType::U8 => {
+                    Ok(CodegenTy::Narrow(*p))
+                }
                 PrimType::Float => Ok(CodegenTy::Float),
                 PrimType::Bool => Ok(CodegenTy::Bool),
                 PrimType::String => Ok(CodegenTy::String),
@@ -729,6 +732,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // GH #607: Time is i64 nanoseconds since the epoch.
                 self.context.i64_type().into()
             }
+            // GH #2132: the declared width
+            CodegenTy::Narrow(p) => self.narrow_int_type(*p).into(),
             CodegenTy::FnPtr { .. } => {
                 // m80: function pointers store as raw `ptr`. The
                 // FunctionType for indirect calls is synthesized
@@ -817,6 +822,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let prim = match elem.as_ref() {
                     CodegenTy::Int => Some(PrimType::Int),
                     CodegenTy::U64 => Some(PrimType::U64),
+                    CodegenTy::Narrow(p) => Some(*p),
                     CodegenTy::Float => Some(PrimType::Float),
                     CodegenTy::Bool => Some(PrimType::Bool),
                     CodegenTy::Decimal(s) => Some(PrimType::Decimal(*s)),
@@ -1080,6 +1086,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             } else {
                 (val, val_ty)
             };
+            let val = self.fit_int(val, &val_ty, &declared_ty)?;
             if val_ty != declared_ty && !crate::codegen::int_literal_as_u64(&val_ty, &declared_ty) {
                 return Err(CodegenError::Unsupported(format!(
                     "type `{}` field `{}` type mismatch: declared {}, \
@@ -1370,7 +1377,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // rejected at lowering, so no deep-copy path exists.
             CodegenTy::Bounded(_, _) => false,
             CodegenTy::Int
-            | CodegenTy::U64
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)

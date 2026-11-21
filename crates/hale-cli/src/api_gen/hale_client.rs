@@ -32,6 +32,8 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         FieldSchema::Scalar { json: "string", hale_type: Some(t), .. } if matches!(t.as_str(), "U64" | "U256" | "I256" | "Int") => {
             Ok(t.clone())
         }
+        // GH #2132: a fixed-width integer is a JSON integer naming its type
+        FieldSchema::Scalar { json: "integer", hale_type: Some(t), .. } if is_fixed_int(t) => Ok(t.clone()),
         FieldSchema::Scalar { json, .. } => Ok(match *json {
             "integer" => "Int",
             "number" => "Float",
@@ -53,6 +55,11 @@ fn hale_type(f: &FieldSchema, what: &str) -> Result<String, String> {
         FieldSchema::Presence { .. } => Ok("Bool".to_string()),
         FieldSchema::Unformed => Err(unformed(what)),
     }
+}
+
+/// GH #2132: a fixed-width integer narrower than 64 bits, by its name.
+fn is_fixed_int(t: &str) -> bool {
+    matches!(t, "I32" | "U32" | "I16" | "U16" | "I8" | "U8")
 }
 
 /// The JSON of `value`, a Hale expression of the schema's type.
@@ -104,6 +111,11 @@ fn decode_into(f: &FieldSchema, json: &str, var: &str, fail: &dyn Fn(&str) -> St
                 fail("err.kind + \": \" + err.input")
             )
         }
+        // GH #2132: a fixed-width integer, its range held
+        FieldSchema::Scalar { json: "integer", hale_type: Some(t), .. } if is_fixed_int(t) => format!(
+            "let {var} = {t}(api_scalar_int({json})) or {{ {} }};\n",
+            fail("err.kind + \": \" + to_string(err.value)")
+        ),
         FieldSchema::Scalar { json: kind, .. } => format!(
             "let {var} = {};\n",
             match *kind {

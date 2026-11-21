@@ -1163,6 +1163,9 @@ bounded_type      = "bounded" , "[" , type_expr , ";" , INT_LIT , "]" ;
 primitive_type    = "Int"
                   | "U64"           (* GH #2121: 64-bit unsigned integer; U64::f in
                                        expression position names std::u64::f *)
+                  | "I32" | "U32" | "I16" | "U16" | "I8" | "U8"
+                                    (* GH #2132: the fixed-width integers; U8::f
+                                       names std::u8::f (spec/types.md) *)
                   | "Float"
                   | "Decimal" , [ "<" , INT_LIT , ">" ]
                                     (* Decimal<S>: the scale, 0..=18, is

@@ -104,6 +104,12 @@ schema = 1
 "std::ts" = { tier = "experimental", why = "the tree-sitter shim parses Go only, for DNA's ingest" }
 "std::u256" = { tier = "experimental", why = "new (GH #1934)" }
 "std::u64" = { tier = "experimental", why = "new (GH #2121)" }
+"std::i32" = { tier = "experimental", why = "new (GH #2132)" }
+"std::u32" = { tier = "experimental", why = "new (GH #2132)" }
+"std::i16" = { tier = "experimental", why = "new (GH #2132)" }
+"std::u16" = { tier = "experimental", why = "new (GH #2132)" }
+"std::i8" = { tier = "experimental", why = "new (GH #2132)" }
+"std::u8" = { tier = "experimental", why = "new (GH #2132)" }
 
 # ---------------------------------------------------------------------
 # The spec, one row per file. `experimental_sections` names `## `
@@ -127,6 +133,7 @@ tier = "stable"
 tier = "stable"
 experimental_sections = [
     "U64 — a 64-bit unsigned integer",
+    "Fixed-width integers — I32, U32, I16, U16, I8, U8",
     "U256 and I256 — 256-bit integers",
     "Scalar types (GH #1076)",
     "Roles (GH #1109, #1417)",

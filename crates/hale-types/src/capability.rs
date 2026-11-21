@@ -243,6 +243,8 @@ pub enum FfiTypeClass {
     Decimal,
     /// `U64` (GH #2121): a C `uint64_t`.
     U64,
+    /// GH #2132: `I32` … `U8`, the C `int32_t` … `uint8_t`; a JS number.
+    FixedInt,
     /// `U256` / `I256` (GH #1934).
     Wide,
     Unit,
@@ -260,7 +262,7 @@ pub enum FfiTypeClass {
 }
 
 impl FfiTypeClass {
-    pub const ALL: [FfiTypeClass; 22] = [
+    pub const ALL: [FfiTypeClass; 23] = [
         FfiTypeClass::Int,
         FfiTypeClass::Float,
         FfiTypeClass::Bool,
@@ -273,6 +275,7 @@ impl FfiTypeClass {
         FfiTypeClass::Duration,
         FfiTypeClass::Decimal,
         FfiTypeClass::U64,
+        FfiTypeClass::FixedInt,
         FfiTypeClass::Wide,
         FfiTypeClass::Unit,
         FfiTypeClass::Named,
@@ -299,6 +302,7 @@ impl FfiTypeClass {
             FfiTypeClass::Duration => "Duration",
             FfiTypeClass::Decimal => "Decimal",
             FfiTypeClass::U64 => "U64",
+            FfiTypeClass::FixedInt => "FixedInt",
             FfiTypeClass::Wide => "Wide",
             FfiTypeClass::Unit => "Unit",
             FfiTypeClass::Named => "Named",
@@ -328,6 +332,9 @@ impl FfiTypeClass {
                 PrimType::Duration => FfiTypeClass::Duration,
                 PrimType::Decimal(_) => FfiTypeClass::Decimal,
                 PrimType::U64 => FfiTypeClass::U64,
+                PrimType::I32 | PrimType::U32 | PrimType::I16 | PrimType::U16 | PrimType::I8 | PrimType::U8 => {
+                    FfiTypeClass::FixedInt
+                }
                 PrimType::U256 | PrimType::I256 => FfiTypeClass::Wide,
             },
             Ty::Unit => FfiTypeClass::Unit,
@@ -1148,6 +1155,14 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     // GH #2121: the 64-bit unsigned integer (`U64::f`); its runtime
     // text and parse are 64-bit arithmetic only, so wasm32 too
     std_ns("u64", STD_NATIVE, STD_NATIVE, STD_WASM),
+    // GH #2132: the fixed-width integers (`U8::f` …); native operators
+    // and Hale bodies, no runtime call
+    std_ns("i32", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("u32", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("i16", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("u16", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("i8", STD_NATIVE, STD_NATIVE, STD_WASM),
+    std_ns("u8", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("url", STD_NATIVE, STD_NATIVE, STD_WASM),
     std_ns("yaml", STD_NATIVE, STD_NATIVE, STD_WASM),
     // ---- link, exports, entry
@@ -1307,6 +1322,8 @@ pub const BEHAVIOURS: &[BehaviourRow] = &[
     ffi_row(FfiTypeClass::Decimal, Abi::Js, FFI_DECIMAL),
     ffi_row(FfiTypeClass::U64, Abi::C, FFI_PORTABLE),
     ffi_row(FfiTypeClass::U64, Abi::Js, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::FixedInt, Abi::C, FFI_PORTABLE),
+    ffi_row(FfiTypeClass::FixedInt, Abi::Js, FFI_PORTABLE),
     ffi_row(FfiTypeClass::Wide, Abi::C, FFI_WIDE),
     ffi_row(FfiTypeClass::Wide, Abi::Js, FFI_WIDE),
     ffi_row(FfiTypeClass::Unit, Abi::C, FFI_UNIT),

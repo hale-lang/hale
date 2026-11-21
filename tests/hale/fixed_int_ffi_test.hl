@@ -1,0 +1,18 @@
+// tests/hale/fixed_int_ffi_test.hl — a fixed-width integer crosses
+// `@ffi("c")` as the C integer of its width (GH #2132; spec/ffi.md): an
+// `I32` is an `int`, in both directions. libc's `toupper` and `isdigit`
+// take and return one. (Every width, `int8_t` through `uint32_t`, each
+// end of its range, crosses glue of its own in the codegen suite's
+// `ffi_basic`.)
+
+@ffi("c") fn toupper(c: I32) -> I32;
+@ffi("c") fn isdigit(c: I32) -> I32;
+
+fn main() {
+    let a: I32 = 97;
+    std::test::assert(toupper(a) == 65, "an I32 argument and return");
+    std::test::assert(
+        isdigit(55) != 0 && isdigit(-1) == 0,
+        "a literal argument, and a negative one",
+    );
+}

@@ -81,7 +81,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Self::is_plain_value_ty(user_types, inner)
             }
             CodegenTy::Int
-            | CodegenTy::U64
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::String
@@ -3219,6 +3219,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             } else {
                 (val, val_ty)
             };
+            let val = self.fit_int(val, &val_ty, &declared_ty)?;
             if val_ty != declared_ty && !crate::codegen::int_literal_as_u64(&val_ty, &declared_ty) {
                 return Err(CodegenError::Unsupported(format!(
                     "locus `{}` field `{}` type mismatch: declared {}, \
@@ -6118,7 +6119,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         fn wire_ok(ty: &CodegenTy) -> bool {
             match ty {
                 CodegenTy::Int
-                | CodegenTy::U64
+                | CodegenTy::U64 | CodegenTy::Narrow(_)
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::String
@@ -6285,6 +6286,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
             };
+            let val = self.fit_int(val, &val_ty, &declared_ty)?;
             if val_ty != declared_ty && !crate::codegen::int_literal_as_u64(&val_ty, &declared_ty) {
                 return Err(CodegenError::Unsupported(format!(
                     "cross-pool spawn `{}` field `{}` type mismatch: declared \

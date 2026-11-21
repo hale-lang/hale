@@ -1,0 +1,70 @@
+// tests/hale/fixed_int_codec_test.hl — the typed JSON codecs over the
+// fixed-width integers (GH #2132; spec/api.md § Codecs). Each is a JSON
+// number, since every width is exact below 2^53, read back with its range
+// held: a number outside the type's range, a fraction or a string is the
+// wrong type, as a range type's is. Both codecs (`api_decode` /
+// `api_encode`, `from_json` / `to_json`) and every place a value sits: a
+// field, a default, a list's element and an enum's value.
+
+type Side = enum { Flat, Long(I16) };
+
+type Stats {
+    a: U8 `json:"a"`;
+    b: I8 = -3;
+    c: U32;
+    d: I32;
+    side: Side = Side::Flat;
+    recent: bounded[U16; 3];
+}
+
+fn refused(text: String, field: String, what: String) {
+    let s = Stats::api_decode(text) or {
+        std::test::assert_eq_str(err.kind + " " + err.field, "wrong_type " + field, what);
+        return;
+    };
+    std::test::assert(false, what + ": decoded " + Stats::api_encode(s));
+}
+
+fn main() {
+    let s = Stats { a: 255, c: 4294967295, d: -2147483648, side: Side::Long(-32768) };
+    push(s.recent, 65535) or raise;
+    push(s.recent, 0) or raise;
+    let text = Stats::api_encode(s);
+    std::test::assert_eq_str(
+        text,
+        "{\"a\":255,\"b\":-3,\"c\":4294967295,\"d\":-2147483648,\"side\":{\"Long\":-32768},\"recent\":[65535,0]}",
+        "each a JSON number",
+    );
+    let back = Stats::api_decode(text) or raise;
+    std::test::assert(
+        back.a == 255 && back.b == -3 && back.c == U32::max() && back.d == I32::min(),
+        "the fields round-trip",
+    );
+    std::test::assert((at(back.recent, 0) or 1) == 65535, "a list element round-trips");
+    match back.side {
+        Side::Long(v) -> std::test::assert(v == -32768, "an enum's value round-trips"),
+        _ -> std::test::assert(false, "the Long variant"),
+    }
+    std::test::assert_eq_str(Stats::to_json(s), text, "to_json writes what api_encode writes");
+    let again = Stats::from_json(text) or raise;
+    std::test::assert(again.c == U32::max(), "from_json reads it back");
+    let dflt = Stats::api_decode("{\"a\":1,\"c\":2,\"d\":3,\"recent\":[]}") or raise;
+    std::test::assert(dflt.b == -3, "an absent field takes its default");
+
+    refused("{\"a\":256,\"c\":0,\"d\":0,\"recent\":[]}", "a", "a U8 past its top");
+    refused("{\"a\":-1,\"c\":0,\"d\":0,\"recent\":[]}", "a", "a negative U8");
+    refused("{\"a\":0,\"b\":-129,\"c\":0,\"d\":0,\"recent\":[]}", "b", "an I8 past its bottom");
+    refused("{\"a\":0,\"c\":4294967296,\"d\":0,\"recent\":[]}", "c", "a U32 past its top");
+    refused("{\"a\":0,\"c\":0,\"d\":2147483648,\"recent\":[]}", "d", "an I32 past its top");
+    refused(
+        "{\"a\":0,\"c\":0,\"d\":0,\"recent\":[65536]}",
+        "recent",
+        "a list element past U16's top",
+    );
+    refused(
+        "{\"a\":0,\"c\":0,\"d\":0,\"side\":{\"Long\":32768},\"recent\":[]}",
+        "side",
+        "an enum's value past I16's top",
+    );
+    refused("{\"a\":\"7\",\"c\":0,\"d\":0,\"recent\":[]}", "a", "a string");
+}

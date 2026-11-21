@@ -37810,6 +37810,54 @@ void lotus_u64_violation(int32_t what) {
     exit(1);
 }
 
+/* GH #2132: a fixed-width integer narrower than 64 bits (`I32` … `U8`)
+ * stopped where it would wrap: `bits` its width, `is_signed` whether it
+ * is signed. */
+void lotus_fixed_violation(int32_t what, int32_t bits, int32_t is_signed) {
+    char name[8];
+    snprintf(name, sizeof name, "%c%d", is_signed ? 'I' : 'U', (int)bits);
+    long long lo = is_signed ? -(1LL << (bits - 1)) : 0;
+    unsigned long long hi = is_signed ? (1ULL << (bits - 1)) - 1 : (1ULL << bits) - 1;
+    switch (what) {
+    case 0: case 1: case 2: {
+        static const char *ops[] = {"+", "-", "*"};
+        static const char *names[] = {"add", "sub", "mul"};
+        fprintf(stderr,
+                "violation: %s `%s` overflows: the result is outside %s's range, %lld through %llu "
+                "(%s::checked_%s fails instead, and %s::wrapping_%s wraps)\n",
+                name, ops[what], name, lo, hi, name, names[what], name, names[what]);
+        break;
+    }
+    case 3:
+        fprintf(stderr, "violation: %s division by zero (%s::checked_div fails instead of stopping)\n", name, name);
+        break;
+    case 4:
+        fprintf(stderr, "violation: %s remainder by zero\n", name);
+        break;
+    case 5:
+        fprintf(stderr,
+                "violation: %s `/` overflows: %lld / -1 is outside %s's range, %lld through %llu "
+                "(%s::checked_div fails instead)\n",
+                name, lo, name, lo, hi, name);
+        break;
+    case 6:
+        fprintf(stderr,
+                "violation: %s shift by a count outside 0 through %d "
+                "(%s::wrapping_shl / wrapping_shr take the count modulo %d)\n",
+                name, (int)bits - 1, name, (int)bits);
+        break;
+    case 7:
+        fprintf(stderr, "violation: %s `-` overflows: -(%lld) is outside %s's range, %lld through %llu\n",
+                name, lo, name, lo, hi);
+        break;
+    default:
+        fprintf(stderr, "violation: %s arithmetic\n", name);
+        break;
+    }
+    fflush(stderr);
+    exit(1);
+}
+
 /* The decimal digits of `v`, unsigned. */
 char *lotus_u64_to_string(lotus_arena_t *a, int64_t v) {
     char *out = (char *)lotus_arena_alloc(a, 24, 1);

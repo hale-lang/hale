@@ -1263,6 +1263,11 @@ fn second_quantity(rows: &UnitRows, out: &mut Vec<Violation>) {
 /// or ...` back, as the primitives' own functions convert them.
 pub fn int_conversion(from: PrimType, to: PrimType) -> String {
     let (f, t) = (crate::ty::prim_name(from), crate::ty::prim_name(to));
+    // GH #2132: to or from a narrower integer, the cast: a widening is
+    // exact, a narrowing says what becomes of a value outside the range
+    if from.is_narrow_int() || to.is_narrow_int() {
+        return if from.widens_to(to) { format!("{t}(x)") } else { format!("{t}(x) or ...") };
+    }
     match (from.machine_int(), to.machine_int()) {
         // From a narrower or same-signed integer into a wider one, the
         // target's `from_` names it; into one that may not hold it, the
@@ -1746,6 +1751,12 @@ fn builtin_type(name: &str) -> Option<&'static str> {
         return Some(match p {
             PrimType::Int => "the builtin integer type",
             PrimType::U64 => "the builtin 64-bit unsigned integer type",
+            PrimType::I32 => "the builtin 32-bit signed integer type",
+            PrimType::U32 => "the builtin 32-bit unsigned integer type",
+            PrimType::I16 => "the builtin 16-bit signed integer type",
+            PrimType::U16 => "the builtin 16-bit unsigned integer type",
+            PrimType::I8 => "the builtin 8-bit signed integer type",
+            PrimType::U8 => "the builtin 8-bit unsigned integer type",
             PrimType::Float => "the builtin floating-point type",
             PrimType::Decimal(_) => "the builtin decimal type",
             PrimType::U256 => "the builtin 256-bit unsigned integer type",
