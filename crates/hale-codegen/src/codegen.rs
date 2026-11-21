@@ -2336,6 +2336,9 @@ fn build_resolved_lowered(
     // after the pipeline: `crate::vectorize`).
     cx.vec_check = crate::vectorize::skipped(options.dev_profile, options.asan, is_wasm).is_none()
         && program_has_vectorize(cx.program);
+    if cx.vec_check {
+        vec_remarks.collect();
+    }
     let no_files = DebugSources::default();
     if !is_wasm {
         let dbg = options

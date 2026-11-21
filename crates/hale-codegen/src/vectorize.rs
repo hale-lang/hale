@@ -33,6 +33,7 @@
 //! (no `simd128`) do not check the assertion; [`skipped`] says why.
 
 use std::ffi::{c_char, c_void, CStr, CString};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, Once};
 
 use inkwell::llvm_sys;
@@ -76,6 +77,10 @@ pub(crate) fn enable_vectorizer_remarks() {
 /// the process as it did.
 #[derive(Default)]
 pub(crate) struct Remarks {
+    /// Whether the build checks `@vectorize`: a build that does not
+    /// drops every remark unread (they are made for every pass once the
+    /// options are on, and only this build's check reads them).
+    collect: AtomicBool,
     seen: Mutex<Vec<String>>,
 }
 
@@ -94,6 +99,11 @@ impl Remarks {
         }
     }
 
+    /// Keep the remarks from here on (the build checks `@vectorize`).
+    pub(crate) fn collect(&self) {
+        self.collect.store(true, Ordering::Relaxed);
+    }
+
     pub(crate) fn take(&self) -> Vec<String> {
         std::mem::take(&mut *self.seen.lock().unwrap_or_else(|p| p.into_inner()))
     }
@@ -102,16 +112,19 @@ impl Remarks {
 extern "C" fn on_diagnostic(info: LLVMDiagnosticInfoRef, ctx: *mut c_void) {
     // SAFETY: LLVM hands a live diagnostic; `ctx` is the `Remarks`
     // `install` registered, alive for the context's lifetime.
-    let (severity, text) = unsafe {
-        let severity = llvm_sys::core::LLVMGetDiagInfoSeverity(info);
+    let remarks = unsafe { &*(ctx as *const Remarks) };
+    let severity = unsafe { llvm_sys::core::LLVMGetDiagInfoSeverity(info) };
+    if severity == LLVMDiagnosticSeverity::LLVMDSRemark && !remarks.collect.load(Ordering::Relaxed) {
+        return;
+    }
+    let text = unsafe {
         let raw = llvm_sys::core::LLVMGetDiagInfoDescription(info);
         let text = CStr::from_ptr(raw).to_string_lossy().into_owned();
         llvm_sys::core::LLVMDisposeMessage(raw);
-        (severity, text)
+        text
     };
     match severity {
         LLVMDiagnosticSeverity::LLVMDSRemark => {
-            let remarks = unsafe { &*(ctx as *const Remarks) };
             remarks.seen.lock().unwrap_or_else(|p| p.into_inner()).push(text);
         }
         LLVMDiagnosticSeverity::LLVMDSError => {
