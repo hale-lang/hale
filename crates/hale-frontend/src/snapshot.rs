@@ -562,12 +562,6 @@ pub struct Snapshot {
     keep_previous: Cell<bool>,
 }
 
-/// GH #2068: how many rounds [`Snapshot::settle`] types a
-/// program in at most: one, one more once receiver calls were written,
-/// and one more per nesting of a call typed only inside a loop or a chain
-/// the first round desugared.
-const SETTLE_ROUNDS: usize = 6;
-
 /// What [`Snapshot::from_program`]'s program is keyed and minted by:
 /// it names no file.
 const BARE_PROGRAM: &str = "program";
@@ -1481,9 +1475,15 @@ impl Snapshot {
     }
 
     /// The rounds of [`Snapshot::settle`]: whether the last one's walk ran.
+    /// They end: a round that goes on rewrites at least one call the
+    /// program wrote as a receiver call or as a bare call of a binding (the
+    /// desugars write neither), or is the one round that desugars with
+    /// nothing rewritten, so there are at most as many as such calls, and
+    /// one more, however deep the loops that expose them nest.
     fn settle_rounds(&mut self) -> bool {
         let mut desugared = false;
-        for round in 0..SETTLE_ROUNDS {
+        let mut round = 0;
+        loop {
             let deferred = {
                 let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
                 hale_types::receiver_calls::any_deferred_source(&mut refs)
@@ -1511,8 +1511,8 @@ impl Snapshot {
                 desugared = true;
             }
             self.forget_derived();
+            round += 1;
         }
-        true
     }
 
     /// The identities of the programs' sites, minted with the source map

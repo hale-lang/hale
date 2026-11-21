@@ -994,3 +994,33 @@ fn a_receiver_call_is_summarized_and_built_as_its_path_call() {
     assert!(a.contains("<unresolved: std::str::trim>") && a.contains("run: b24"), "{a}");
     assert_eq!(a, b);
 }
+
+/// GH #2068, on review: a text source over a part of another is typed only
+/// once the outer loop is desugared, so the snapshot settles in rounds
+/// until a walk resolves nothing, however deep the loops nest: eight
+/// `for vN in v(N-1).words()` build and run as the path spelling does.
+#[test]
+fn receiver_text_sources_nested_eight_deep_build() {
+    let mut src = String::from("fn main() {\n    let v = \"ab\";\n");
+    let mut prev = "v".to_string();
+    for k in 0..8 {
+        src.push_str(&format!("{}for v{k} in {prev}.words() {{\n", "    ".repeat(k + 1)));
+        prev = format!("v{k}");
+    }
+    src.push_str(&format!("{}println({prev}.upper());\n", "    ".repeat(9)));
+    for k in (0..8).rev() {
+        src.push_str(&format!("{}}}\n", "    ".repeat(k + 1)));
+    }
+    src.push_str("}\n");
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_check_build_refusals_{}_nested8", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("main.hl");
+    std::fs::write(&f, &src).unwrap();
+    let bin = d.join("bin");
+    let (built, bout) = hale(&["build", &f.to_string_lossy(), "-o", &bin.to_string_lossy()]);
+    assert!(built, "{src}\n{bout}");
+    let run = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "AB");
+}
