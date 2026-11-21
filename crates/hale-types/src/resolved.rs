@@ -186,6 +186,15 @@ pub struct LoweringView {
     /// [`resolve_rewritten`] returns it, before the snapshot sets it) is
     /// refused by lowering (a required row).
     pub owned_views: Option<crate::view_bindings::OwnedViews>,
+    /// GH #2111 (phase 1): what the checker typed each expression of each
+    /// body (`crate::typed_bodies::ExprTypes`), from the checker's `views`
+    /// rows of the checked programs and of the stdlib's analysis copy,
+    /// keyed by the merged program's body ids. Lowering reads a value's
+    /// type here (`Cx::ty_at`) instead of typing it again. The snapshot's
+    /// view carries it; a view without it (as [`resolve_rewritten`]
+    /// returns it, before the snapshot sets it) is refused by lowering (a
+    /// required row).
+    pub expr_types: Option<crate::typed_bodies::ExprTypes>,
     /// The entry row (`crate::entry`, the `entrypoint` family) of the
     /// program the view was resolved from: its entry, the `main locus`
     /// lowering deploys, which every comparison lowering makes against
@@ -313,6 +322,11 @@ impl LoweringView {
     /// writes copy from. `None` for a view resolved from a bare program.
     pub fn owned_views(&self) -> Option<&crate::view_bindings::OwnedViews> {
         self.owned_views.as_ref()
+    }
+
+    /// The checker's expression types by body ([`LoweringView::expr_types`]).
+    pub fn expr_types(&self) -> Option<&crate::typed_bodies::ExprTypes> {
+        self.expr_types.as_ref()
     }
 
     /// The entry row lowering reads which `main locus` it deploys and
@@ -697,6 +711,7 @@ pub fn resolve_rewritten(
         cells: crate::capability::LoweringCells::of(class),
         lifecycle: None,
         owned_views: None,
+        expr_types: None,
         entry: None,
     })
 }

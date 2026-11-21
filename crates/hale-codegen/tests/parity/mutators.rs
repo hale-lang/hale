@@ -406,6 +406,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "seed_split", apply: seed_split },
     Mutator { name: "import_alias", apply: import_alias },
     Mutator { name: "element_probe", apply: element_probe },
+    Mutator { name: "locus_field_loop", apply: locus_field_loop },
     Mutator { name: "call_via_fn_value", apply: call_via_fn_value },
     Mutator { name: "call_via_wrapper", apply: call_via_wrapper },
     Mutator { name: "method_to_free", apply: method_to_free },
@@ -946,6 +947,36 @@ fn element_probe(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
     }
     out = append(&out, &probe);
     Some((with_main(files, out), format!("element_probe({shape}, {t})")))
+}
+
+/// A probe over a locus with no form whose `items` or `entries` is a
+/// `bounded` param of its own, filled by one method and walked by a
+/// `for` in another, the loop variable given the element type by a typed
+/// `let` (GH #2111): the checker read the name as a form's pseudo-field
+/// and bound the variable `Unknown`, so what it read through the
+/// variable went unchecked into a build that refused it.
+fn locus_field_loop(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    let (src, program) = parsed(files)?;
+    let main = program.items.iter().find_map(|i| match i {
+        TopDecl::Fn(f) if f.name.name == "main" && f.params.is_empty() => Some(f),
+        _ => None,
+    })?;
+    let types = elem_types(&src, &program);
+    let el = rng.pick(&types)?;
+    let (t, v) = (&el.ty, &el.value);
+    let field = *rng.pick(&["items", "entries"])?;
+    let mut decls = el.decls.clone();
+    decls.push(format!(
+        "locus __PgStore {{\n    params {{\n        {field}: bounded[{t}; 4];\n    }}\n    fn fill(x: {t}) {{\n        push(self.{field}, x) or discard;\n    }}\n    fn walk() -> Int {{\n        let mut n = 0;\n        for x in self.{field} {{\n            let y: {t} = x;\n            n = n + 1;\n        }}\n        return n;\n    }}\n}}"
+    ));
+    let probe = format!("fn __pg_probe() {{\n    let s = __PgStore {{ }};\n    s.fill({v});\n    s.fill({v});\n    println(s.walk());\n}}");
+    let at = main.body.span.start.as_usize() + 1;
+    let mut out = splice(&src, vec![(at, at, "\n    __pg_probe();".to_string())])?;
+    for d in &decls {
+        out = append(&out, d);
+    }
+    out = append(&out, &probe);
+    Some((with_main(files, out), format!("locus_field_loop({field}, {t})")))
 }
 
 /// Free fns the program declares by name, the ones a call can be routed

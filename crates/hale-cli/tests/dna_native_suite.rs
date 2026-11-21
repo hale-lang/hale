@@ -742,6 +742,14 @@ fn run_one_fixture(f: &PathBuf, tag: &str, dsn: Option<&str>, habitat: Option<&S
     // (habitat_up_test) opts in on its own `up`.
     cmd.env("HALE_DNA_NODE_EXPORTER", "off");
     cmd.env("HALE_DNA_GRAFANA", "off");
+    // Nor does a fixture's body serve its readings on the senses' fixed
+    // ports (9464 to 9466, every interface): the slices run beside one
+    // another, so two bodies would race for one port (GH #2118). A bind
+    // that fails is absorbed and the part runs unread, but its "Address
+    // already in use" lands in the fixture's log as if it mattered. The
+    // fixture about readings (senses_reflex_test) unsets this and names a
+    // port of its own on each body.
+    cmd.env("HALE_DNA_SENSES_PORT", "0");
     // GH #795: a fixture's bounded waits are written for a quiet
     // machine, and here they are not on one — the slices run beside the
     // rest of the workspace's tests, and beside one another, with an

@@ -223,6 +223,17 @@ fn owned_views_a_view_without_the_column_is_refused() {
     assert!(msg.contains("owned-view column"), "{msg}");
 }
 
+/// `expression_typing`: the checker's expression types by body, which
+/// lowering reads a value's type from (`Cx::ty_at`, GH #2111); a view
+/// without them is refused before anything is lowered, never lowered
+/// with every type unknown.
+#[test]
+fn expression_typing_a_view_without_the_expression_types_is_refused() {
+    let src = "type R { xs: bounded[Int; 4]; }\nfn main() { let mut r = R { }; push(r.xs, 1) or discard; println(count(r.xs)); }\n";
+    let (msg, _) = refused_without("expr_types", src, "expression_typing", |v| v.expr_types = None);
+    assert!(msg.contains("`expr_types`"), "{msg}");
+}
+
 /// `entrypoint`: the `main locus` lowering deploys and the `fn main` it
 /// emits are the entry row's; a view without the row is refused before
 /// anything is lowered, never given a `fn main` found by name.
