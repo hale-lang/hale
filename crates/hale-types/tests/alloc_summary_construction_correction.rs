@@ -322,13 +322,11 @@ fn own_scope_let_block_scope_test() {
             // `net.hl` came (GH #1908: `std::net::resolve`); 535 since a
             // chain over a text source compares a part with the best one in
             // place (`__str_view_cmp`, GH #1995 S2, chain sources); 544
-            // since `u64.hl` came (GH #2121: std::u64's nine fallible calls);
-            // 568 since `fixed_ints.hl` came (GH #2132: the fixed-width
-            // integers' 24 `checked_*` calls)
+            // since `u64.hl` came (GH #2121: std::u64's nine fallible calls)
             changed_lines(&stable_dump(&old.render()), &stable_dump(&now.render())),
             [
-                "- # 568 fns, 32 entry points, 132 invoked-unboundedly",
-                "+ # 568 fns, 32 entry points, 131 invoked-unboundedly",
+                "- # 544 fns, 32 entry points, 132 invoked-unboundedly",
+                "+ # 544 fns, 32 entry points, 131 invoked-unboundedly",
                 "- call  count loop_depth=0 result=local",
                 "+ call  <unresolved: count> loop_depth=0 result=local",
                 "- call  count loop_depth=0 result=local",
@@ -1279,9 +1277,8 @@ fn program_declaration_only_stdlib_source_shares_a_name() {
     // 34 since `time_rfc3339.hl` came (GH #1948: `std::time::parse_rfc3339`);
     // 35 since `str_helpers.hl` came (GH #1995: std::str's splits and trims);
     // 36 since `net.hl` came (GH #1908: std::net::resolve); 37 since
-    // `u64.hl` came (GH #2121: std::u64's fallible calls); 38 since
-    // `fixed_ints.hl` came (GH #2132: the fixed-width integers' checked calls).
-    assert_eq!(sharing, 38, "the stdlib source files that share a name with the copy");
+    // `u64.hl` came (GH #2121: std::u64's fallible calls).
+    assert_eq!(sharing, 37, "the stdlib source files that share a name with the copy");
 }
 
 /// A stdlib file checked as itself keeps its own rows: every fn of the

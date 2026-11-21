@@ -774,7 +774,7 @@ const PINNED: &[&str] = &[
     "tests/hale/dot_variant_patterns_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/ends_with_own_fn_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/factory_field_owner_test.hl: 2 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
-    "tests/hale/fixed_int_arith_test.hl: 0 go, 0 appear; dump 3 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/fixed_int_arith_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",
     "tests/hale/fixed_int_violation_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/float_ieee_compare_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/float_widening_surfaces_test.hl: 0 go, 0 appear; dump 4 tags, 0 reclaim, 0 verdicts",

@@ -16524,8 +16524,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // live in the source's storage directly; no separate
             // heap-pointer to anchor.
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -16755,8 +16754,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         !matches!(
             ty,
             CodegenTy::Int
-                | CodegenTy::U64
-                | CodegenTy::Narrow(_)
+                | CodegenTy::U64 | CodegenTy::Narrow(_)
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Decimal(_)
@@ -18770,8 +18768,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let mappable = matches!(
                 fty,
                 CodegenTy::Int
-                    | CodegenTy::U64
-                    | CodegenTy::Narrow(_)
+                    | CodegenTy::U64 | CodegenTy::Narrow(_)
                     | CodegenTy::Float
                     | CodegenTy::Bool
                     | CodegenTy::Decimal(_)
@@ -21810,7 +21807,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // GH #2121: a `U64` is its own magnitude
             CodegenTy::U64 => Ok((v, ty.clone())),
             // GH #2132: an unsigned one too; a signed one's is checked
-            CodegenTy::Narrow(p) => self.lower_narrow_abs(v.into_int_value(), *p),
+            CodegenTy::Narrow(_) => self.lower_narrow_abs(v.into_int_value(), ty),
             CodegenTy::U256 | CodegenTy::I256 => self.lower_wide_abs(v.into_int_value(), ty),
             CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 // m48: Decimal lives in i128 so the int-abs path
@@ -22602,8 +22599,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let numeric = matches!(
                 ty,
                 CodegenTy::Int
-                    | CodegenTy::U64
-                    | CodegenTy::Narrow(_)
+                    | CodegenTy::U64 | CodegenTy::Narrow(_)
                     | CodegenTy::Float
                     | CodegenTy::Decimal(_)
                     | CodegenTy::U256
@@ -23073,13 +23069,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match ty {
-            CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
-            | CodegenTy::Duration
-            | CodegenTy::Time
-            | CodegenTy::Bool
-            | CodegenTy::Decimal(_) => self
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Narrow(_) | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal(_) => self
                 .builder
                 .build_int_compare(
                     inkwell::IntPredicate::EQ,
@@ -26000,8 +25990,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         matches!(
             t,
             CodegenTy::Int
-                | CodegenTy::U64
-                | CodegenTy::Narrow(_)
+                | CodegenTy::U64 | CodegenTy::Narrow(_)
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Duration
@@ -26847,18 +26836,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the checker's row of it says; GH #2132: so is one whose
                 // place is a narrower integer, at its width (the check held
                 // it to the range)
-                match self.ty_or_fallback(e) {
-                    Some(CodegenTy::Narrow(p)) => {
-                        let v = self.narrow_int_type(p).const_int(*n as u64, true);
-                        return Ok((v.into(), CodegenTy::Narrow(p)));
-                    }
-                    Some(CodegenTy::U64) => {
-                        return Ok((self.context.i64_type().const_int(*n as u64, true).into(), CodegenTy::U64));
-                    }
-                    _ => {}
-                }
-                let v = self.context.i64_type().const_int(*n as u64, true);
-                Ok((v.into(), CodegenTy::Int))
+                let ty = match self.ty_or_fallback(e) {
+                    Some(t @ (CodegenTy::U64 | CodegenTy::Narrow(_))) => t,
+                    _ => CodegenTy::Int,
+                };
+                let bits = ty.machine_int().map_or(64, |(b, _)| b);
+                let v = self.context.custom_width_int_type(bits).const_int(*n as u64, true);
+                Ok((v.into(), ty))
             }
             // GH #2121: past `Int`'s max, a `U64` by itself
             Expr::Literal(Literal::U64(n), _) => {
@@ -28928,15 +28912,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             (CodegenTy::Narrow(p), _) | (_, CodegenTy::Narrow(p)) => Some(*p),
             _ => None,
         } {
-            if matches!(op, BinOp::Shl | BinOp::Shr) && lt == CodegenTy::Narrow(p) {
-                return self.lower_narrow_shift(*op, lv.into_int_value(), rv.into_int_value(), p);
+            if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(&lt, CodegenTy::Narrow(q) if *q == p) {
+                return self.lower_narrow_shift(*op, lv.into_int_value(), rv.into_int_value(), &lt);
             }
-            if matches!(
-                (&lt, &rt),
-                (CodegenTy::Narrow(_) | CodegenTy::Int, CodegenTy::Narrow(_) | CodegenTy::Int)
-            ) && (lt == rt || lt == CodegenTy::Int || rt == CodegenTy::Int)
-            {
-                return self.lower_narrow_binop(*op, lv.into_int_value(), rv.into_int_value(), p);
+            // the narrower side's type is the operation's
+            let (narrow, other) = if matches!(lt, CodegenTy::Narrow(_)) { (&lt, &rt) } else { (&rt, &lt) };
+            if other == narrow || matches!(other, CodegenTy::Int) {
+                let ty = narrow.clone();
+                return self.lower_narrow_binop(*op, lv.into_int_value(), rv.into_int_value(), &ty);
             }
         }
         if lt != rt {
@@ -28967,8 +28950,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return self.lower_u64_binop(op, lv.into_int_value(), rv.into_int_value());
         }
         // GH #2132: a narrower integer's checked operators.
-        if let CodegenTy::Narrow(p) = ty {
-            return self.lower_narrow_binop(op, lv.into_int_value(), rv.into_int_value(), *p);
+        if let CodegenTy::Narrow(_) = ty {
+            return self.lower_narrow_binop(op, lv.into_int_value(), rv.into_int_value(), ty);
         }
         match (op, ty_owned) {
             (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Int) => {
@@ -29422,14 +29405,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // GH #2121: `~` of a `U64` (it has no `-`)
             (UnaryOp::BitNot, CodegenTy::U64) => self.lower_u64_bitnot(v.into_int_value()),
             // GH #2132: `~x` within the width; `-x` checked
-            (UnaryOp::BitNot, CodegenTy::Narrow(p)) => {
+            (UnaryOp::BitNot, CodegenTy::Narrow(_)) => {
                 let n = self
                     .builder
                     .build_not(v.into_int_value(), "fixed.not")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((n.into(), CodegenTy::Narrow(p)))
+                Ok((n.into(), ty.clone()))
             }
-            (UnaryOp::Neg, CodegenTy::Narrow(p)) => self.lower_narrow_neg(v.into_int_value(), p),
+            (UnaryOp::Neg, CodegenTy::Narrow(_)) => self.lower_narrow_neg(v.into_int_value(), ty),
             (UnaryOp::Neg, t @ CodegenTy::Decimal(_)) => {
                 // m48: Decimal lives in i128; negate via subtract
                 // from i128 zero, mirroring Int's neg lowering.
@@ -31665,7 +31648,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::StrRangeParseDecimal
             | Id::StrRangeParseInt
             | Id::TimeParseIso8601
-            | Id::TimeParseTime => return Err(bare_call_of_a_fallible_row(segs, at, pos)),
+            | Id::TimeParseTime
+            | Id::I32CheckedAdd
+            | Id::I32CheckedDiv
+            | Id::I32CheckedMul
+            | Id::I32CheckedSub
+            | Id::U32CheckedAdd
+            | Id::U32CheckedDiv
+            | Id::U32CheckedMul
+            | Id::U32CheckedSub
+            | Id::I16CheckedAdd
+            | Id::I16CheckedDiv
+            | Id::I16CheckedMul
+            | Id::I16CheckedSub
+            | Id::U16CheckedAdd
+            | Id::U16CheckedDiv
+            | Id::U16CheckedMul
+            | Id::U16CheckedSub
+            | Id::I8CheckedAdd
+            | Id::I8CheckedDiv
+            | Id::I8CheckedMul
+            | Id::I8CheckedSub
+            | Id::U8CheckedAdd
+            | Id::U8CheckedDiv
+            | Id::U8CheckedMul
+            | Id::U8CheckedSub => return Err(bare_call_of_a_fallible_row(segs, at, pos)),
         };
         value.map(Some)
     }
@@ -31712,6 +31719,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
         use IntrinsicId as Id;
         let lowered = match id {
+            // GH #2132: the fixed-width integers' checked operators.
+            Id::I32CheckedAdd
+            | Id::I32CheckedDiv
+            | Id::I32CheckedMul
+            | Id::I32CheckedSub
+            | Id::U32CheckedAdd
+            | Id::U32CheckedDiv
+            | Id::U32CheckedMul
+            | Id::U32CheckedSub
+            | Id::I16CheckedAdd
+            | Id::I16CheckedDiv
+            | Id::I16CheckedMul
+            | Id::I16CheckedSub
+            | Id::U16CheckedAdd
+            | Id::U16CheckedDiv
+            | Id::U16CheckedMul
+            | Id::U16CheckedSub
+            | Id::I8CheckedAdd
+            | Id::I8CheckedDiv
+            | Id::I8CheckedMul
+            | Id::I8CheckedSub
+            | Id::U8CheckedAdd
+            | Id::U8CheckedDiv
+            | Id::U8CheckedMul
+            | Id::U8CheckedSub => self.lower_std_fixed_checked(id, args, scope),
             // GH #254: std::tar (ustar) one-shot surface.
             Id::TarEntries => self.lower_std_tar_fallible(
                 "lotus_tar_entries", "std::tar::entries",

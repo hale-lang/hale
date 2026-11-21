@@ -785,8 +785,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         let arr_ty = self.llvm_array_storage_type(elem_ty, n);
         match elem_ty {
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Time
@@ -972,8 +971,7 @@ impl<'ctx, 'p> BusWire<'ctx> for Cx<'ctx, 'p> {
         let _ = ptr_t;
         match elem_ty {
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Time
@@ -1286,8 +1284,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn bus_field_is_flat_scalar(&self, ty: &CodegenTy) -> bool {
         match ty {
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -2005,8 +2002,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     pub(crate) fn wire_shape(&self, ty: &CodegenTy) -> Result<WireShape, &'static str> {
         Ok(match ty {
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Time
@@ -2121,8 +2117,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         matches!(
             elem,
             CodegenTy::Int
-                | CodegenTy::U64
-                | CodegenTy::Narrow(_)
+                | CodegenTy::U64 | CodegenTy::Narrow(_)
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Time

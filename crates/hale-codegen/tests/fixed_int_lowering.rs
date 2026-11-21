@@ -91,10 +91,25 @@ fn the_operators_are_checked_at_the_width() {
 
 #[test]
 fn a_c_parameter_carries_its_extension() {
-    let ir = module_ir(
-        "@ffi(\"c\") fn takes(a: U8, b: I16, c: U32, d: I8) -> U16;\n\
-         fn main() {\n    println(takes(1, 2, 3, 4));\n}\n",
-    );
+    let dir = harness::unique_bin("fixed_int_lowering_ffi");
+    let _ = std::fs::create_dir_all(&dir);
+    let glue = dir.join("glue.c");
+    std::fs::write(
+        &glue,
+        "#include <stdint.h>\nuint16_t takes(uint8_t a, int16_t b, uint32_t c, int8_t d) { return a + b + c + d; }\n",
+    )
+    .expect("write the glue");
+    let bin = dir.join("main");
+    let ll = bin.with_extension("ll");
+    let options = hale_codegen::BuildOptions { dump_ir: Some(ll.clone()), csrc_files: vec![glue], ..build_opts::options() };
+    build_opts::build_source(
+        "@ffi(\"c\") fn takes(a: U8, b: I16, c: U32, d: I8) -> U16;\nfn main() {\n    println(takes(1, 2, 3, 4));\n}\n",
+        &bin,
+        &options,
+    )
+    .expect("builds");
+    let ir = std::fs::read_to_string(&ll).expect("the dumped IR");
+    let _ = std::fs::remove_dir_all(&dir);
     let decl = ir.lines().find(|l| l.starts_with("declare") && l.contains("@takes(")).expect("declared");
     assert!(decl.starts_with("declare zeroext i16 @takes(i8 zeroext, i16 signext, i32, i8 signext)"), "{decl}");
 }

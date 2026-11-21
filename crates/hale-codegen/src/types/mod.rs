@@ -40,8 +40,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     e,
                     CodegenTy::Enum(_)
                         | CodegenTy::Int
-                        | CodegenTy::U64
-                        | CodegenTy::Narrow(_)
+                        | CodegenTy::U64 | CodegenTy::Narrow(_)
                         | CodegenTy::Float
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)
@@ -1378,8 +1377,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // rejected at lowering, so no deep-copy path exists.
             CodegenTy::Bounded(_, _) => false,
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)

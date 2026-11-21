@@ -81,8 +81,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Self::is_plain_value_ty(user_types, inner)
             }
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::String
@@ -6120,8 +6119,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         fn wire_ok(ty: &CodegenTy) -> bool {
             match ty {
                 CodegenTy::Int
-                | CodegenTy::U64
-                | CodegenTy::Narrow(_)
+                | CodegenTy::U64 | CodegenTy::Narrow(_)
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::String

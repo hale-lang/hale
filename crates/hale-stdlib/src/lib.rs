@@ -305,11 +305,6 @@ pub const AP_SOURCE: &str = concat!(
     // that can fail, over native primitives. Last, so no other file's
     // spans move.
     include_str!("../hl/u64.hl"),
-    "\n",
-    // std::i32 … std::u8 (GH #2132): the calls of the fixed-width
-    // integers that can fail, over the narrowing cast. Last, so no other
-    // file's spans move.
-    include_str!("../hl/fixed_ints.hl"),
 );
 
 /// `std::law`: the standard constitutions, loaded only when a program
@@ -368,7 +363,6 @@ pub const AP_FILES: &[(&str, &str)] = &[
     ("str_helpers.hl", include_str!("../hl/str_helpers.hl")),
     ("net.hl", include_str!("../hl/net.hl")),
     ("u64.hl", include_str!("../hl/u64.hl")),
-    ("fixed_ints.hl", include_str!("../hl/fixed_ints.hl")),
 ];
 
 /// Map an `AP_SOURCE` byte offset to `(file_name, file_content,
@@ -537,31 +531,6 @@ pub const PATH_RENAMES: &[(&[&str], &str)] = &[
     (&["std", "u64", "from_le_bytes"], "__std_u64_from_le_bytes"),
     (&["std", "u64", "parse"], "__std_u64_parse"),
     (&["std", "u64", "to_int"], "__std_u64_to_int"),
-    // std::i32 … std::u8 (fixed_ints.hl, GH #2132): the calls that fail.
-    (&["std", "i32", "checked_add"], "__std_i32_checked_add"),
-    (&["std", "i32", "checked_div"], "__std_i32_checked_div"),
-    (&["std", "i32", "checked_mul"], "__std_i32_checked_mul"),
-    (&["std", "i32", "checked_sub"], "__std_i32_checked_sub"),
-    (&["std", "u32", "checked_add"], "__std_u32_checked_add"),
-    (&["std", "u32", "checked_div"], "__std_u32_checked_div"),
-    (&["std", "u32", "checked_mul"], "__std_u32_checked_mul"),
-    (&["std", "u32", "checked_sub"], "__std_u32_checked_sub"),
-    (&["std", "i16", "checked_add"], "__std_i16_checked_add"),
-    (&["std", "i16", "checked_div"], "__std_i16_checked_div"),
-    (&["std", "i16", "checked_mul"], "__std_i16_checked_mul"),
-    (&["std", "i16", "checked_sub"], "__std_i16_checked_sub"),
-    (&["std", "u16", "checked_add"], "__std_u16_checked_add"),
-    (&["std", "u16", "checked_div"], "__std_u16_checked_div"),
-    (&["std", "u16", "checked_mul"], "__std_u16_checked_mul"),
-    (&["std", "u16", "checked_sub"], "__std_u16_checked_sub"),
-    (&["std", "i8", "checked_add"], "__std_i8_checked_add"),
-    (&["std", "i8", "checked_div"], "__std_i8_checked_div"),
-    (&["std", "i8", "checked_mul"], "__std_i8_checked_mul"),
-    (&["std", "i8", "checked_sub"], "__std_i8_checked_sub"),
-    (&["std", "u8", "checked_add"], "__std_u8_checked_add"),
-    (&["std", "u8", "checked_div"], "__std_u8_checked_div"),
-    (&["std", "u8", "checked_mul"], "__std_u8_checked_mul"),
-    (&["std", "u8", "checked_sub"], "__std_u8_checked_sub"),
     // std::rand::Rng (rand.hl): the seeded generator.
     (&["std", "rand", "Rng"], "__StdRandRng"),
     // std::url (url.hl): percent-encoding.

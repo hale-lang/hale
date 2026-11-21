@@ -43,8 +43,7 @@ pub(crate) fn cell_tree_has_heap_leaves(
     }
     match ty {
         CodegenTy::Int
-        | CodegenTy::U64
-        | CodegenTy::Narrow(_)
+        | CodegenTy::U64 | CodegenTy::Narrow(_)
         | CodegenTy::Float
         | CodegenTy::Bool
         | CodegenTy::Duration
@@ -3658,8 +3657,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let heap_cell = !matches!(
                     slot.elem_ty,
                     CodegenTy::Int
-                        | CodegenTy::U64
-                        | CodegenTy::Narrow(_)
+                        | CodegenTy::U64 | CodegenTy::Narrow(_)
                         | CodegenTy::Float
                         | CodegenTy::Bool
                         | CodegenTy::Decimal(_)

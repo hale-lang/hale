@@ -18,7 +18,7 @@ use hale_types::stdlib_surface::{FixedIntOp, IntrinsicId};
 use inkwell::values::{BasicValueEnum, IntValue};
 use inkwell::IntPredicate as IP;
 
-use crate::codegen::{CodegenError, CodegenTy, Cx, Scope};
+use crate::codegen::{CodegenError, CodegenTy, Cx, FallibleCallResult, Scope};
 
 fn emit<T>(r: Result<T, inkwell::builder::BuilderError>) -> Result<T, CodegenError> {
     r.map_err(|e| CodegenError::LlvmEmit(e.to_string()))
@@ -170,8 +170,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         op: BinOp,
         l: IntValue<'ctx>,
         r: IntValue<'ctx>,
-        p: PrimType,
+        ty: &CodegenTy,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let p = int_prim(ty).expect("a narrower integer");
         let (bits, signed) = p.machine_int().expect("a machine integer");
         let int_t = self.context.custom_width_int_type(bits);
         // an operand lowered as an `Int` where its row was not read is an
@@ -238,7 +239,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let c = emit(self.builder.build_int_compare(pred, l, r, "fixed.cmp"))?;
                 return Ok((c.into(), CodegenTy::Bool));
             }
-            BinOp::Shl | BinOp::Shr => return self.lower_narrow_shift(op, l, r, p),
+            BinOp::Shl | BinOp::Shr => return self.lower_narrow_shift(op, l, r, ty),
             _ => {
                 return Err(CodegenError::Unsupported(format!(
                     "a `{}` operator the checker admits and lowering does not know",
@@ -246,7 +247,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 )));
             }
         };
-        Ok((v.into(), CodegenTy::Narrow(p)))
+        Ok((v.into(), ty.clone()))
     }
 
     /// `x << n` / `x >> n`, the count an `Int`: bits shifted out are
@@ -259,8 +260,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         op: BinOp,
         l: IntValue<'ctx>,
         count: IntValue<'ctx>,
-        p: PrimType,
+        ty: &CodegenTy,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let p = int_prim(ty).expect("a narrower integer");
         let (bits, signed) = p.machine_int().expect("a machine integer");
         let count_t = count.get_type();
         // unsigned: a negative count is past the width too
@@ -271,7 +273,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             BinOp::Shl => emit(self.builder.build_left_shift(l, n, "fixed.shl"))?,
             _ => emit(self.builder.build_right_shift(l, n, signed, "fixed.shr"))?,
         };
-        Ok((v.into(), CodegenTy::Narrow(p)))
+        Ok((v.into(), ty.clone()))
     }
 
     /// A shift count (an `Int`) at the shifted value's width.
@@ -288,19 +290,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// `-x` of a signed narrower integer: checked, as `0 - x` is (the
     /// minimum has no negation).
-    pub(crate) fn lower_narrow_neg(&mut self, v: IntValue<'ctx>, p: PrimType) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+    pub(crate) fn lower_narrow_neg(&mut self, v: IntValue<'ctx>, ty: &CodegenTy) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let p = int_prim(ty).expect("a narrower integer");
         let zero = v.get_type().const_zero();
         let (n, o) = self.fixed_with_overflow("sub", zero, v, true)?;
         self.fixed_violation_if(o, Violation::Neg, p)?;
-        Ok((n.into(), CodegenTy::Narrow(p)))
+        Ok((n.into(), ty.clone()))
     }
 
     /// `abs(x)`: an unsigned integer's is itself; a signed one's is checked
     /// (the minimum has none).
-    pub(crate) fn lower_narrow_abs(&mut self, v: IntValue<'ctx>, p: PrimType) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+    pub(crate) fn lower_narrow_abs(&mut self, v: IntValue<'ctx>, ty: &CodegenTy) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let p = int_prim(ty).expect("a narrower integer");
         let (_, signed) = p.machine_int().expect("a machine integer");
         if !signed {
-            return Ok((v.into(), CodegenTy::Narrow(p)));
+            return Ok((v.into(), ty.clone()));
         }
         let zero = v.get_type().const_zero();
         let is_neg = emit(self.builder.build_int_compare(IP::SLT, v, zero, "fixed.abs.neg"))?;
@@ -308,7 +312,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (n, o) = self.fixed_with_overflow("sub", zero, v, true)?;
         self.fixed_violation_if(o, Violation::Neg, p)?;
         let r = emit(self.builder.build_select(is_neg, n, v, "fixed.abs"))?;
-        Ok((r, CodegenTy::Narrow(p)))
+        Ok((r, ty.clone()))
     }
 
     /// The operands of an intrinsic call, each lowered and fitted to
@@ -341,6 +345,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let int_t = self.context.custom_width_int_type(bits);
         let ty = CodegenTy::Narrow(p);
         let v = match op {
+            // fallible: lowered under their `or` (`lower_std_fixed_checked`)
+            FixedIntOp::CheckedAdd | FixedIntOp::CheckedSub | FixedIntOp::CheckedMul | FixedIntOp::CheckedDiv => {
+                return Err(CodegenError::Unsupported(format!(
+                    "`{}::checked_*` is fallible and is lowered under its `or`",
+                    hale_types::ty::prim_name(p)
+                )));
+            }
             FixedIntOp::Max => {
                 if signed {
                     int_t.const_int((1u64 << (bits - 1)) - 1, false)
@@ -366,8 +377,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // the count modulo the width, as Rust's `wrapping_shl` takes it
             FixedIntOp::WrappingShl | FixedIntOp::WrappingShr => {
-                let a = self.fixed_args(args, &[ty.clone(), CodegenTy::Int], scope)?;
-                let (l, c) = (a[0], a[1]);
+                let l = self.fixed_args(&args[..1], &[ty.clone()], scope)?[0];
+                let c = self.lower_expr(&args[1], scope)?.0.into_int_value();
                 let masked = emit(self.builder.build_and(c, c.get_type().const_int(u64::from(bits - 1), false), "fixed.wsh.n"))?;
                 let n = self.count_at(masked, bits)?;
                 if op == FixedIntOp::WrappingShl {
@@ -378,5 +389,106 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         };
         Ok((v.into(), ty))
+    }
+
+    /// `T::checked_add / checked_sub / checked_mul / checked_div(a, b)`
+    /// under its `or`: the operator's value in the success slot, or an
+    /// `ArithError { kind, op }` in the error slot (`kind` `overflow`, or
+    /// `division_by_zero` for a zero divisor; `op` the call), and the path
+    /// bit the `or` branches on. Lowered at the call, so a program that
+    /// names none carries none.
+    pub(crate) fn lower_std_fixed_checked(
+        &mut self,
+        id: IntrinsicId,
+        args: &[Expr],
+        scope: &Scope<'ctx>,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        let (op, p) = id.fixed_int().expect("a fixed-width integer's intrinsic");
+        let (bits, signed) = p.machine_int().expect("a machine integer");
+        let int_t = self.context.custom_width_int_type(bits);
+        let (lowered, ty) = {
+            let (av, at) = self.lower_expr(&args[0], scope)?;
+            let (bv, bt) = self.lower_expr(&args[1], scope)?;
+            // the operands' own type (a literal's the other's)
+            let ty = if crate::stdlib::fixed::int_prim(&at) == Some(p) { at.clone() } else { bt.clone() };
+            ((self.fit_int(av, &at, &ty)?.into_int_value(), self.fit_int(bv, &bt, &ty)?.into_int_value()), ty)
+        };
+        let (a, b) = lowered;
+        let name = hale_types::ty::prim_name(p);
+        let (verb, value, bad, by_zero) = match op {
+            FixedIntOp::CheckedAdd | FixedIntOp::CheckedSub | FixedIntOp::CheckedMul => {
+                let (verb, short) = match op {
+                    FixedIntOp::CheckedAdd => ("checked_add", "add"),
+                    FixedIntOp::CheckedSub => ("checked_sub", "sub"),
+                    _ => ("checked_mul", "mul"),
+                };
+                let (v, o) = self.fixed_with_overflow(short, a, b, signed)?;
+                (verb, v, o, None)
+            }
+            _ => {
+                let zero = emit(self.builder.build_int_compare(IP::EQ, b, int_t.const_zero(), "checked.by_zero"))?;
+                let over = if signed {
+                    let min = int_t.const_int(1u64 << (bits - 1), false);
+                    let is_min = emit(self.builder.build_int_compare(IP::EQ, a, min, "checked.is_min"))?;
+                    let by_neg1 = emit(self.builder.build_int_compare(IP::EQ, b, int_t.const_all_ones(), "checked.by_neg1"))?;
+                    emit(self.builder.build_and(is_min, by_neg1, "checked.div_over"))?
+                } else {
+                    self.context.bool_type().const_zero()
+                };
+                let bad = emit(self.builder.build_or(zero, over, "checked.bad"))?;
+                // a divisor that cannot trap where the result is not used
+                let safe = emit(self.builder.build_select(bad, int_t.const_int(1, false), b, "checked.divisor"))?.into_int_value();
+                let v = if signed {
+                    emit(self.builder.build_int_signed_div(a, safe, "checked.sdiv"))?
+                } else {
+                    emit(self.builder.build_int_unsigned_div(a, safe, "checked.udiv"))?
+                };
+                ("checked_div", v, bad, Some(zero))
+            }
+        };
+        let func = self
+            .current_fn
+            .ok_or_else(|| CodegenError::Unsupported(format!("`{name}::{verb}` outside a fn body")))?;
+        let payload_ty = CodegenTy::TypeRef("ArithError".into());
+        let out_val_slot = self.alloca_for(&ty, "checked.val.slot")?;
+        let out_err_slot = self.alloca_for(&payload_ty, "checked.err.slot")?;
+        let ok_bb = self.context.append_basic_block(func, "checked.ok");
+        let err_bb = self.context.append_basic_block(func, "checked.err");
+        let join_bb = self.context.append_basic_block(func, "checked.join");
+        emit(self.builder.build_conditional_branch(bad, err_bb, ok_bb))?;
+
+        self.builder.position_at_end(ok_bb);
+        emit(self.builder.build_store(out_val_slot, value))?;
+        emit(self.builder.build_unconditional_branch(join_bb))?;
+
+        self.builder.position_at_end(err_bb);
+        let op_text = format!("{name}::{verb}");
+        let err = self.error_payload(|cx| -> Result<inkwell::values::PointerValue<'ctx>, CodegenError> {
+            let info = cx.user_types.get("ArithError").cloned().ok_or_else(|| {
+                CodegenError::Unsupported("`ArithError` is not declared (the builtin table's row)".into())
+            })?;
+            let size = info.struct_ty.size_of().expect("ArithError has a known size");
+            let ptr = cx.arena_alloc(size, "ArithError.alloc")?;
+            let overflow = cx.global_string("overflow");
+            let kind: BasicValueEnum<'ctx> = match by_zero {
+                Some(z) => {
+                    let dz = cx.global_string("division_by_zero");
+                    emit(cx.builder.build_select(z, dz, overflow, "checked.kind"))?
+                }
+                None => overflow.into(),
+            };
+            let op_g = cx.global_string(&op_text);
+            for (field, v) in [("kind", kind), ("op", op_g.into())] {
+                let (idx, _) = info.fields.get(field).cloned().expect("a field of the row");
+                let at = emit(cx.builder.build_struct_gep(info.struct_ty, ptr, idx, &format!("ArithError.{field}.ptr")))?;
+                emit(cx.builder.build_store(at, v))?;
+            }
+            Ok(ptr)
+        })?;
+        emit(self.builder.build_store(out_err_slot, err))?;
+        emit(self.builder.build_unconditional_branch(join_bb))?;
+
+        self.builder.position_at_end(join_bb);
+        Ok(FallibleCallResult { i1_path: bad, out_val_slot: Some(out_val_slot), out_err_slot, success_ty: Some(ty), payload_ty })
     }
 }

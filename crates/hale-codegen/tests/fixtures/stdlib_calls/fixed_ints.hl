@@ -1,6 +1,7 @@
 // Build-only call fixture (F.40 phase 4, S0): every `std::i32` …
-// `std::u8` intrinsic row (GH #2132) at expression position, so the
-// shadow set reaches each arm for every width. Never run;
+// `std::u8` intrinsic row (GH #2132) at expression position, and each
+// `checked_*` under its `or`, so the shadow set reaches each arm for
+// every width. Never run;
 // `stdlib_call_fixtures` builds it to IR.
 
 fn main() {
@@ -46,4 +47,28 @@ fn main() {
     let u8_m = U8::wrapping_mul(u8_hi, u8_lo);
     let u8_l = U8::wrapping_shl(u8_a, 3);
     let u8_r = U8::wrapping_shr(u8_s, 3);
+    let i32_cadd = I32::checked_add(i32_hi, i32_lo) or i32_hi;
+    let i32_csub = I32::checked_sub(i32_hi, i32_lo) or i32_hi;
+    let i32_cmul = I32::checked_mul(i32_hi, i32_lo) or i32_hi;
+    let i32_cdiv = I32::checked_div(i32_hi, i32_lo) or i32_hi;
+    let u32_cadd = U32::checked_add(u32_hi, u32_lo) or u32_hi;
+    let u32_csub = U32::checked_sub(u32_hi, u32_lo) or u32_hi;
+    let u32_cmul = U32::checked_mul(u32_hi, u32_lo) or u32_hi;
+    let u32_cdiv = U32::checked_div(u32_hi, u32_lo) or u32_hi;
+    let i16_cadd = I16::checked_add(i16_hi, i16_lo) or i16_hi;
+    let i16_csub = I16::checked_sub(i16_hi, i16_lo) or i16_hi;
+    let i16_cmul = I16::checked_mul(i16_hi, i16_lo) or i16_hi;
+    let i16_cdiv = I16::checked_div(i16_hi, i16_lo) or i16_hi;
+    let u16_cadd = U16::checked_add(u16_hi, u16_lo) or u16_hi;
+    let u16_csub = U16::checked_sub(u16_hi, u16_lo) or u16_hi;
+    let u16_cmul = U16::checked_mul(u16_hi, u16_lo) or u16_hi;
+    let u16_cdiv = U16::checked_div(u16_hi, u16_lo) or u16_hi;
+    let i8_cadd = I8::checked_add(i8_hi, i8_lo) or i8_hi;
+    let i8_csub = I8::checked_sub(i8_hi, i8_lo) or i8_hi;
+    let i8_cmul = I8::checked_mul(i8_hi, i8_lo) or i8_hi;
+    let i8_cdiv = I8::checked_div(i8_hi, i8_lo) or i8_hi;
+    let u8_cadd = U8::checked_add(u8_hi, u8_lo) or u8_hi;
+    let u8_csub = U8::checked_sub(u8_hi, u8_lo) or u8_hi;
+    let u8_cmul = U8::checked_mul(u8_hi, u8_lo) or u8_hi;
+    let u8_cdiv = U8::checked_div(u8_hi, u8_lo) or u8_hi;
 }

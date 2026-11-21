@@ -934,10 +934,10 @@ std::http::post | lookup=http@2 | locus=false | effects=syscall|block | sig=- | 
 std::http::query_param | lookup=http@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=query_param
 std::http::request | lookup=http@2 | locus=false | effects=syscall|block | sig=- | parks=true | holds=true | unknown=- | suggest=request
 std::http::write_response | lookup=http@2 | locus=false | effects=syscall|block | sig=(Named(__StdIoTcpStream), Named(__StdHttpResponse)) -> Unit | ret_ty=() | or=- | parks=false | holds=true | unknown=- | suggest=write_response
-std::i16::checked_add | lookup=i16@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
-std::i16::checked_div | lookup=i16@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
-std::i16::checked_mul | lookup=i16@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
-std::i16::checked_sub | lookup=i16@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::i16::checked_add | lookup=i16@2 | locus=false | effects=pure | sig=(I16, I16) -> I16 ! ArithError | ret_ty=? | or=(I16, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_add
+std::i16::checked_div | lookup=i16@2 | locus=false | effects=pure | sig=(I16, I16) -> I16 ! ArithError | ret_ty=? | or=(I16, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_div
+std::i16::checked_mul | lookup=i16@2 | locus=false | effects=pure | sig=(I16, I16) -> I16 ! ArithError | ret_ty=? | or=(I16, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::i16::checked_sub | lookup=i16@2 | locus=false | effects=pure | sig=(I16, I16) -> I16 ! ArithError | ret_ty=? | or=(I16, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_sub
 std::i16::max | lookup=i16@2 | locus=false | effects=pure | sig=() -> I16 | ret_ty=I16 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::i16::min | lookup=i16@2 | locus=false | effects=pure | sig=() -> I16 | ret_ty=I16 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::i16::wrapping_add | lookup=i16@2 | locus=false | effects=pure | sig=(I16, I16) -> I16 | ret_ty=I16 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_add
@@ -969,10 +969,10 @@ std::i256::parse | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=fa
 std::i256::to_be_bytes | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_be_bytes
 std::i256::to_hex | lookup=i256@2 | locus=false | effects=pure | sig=(I256) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=to_hex
 std::i256::to_int | lookup=i256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=to_int
-std::i32::checked_add | lookup=i32@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
-std::i32::checked_div | lookup=i32@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
-std::i32::checked_mul | lookup=i32@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
-std::i32::checked_sub | lookup=i32@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::i32::checked_add | lookup=i32@2 | locus=false | effects=pure | sig=(I32, I32) -> I32 ! ArithError | ret_ty=? | or=(I32, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_add
+std::i32::checked_div | lookup=i32@2 | locus=false | effects=pure | sig=(I32, I32) -> I32 ! ArithError | ret_ty=? | or=(I32, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_div
+std::i32::checked_mul | lookup=i32@2 | locus=false | effects=pure | sig=(I32, I32) -> I32 ! ArithError | ret_ty=? | or=(I32, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::i32::checked_sub | lookup=i32@2 | locus=false | effects=pure | sig=(I32, I32) -> I32 ! ArithError | ret_ty=? | or=(I32, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_sub
 std::i32::max | lookup=i32@2 | locus=false | effects=pure | sig=() -> I32 | ret_ty=I32 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::i32::min | lookup=i32@2 | locus=false | effects=pure | sig=() -> I32 | ret_ty=I32 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::i32::wrapping_add | lookup=i32@2 | locus=false | effects=pure | sig=(I32, I32) -> I32 | ret_ty=I32 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_add
@@ -980,10 +980,10 @@ std::i32::wrapping_mul | lookup=i32@2 | locus=false | effects=pure | sig=(I32, I
 std::i32::wrapping_shl | lookup=i32@2 | locus=false | effects=pure | sig=(I32, Int) -> I32 | ret_ty=I32 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_shl
 std::i32::wrapping_shr | lookup=i32@2 | locus=false | effects=pure | sig=(I32, Int) -> I32 | ret_ty=I32 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_shr
 std::i32::wrapping_sub | lookup=i32@2 | locus=false | effects=pure | sig=(I32, I32) -> I32 | ret_ty=I32 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_sub
-std::i8::checked_add | lookup=i8@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
-std::i8::checked_div | lookup=i8@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
-std::i8::checked_mul | lookup=i8@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
-std::i8::checked_sub | lookup=i8@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::i8::checked_add | lookup=i8@2 | locus=false | effects=pure | sig=(I8, I8) -> I8 ! ArithError | ret_ty=? | or=(I8, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_add
+std::i8::checked_div | lookup=i8@2 | locus=false | effects=pure | sig=(I8, I8) -> I8 ! ArithError | ret_ty=? | or=(I8, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_div
+std::i8::checked_mul | lookup=i8@2 | locus=false | effects=pure | sig=(I8, I8) -> I8 ! ArithError | ret_ty=? | or=(I8, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::i8::checked_sub | lookup=i8@2 | locus=false | effects=pure | sig=(I8, I8) -> I8 ! ArithError | ret_ty=? | or=(I8, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_sub
 std::i8::max | lookup=i8@2 | locus=false | effects=pure | sig=() -> I8 | ret_ty=I8 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::i8::min | lookup=i8@2 | locus=false | effects=pure | sig=() -> I8 | ret_ty=I8 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::i8::wrapping_add | lookup=i8@2 | locus=false | effects=pure | sig=(I8, I8) -> I8 | ret_ty=I8 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_add
@@ -1488,10 +1488,10 @@ std::ts::node_start_byte | lookup=ts@2 | locus=false | effects=pure | sig=(Int) 
 std::ts::node_text | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=node_text
 std::ts::parse_go | lookup=ts@2 | locus=false | effects=alloc | sig=(Str) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=parse_go
 std::ts::root_node | lookup=ts@2 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=root_node
-std::u16::checked_add | lookup=u16@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
-std::u16::checked_div | lookup=u16@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
-std::u16::checked_mul | lookup=u16@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
-std::u16::checked_sub | lookup=u16@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::u16::checked_add | lookup=u16@2 | locus=false | effects=pure | sig=(U16, U16) -> U16 ! ArithError | ret_ty=? | or=(U16, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_add
+std::u16::checked_div | lookup=u16@2 | locus=false | effects=pure | sig=(U16, U16) -> U16 ! ArithError | ret_ty=? | or=(U16, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_div
+std::u16::checked_mul | lookup=u16@2 | locus=false | effects=pure | sig=(U16, U16) -> U16 ! ArithError | ret_ty=? | or=(U16, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::u16::checked_sub | lookup=u16@2 | locus=false | effects=pure | sig=(U16, U16) -> U16 ! ArithError | ret_ty=? | or=(U16, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_sub
 std::u16::max | lookup=u16@2 | locus=false | effects=pure | sig=() -> U16 | ret_ty=U16 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::u16::min | lookup=u16@2 | locus=false | effects=pure | sig=() -> U16 | ret_ty=U16 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::u16::wrapping_add | lookup=u16@2 | locus=false | effects=pure | sig=(U16, U16) -> U16 | ret_ty=U16 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_add
@@ -1522,10 +1522,10 @@ std::u256::parse | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=fa
 std::u256::to_be_bytes | lookup=u256@2 | locus=false | effects=pure | sig=(U256) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=to_be_bytes
 std::u256::to_hex | lookup=u256@2 | locus=false | effects=pure | sig=(U256) -> Str | ret_ty=String | or=- | parks=false | holds=false | unknown=- | suggest=to_hex
 std::u256::to_int | lookup=u256@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=to_int
-std::u32::checked_add | lookup=u32@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
-std::u32::checked_div | lookup=u32@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
-std::u32::checked_mul | lookup=u32@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
-std::u32::checked_sub | lookup=u32@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::u32::checked_add | lookup=u32@2 | locus=false | effects=pure | sig=(U32, U32) -> U32 ! ArithError | ret_ty=? | or=(U32, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_add
+std::u32::checked_div | lookup=u32@2 | locus=false | effects=pure | sig=(U32, U32) -> U32 ! ArithError | ret_ty=? | or=(U32, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_div
+std::u32::checked_mul | lookup=u32@2 | locus=false | effects=pure | sig=(U32, U32) -> U32 ! ArithError | ret_ty=? | or=(U32, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::u32::checked_sub | lookup=u32@2 | locus=false | effects=pure | sig=(U32, U32) -> U32 ! ArithError | ret_ty=? | or=(U32, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_sub
 std::u32::max | lookup=u32@2 | locus=false | effects=pure | sig=() -> U32 | ret_ty=U32 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::u32::min | lookup=u32@2 | locus=false | effects=pure | sig=() -> U32 | ret_ty=U32 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::u32::wrapping_add | lookup=u32@2 | locus=false | effects=pure | sig=(U32, U32) -> U32 | ret_ty=U32 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_add
@@ -1557,10 +1557,10 @@ std::u64::wrapping_mul | lookup=u64@2 | locus=false | effects=pure | sig=(U64, U
 std::u64::wrapping_shl | lookup=u64@2 | locus=false | effects=pure | sig=(U64, Int) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_shl
 std::u64::wrapping_shr | lookup=u64@2 | locus=false | effects=pure | sig=(U64, Int) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_shr
 std::u64::wrapping_sub | lookup=u64@2 | locus=false | effects=pure | sig=(U64, U64) -> U64 | ret_ty=U64 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_sub
-std::u8::checked_add | lookup=u8@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_add
-std::u8::checked_div | lookup=u8@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_div
-std::u8::checked_mul | lookup=u8@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_mul
-std::u8::checked_sub | lookup=u8@2 | locus=false | effects=pure | sig=- | parks=false | holds=false | unknown=- | suggest=checked_sub
+std::u8::checked_add | lookup=u8@2 | locus=false | effects=pure | sig=(U8, U8) -> U8 ! ArithError | ret_ty=? | or=(U8, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_add
+std::u8::checked_div | lookup=u8@2 | locus=false | effects=pure | sig=(U8, U8) -> U8 ! ArithError | ret_ty=? | or=(U8, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_div
+std::u8::checked_mul | lookup=u8@2 | locus=false | effects=pure | sig=(U8, U8) -> U8 ! ArithError | ret_ty=? | or=(U8, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_mul
+std::u8::checked_sub | lookup=u8@2 | locus=false | effects=pure | sig=(U8, U8) -> U8 ! ArithError | ret_ty=? | or=(U8, ArithError) | parks=false | holds=false | unknown=- | suggest=checked_sub
 std::u8::max | lookup=u8@2 | locus=false | effects=pure | sig=() -> U8 | ret_ty=U8 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::u8::min | lookup=u8@2 | locus=false | effects=pure | sig=() -> U8 | ret_ty=U8 | or=- | parks=false | holds=false | unknown=- | suggest=-
 std::u8::wrapping_add | lookup=u8@2 | locus=false | effects=pure | sig=(U8, U8) -> U8 | ret_ty=U8 | or=- | parks=false | holds=false | unknown=- | suggest=wrapping_add

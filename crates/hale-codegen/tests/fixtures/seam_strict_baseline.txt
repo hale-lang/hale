@@ -8,10 +8,10 @@
 # reach it; `generated` is a node with no place in any file (code a rewrite generated).
 measure	static typers	11
 measure	value+type lowerings	378
-measure	CodegenTy built in an expression	1022
+measure	CodegenTy built in an expression	985
 measure	seam fallbacks (static)	32
 measure	seam reads	17
-total	323054
+total	322884
 2	call	program	no row	4
 2	call	program	unknown	14
 3	field	program	no layout	10
@@ -43,12 +43,12 @@ total	323054
 6	or	stdlib	no row	1
 7	binary	generated	no row	43393
 7	binary	program	no row	59066
-7	binary	stdlib	no row	2307
+7	binary	stdlib	no row	2229
 7	literal	generated	no body	2
 7	literal	generated	no row	58543
 7	literal	program	no body	2
 7	literal	program	no row	144820
-7	literal	stdlib	no row	3363
+7	literal	stdlib	no row	3283
 7	unary	generated	no row	2861
 7	unary	program	no row	7093
-7	unary	stdlib	no row	186
+7	unary	stdlib	no row	174

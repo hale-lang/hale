@@ -465,7 +465,6 @@ fn every_stdlib_source_maps_to_namespace_rows() {
         ("str_helpers.hl", &["str"]),
         ("net.hl", &["net"]),
         ("u64.hl", &["u64"]),
-        ("fixed_ints.hl", &["i32", "u32", "i16", "u16", "i8", "u8"]),
     ];
     // Codegen's native stdlib modules, by the namespace each lowers.
     const CG: &[(&str, &[&str])] = &[

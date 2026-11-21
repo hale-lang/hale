@@ -41,8 +41,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // for String/Bytes).
         match ty {
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -436,8 +435,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(fresh.into())
             }
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -1174,8 +1172,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // to a long-lived locus).
         let compound = match slot_ty {
             CodegenTy::Int
-            | CodegenTy::U64
-            | CodegenTy::Narrow(_)
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
