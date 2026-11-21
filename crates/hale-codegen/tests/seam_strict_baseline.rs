@@ -334,6 +334,13 @@ fn parse(text: &str) -> BTreeMap<String, usize> {
         .collect()
 }
 
+/// Stack for a build worker: the compiler's passes recurse (the parser,
+/// the check, lowering), and a spawned thread's default (2 MiB) is well
+/// under the main thread a build otherwise runs on; the dna fixtures'
+/// largest programs overflowed it on macOS. As `hale test`'s workers
+/// (`TEST_WORKER_STACK`): a virtual reservation, committed as used.
+const WORKER_STACK: usize = 256 << 20;
+
 #[test]
 fn the_burn_down_only_moves_forward() {
     let options = BuildOptions { seam_strict: true, ..build_opts::options() };
@@ -346,19 +353,23 @@ fn the_burn_down_only_moves_forward() {
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
     std::thread::scope(|s| {
         for _ in 0..workers {
-            s.spawn(|| loop {
-                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                let Some((name, entry)) = programs.get(i) else { break };
-                match missing_rows(name, entry, &options) {
-                    Ok(rows) => {
-                        let mut sites = sites.lock().expect("the site table");
-                        for (p, r) in rows {
-                            sites.entry((p, r.kind)).or_insert(r);
+            std::thread::Builder::new()
+                .name("seam-strict-worker".to_string())
+                .stack_size(WORKER_STACK)
+                .spawn_scoped(s, || loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((name, entry)) = programs.get(i) else { break };
+                    match missing_rows(name, entry, &options) {
+                        Ok(rows) => {
+                            let mut sites = sites.lock().expect("the site table");
+                            for (p, r) in rows {
+                                sites.entry((p, r.kind)).or_insert(r);
+                            }
                         }
+                        Err(e) => failed.lock().expect("the failures").push(format!("{name}: {e}")),
                     }
-                    Err(e) => failed.lock().expect("the failures").push(format!("{name}: {e}")),
-                }
-            });
+                })
+                .expect("spawn a build worker");
         }
     });
     let failed = failed.into_inner().expect("the failures");
