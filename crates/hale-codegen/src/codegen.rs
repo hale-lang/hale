@@ -6843,20 +6843,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.callee_fn_name(callee).and_then(|f| self.fresh_locus_factories.get(&f).cloned()).map(|(l, _)| l)
     }
 
-    /// GH #1569: the type a call's callee returns: a fn value's, through
-    /// the binding holding it, or a program fn's.
-    pub(crate) fn call_returned_ty(&self, callee: &Expr, scope: &Scope<'ctx>) -> Option<CodegenTy> {
-        if let Expr::Ident(i) = callee {
-            if let Some((_, ty)) = scope.locals.get(&i.name) {
-                return match ty {
-                    CodegenTy::FnPtr { ret: Some(r), .. } => Some(r.as_ref().clone()),
-                    _ => None,
-                };
-            }
-        }
-        self.callee_fn_name(callee).and_then(|f| self.user_fns.get(&f)).and_then(|sig| sig.ret.clone())
-    }
-
     pub(crate) fn callee_fn_name(&self, callee: &Expr) -> Option<String> {
         fn segs(e: &Expr, out: &mut Vec<String>) -> bool {
             match e {
@@ -19111,9 +19097,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // GH #1569: a discarded call handing back an aggregate of loci
             // its frame owns: through `lower_expr`, which reclaims them at
             // the statement
-            Stmt::Expr(call @ Expr::Call { callee, .. })
+            Stmt::Expr(call @ Expr::Call { .. })
                 if self.owner_table.is_aggregate_call(call)
-                    && self.call_returned_ty(callee, scope).is_some_and(|t| crate::locus::dissolve::composite_loci(&t).is_some()) =>
+                    && self.ty_at(call).is_some_and(|t| crate::locus::dissolve::composite_loci(&t).is_some()) =>
             {
                 let mark = self.deferred_dissolves.last().map_or(0, |f| f.len());
                 self.aggregate_discarded = true;
@@ -21283,23 +21269,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// the guarded arms no longer hijack it and still need no
     /// refusal here.
     /// A bare builtin's row of the signature table the checker types
-    /// its calls by (F.40 phase 3, E4): lowering reads the arity and
-    /// the result from it.
+    /// its calls by (F.40 phase 3, E4): lowering reads the arity from it,
+    /// and the result from the checker's row of the call
+    /// (`Cx::call_result`, GH #2111).
     fn builtin_sig(name: &str) -> &'static hale_types::builtin_sigs::BuiltinSig {
         hale_types::builtin_sigs::bare_builtin_sig(name).expect("every lowered bare builtin has a signature row")
-    }
-
-    /// The type a builtin's row gives a call over its (first) operand.
-    fn builtin_result(sig: &hale_types::builtin_sigs::BuiltinSig, operand: &CodegenTy) -> CodegenTy {
-        use hale_types::builtin_sigs::Returns;
-        match sig.returns {
-            Returns::Prim(PrimType::Int) => CodegenTy::Int,
-            Returns::Prim(PrimType::Float) => CodegenTy::Float,
-            Returns::Prim(PrimType::Bool) => CodegenTy::Bool,
-            Returns::Prim(PrimType::String) => CodegenTy::String,
-            Returns::Prim(other) => unreachable!("no builtin row returns {other:?}"),
-            Returns::Operand => operand.clone(),
-        }
     }
 
     fn reject_builtin_over_user_fn(
@@ -21331,6 +21305,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// have a fixed field set known at the type level.
     fn lower_len_builtin(
         &mut self,
+        call: &Expr,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
@@ -21351,7 +21326,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::String if cache.is_some() => {
                 let cache = cache.expect("checked");
                 let n = self.emit_cached_str_len(v.into_pointer_value(), cache)?;
-                Ok((n.into(), Self::builtin_result(sig, &ty)))
+                Ok((n.into(), self.call_result(call)?))
             }
             CodegenTy::String | CodegenTy::StringView => {
                 let len_fn = self
@@ -21369,7 +21344,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_str_len returns i64");
-                Ok((val, Self::builtin_result(sig, &ty)))
+                Ok((val, self.call_result(call)?))
             }
             CodegenTy::Bytes | CodegenTy::BytesView => {
                 // m89: Bytes carries an explicit length prefix —
@@ -21390,11 +21365,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_bytes_len returns i64");
-                Ok((val, Self::builtin_result(sig, &ty)))
+                Ok((val, self.call_result(call)?))
             }
             CodegenTy::Array(_, n) => {
                 let val = self.context.i64_type().const_int(n, true);
-                Ok((val.into(), Self::builtin_result(sig, &ty)))
+                Ok((val.into(), self.call_result(call)?))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`len` not supported for argument type {}",
@@ -21411,6 +21386,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// whole part at scale 0, `std::decimal::to_float(d)` its `Float`).
     fn lower_int_cast_builtin(
         &mut self,
+        call: &Expr,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
@@ -21423,7 +21399,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::Int => Ok((v, Self::builtin_result(sig, &ty))),
+            CodegenTy::Int => Ok((v, self.call_result(call)?)),
             CodegenTy::Float => {
                 let res = self
                     .builder
@@ -21433,7 +21409,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "Int.cast",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res.into(), Self::builtin_result(sig, &ty)))
+                Ok((res.into(), self.call_result(call)?))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Int(...)` cast not supported for argument type {} \
@@ -21455,6 +21431,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// `std::math::int_to_float` emits.
     fn lower_float_cast_builtin(
         &mut self,
+        call: &Expr,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
@@ -21467,7 +21444,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
-            CodegenTy::Float => Ok((v, Self::builtin_result(sig, &ty))),
+            CodegenTy::Float => Ok((v, self.call_result(call)?)),
             CodegenTy::Int => {
                 let res = self
                     .builder
@@ -21477,7 +21454,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "Float.cast",
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((res.into(), Self::builtin_result(sig, &ty)))
+                Ok((res.into(), self.call_result(call)?))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Float(...)` cast not supported for argument type \
@@ -21518,6 +21495,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// abs takes 1 arg; min/max take 2.
     fn lower_math_builtin(
         &mut self,
+        call: &Expr,
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
@@ -21534,7 +21512,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let (av, at) = self.lower_expr(&args[0], scope)?;
         if name == "abs" {
-            return self.lower_abs(av, &at);
+            return self.lower_abs(av, &at, self.call_result(call)?);
         }
         let (bv, bt) = self.lower_expr(&args[1], scope)?;
         // GH #1076: two values of one quantity or point type at one
@@ -21567,7 +21545,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(cmp, av, bv, &format!("{}.sel", name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, Self::builtin_result(sig, &at)))
+                Ok((v, self.call_result(call)?))
             }
             CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Decimal(_) => {
                 let pred = match name {
@@ -21588,7 +21566,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(cmp, av, bv, &format!("{}.sel", name))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((v, Self::builtin_result(sig, &at)))
+                Ok((v, self.call_result(call)?))
             }
             CodegenTy::Float => {
                 // IEEE 754-2019 `minimum` / `maximum`: a NaN operand
@@ -21608,7 +21586,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &[av.into_float_value(), bv.into_float_value()],
                     name,
                 )?;
-                Ok((v.into(), Self::builtin_result(sig, &at)))
+                Ok((v.into(), self.call_result(call)?))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`{}` not supported for type {}",
@@ -21621,6 +21599,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &mut self,
         v: BasicValueEnum<'ctx>,
         ty: &CodegenTy,
+        result: CodegenTy,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
         match ty {
             CodegenTy::U256 | CodegenTy::I256 => self.lower_wide_abs(v.into_int_value(), ty),
@@ -21653,14 +21632,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .builder
                     .build_select(is_neg, neg.into(), v, "abs.sel")
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                Ok((chosen, Self::builtin_result(Self::builtin_sig("abs"), ty)))
+                Ok((chosen, result))
             }
             CodegenTy::Float => {
                 // `llvm.fabs` clears the sign bit, so `abs(-0.0)` is
                 // 0.0 (a `< 0.0` compare + select kept -0.0) and a NaN
                 // stays NaN. Inline everywhere: `f64.abs` on wasm32.
                 let r = self.call_f64_intrinsic("llvm.fabs", &[v.into_float_value()], "abs")?;
-                Ok((r.into(), Self::builtin_result(Self::builtin_sig("abs"), ty)))
+                Ok((r.into(), result))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`abs` not supported for type {}",
@@ -21674,6 +21653,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// return i32 0/1 which we truncate to i1 by comparing to 1.
     fn lower_str_predicate_builtin(
         &mut self,
+        call: &Expr,
         name: &str,
         args: &[Expr],
         scope: &Scope<'ctx>,
@@ -21723,7 +21703,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 &format!("str.{}.bool", name),
             )
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-        Ok((v.into(), Self::builtin_result(sig, &st)))
+        Ok((v.into(), self.call_result(call)?))
     }
 
     /// m37: lower a `to_string(x)` builtin call. Routes by the
@@ -21787,6 +21767,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     fn lower_to_string_builtin(
         &mut self,
+        call: &Expr,
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
@@ -21800,7 +21781,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         let res = self.value_to_string(v, &ty)?;
         let res = self.with_printed_unit(&args[0], res)?;
-        Ok((res, Self::builtin_result(sig, &ty)))
+        Ok((res, self.call_result(call)?))
     }
 
     /// m47-payloads-followup: convert any single value to a
@@ -26328,12 +26309,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // the statement's own call, and no call nested in it
         let discarded = std::mem::take(&mut self.aggregate_discarded);
         if !reentry && !self.deferred_dissolves.is_empty() {
-            if let Expr::Call { callee, .. } = e {
+            if let Expr::Call { .. } = e {
                 let frame_owned = matches!(
                     self.owner_table.entry_of(e).map(|x| &x.owner),
                     Some(crate::ownership::Owner::Binding(_) | crate::ownership::Owner::FrameTemp(_))
                 );
-                let ret = self.call_returned_ty(callee, scope).filter(|t| crate::locus::dissolve::composite_loci(t).is_some());
+                let ret = self.ty_at(e).filter(|t| crate::locus::dissolve::composite_loci(t).is_some());
                 if let (true, true, Some(ret_ty)) = (frame_owned, self.owner_table.is_aggregate_call(e), ret) {
                     let children: Vec<(u32, String)> = crate::locus::dissolve::composite_loci(&ret_ty)
                         .unwrap_or_default()
@@ -27188,7 +27169,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Expr::Ident(i) if i.name == "len" => {
                     self.reject_builtin_over_user_fn("len")?;
-                    self.lower_len_builtin(args, scope)
+                    self.lower_len_builtin(e, args, scope)
                 }
                 // bounded[T; N] intrinsics (2026-07-02): count/clear
                 // (push/at are fallible — they route through
@@ -27219,7 +27200,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
                 Expr::Ident(i) if i.name == "to_string" => {
                     self.reject_builtin_over_user_fn("to_string")?;
-                    self.lower_to_string_builtin(args, scope)
+                    self.lower_to_string_builtin(e, args, scope)
                 }
                 Expr::Ident(i)
                     if i.name == hale_syntax::parser::FMT_BUILTIN =>
@@ -27232,12 +27213,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Expr::Ident(i) if i.name == "Int" => {
                     // v1.x-11: explicit Float → Int narrowing.
                     self.reject_builtin_over_user_fn("Int")?;
-                    self.lower_int_cast_builtin(args, scope)
+                    self.lower_int_cast_builtin(e, args, scope)
                 }
                 Expr::Ident(i) if i.name == "Float" => {
                     // GH #800: the widening half of the same pair.
                     self.reject_builtin_over_user_fn("Float")?;
-                    self.lower_float_cast_builtin(args, scope)
+                    self.lower_float_cast_builtin(e, args, scope)
                 }
                 Expr::Ident(i)
                     if matches!(
@@ -27246,7 +27227,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ) =>
                 {
                     self.reject_builtin_over_user_fn(&i.name)?;
-                    self.lower_math_builtin(&i.name, args, scope)
+                    self.lower_math_builtin(e, &i.name, args, scope)
                 }
                 Expr::Ident(i)
                     if matches!(
@@ -27255,7 +27236,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     ) =>
                 {
                     self.reject_builtin_over_user_fn(&i.name)?;
-                    self.lower_str_predicate_builtin(&i.name, args, scope)
+                    self.lower_str_predicate_builtin(e, &i.name, args, scope)
                 }
                 // GH #1995 S3: bare `ends_with`, the third predicate. Not a
                 // reserved call form (a program's `fn ends_with` predates
@@ -27266,7 +27247,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         && !self.user_fns.contains_key("ends_with")
                         && !self.generic_fn_templates.contains_key("ends_with") =>
                 {
-                    self.lower_str_predicate_builtin(&i.name, args, scope)
+                    self.lower_str_predicate_builtin(e, &i.name, args, scope)
                 }
                 Expr::Ident(i) if self.user_fns.contains_key(&i.name) => {
                     let result =
