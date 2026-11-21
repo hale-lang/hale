@@ -697,3 +697,108 @@ fn main() {
     assert_eq!(at(&[g.0], to_string), string, "the call leaves `n`");
     assert_eq!(at(&[], to_string), None, "a default has no row on no evaluation path");
 }
+
+
+/// GH #2111 (family 9): the stdlib's own walk types each call to one of
+/// its Rust leaves and each field it reads, as the checker types a user
+/// body's: the rows lowering reads in a stdlib body. A leaf's call is its
+/// row's: under `or` the row's fallible value (`Sig::or_types`), and a
+/// leaf with a record or a view for its success names it. The reads with
+/// no row are a form's iteration pseudo-field (`for e in
+/// self.store.entries`, twice), which names the form's cells and has no
+/// value.
+#[test]
+fn the_stdlib_walk_types_its_leaf_calls_and_field_reads() {
+    use hale_syntax::ast::Expr;
+    use hale_types::typed_bodies::{visit_view_nodes, ViewNode};
+    let program = hale_types::stdlib_bodies::program().expect("the stdlib parses");
+    let views = hale_types::stdlib_bodies::view_types().expect("the stdlib's walk");
+    let mut untyped = Vec::new();
+    for (item, v) in program.items.iter().zip(views) {
+        visit_view_nodes(item, &mut |_, n| {
+            let ViewNode::Expr(e) = n else { return };
+            let what = match e {
+                Expr::Call { callee, .. } => match callee.as_ref() {
+                    Expr::Path(q) if q.segments.first().is_some_and(|s| s.name == "std") => {
+                        q.segments.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join("::")
+                    }
+                    _ => return,
+                },
+                Expr::Field { name, .. } => format!(".{}", name.name),
+                _ => return,
+            };
+            if matches!(v.typed(e), None | Some(Ty::Unknown)) {
+                untyped.push(what);
+            }
+        });
+    }
+    assert_eq!(untyped, vec![".entries".to_string(); 2], "every leaf call and field read has its row");
+}
+
+/// GH #2111 (family 9): a `birth_check` and a subscription's `where key ==`
+/// filter are the locus's own text, lowered in its body: each has its row
+/// there. A fallible stdlib call an `or` handles is the row's fallible
+/// value, its success and its error.
+#[test]
+fn a_locus_member_s_text_and_an_or_handled_leaf_have_their_rows() {
+    use hale_syntax::ast::{BusMember, Expr, KeyFilter, PrimType};
+    let src = r#"
+type Tick { lane: Int = 0; n: Int = 0; }
+topic Ticks { payload: Tick; subject: "t.ticks"; keyed_by lane; }
+locus Lane {
+    params { lane: Int = 0; seen: Int = 0; }
+    bus { subscribe Ticks as on_tick where key == self.lane; }
+    closure fuse { captures: seen; epoch inline; }
+    birth_check { self.seen < 0 } -> violate fuse;
+    fn on_tick(t: Tick) { self.seen = self.seen + 1; }
+}
+fn main() {
+    let n = std::str::parse_int("12") or 0;
+    println(n);
+    Lane { lane: 1 };
+}
+"#;
+    let parsed = hale_syntax::parse_source(src).expect("parses");
+    let s = match Snapshot::from_program(parsed, Vec::new(), Config::harness(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("loads"),
+    };
+    let view = match s.demand_lowering() {
+        Ok(v) => v,
+        Err(b) => panic!("the lowering view: {:?}", b.refused),
+    };
+    let table = view.expr_types().expect("the expression rows");
+    let p = &view.merged;
+    let TopDecl::Locus(lane) = decl(p, "Lane") else { unreachable!() };
+    let filter = lane
+        .members
+        .iter()
+        .find_map(|m| match m {
+            LocusMember::Bus(bb) => bb.members.iter().find_map(|bm| match bm {
+                BusMember::Subscribe { key_filter: Some(KeyFilter::Specific { expr, .. }), .. } => Some(expr),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("the filter");
+    let check = lane
+        .members
+        .iter()
+        .find_map(|m| match m {
+            LocusMember::BirthCheck(bc) => Some(&bc.cond),
+            _ => None,
+        })
+        .expect("the birth check");
+    let int = Ty::Prim(PrimType::Int);
+    assert_eq!(table.at(lane.id, filter), Some(&int), "the filter's row, in the locus's body");
+    // (a comparison has no row of its own yet: the read inside it does)
+    let Expr::Binary { left, .. } = check else { panic!("a comparison") };
+    assert_eq!(table.at(lane.id, left), Some(&int), "the birth check's read, in the locus's body");
+    let TopDecl::Fn(main) = decl(p, "main") else { unreachable!() };
+    let Stmt::Let { value: Expr::Or { inner, .. }, .. } = &main.body.stmts[0] else { panic!("an `or`") };
+    assert_eq!(
+        table.at(main.id, inner),
+        Some(&Ty::Fallible { success: Box::new(int), payload: Box::new(Ty::Named("ParseError".to_string())) }),
+        "the leaf's call is its row's fallible value"
+    );
+}

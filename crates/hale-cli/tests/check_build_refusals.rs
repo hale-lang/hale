@@ -888,3 +888,139 @@ fn a_dot_variant_binding_of_a_fns_name_calls_what_the_spelled_pattern_does() {
         assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "20 5", "{tag}");
     }
 }
+
+/// GH #2068 (F.59): a receiver call on a text value names a `std::str` /
+/// `std::bytes` fn that takes the value first, or nothing; what names
+/// nothing is refused by the check where it is written, and the build
+/// stops at the same message. An unknown name gets the nearest fns; a
+/// fn of the program's is called with the value as an argument; `len`
+/// is the builtin; a value of no text type (a record, an `Int`) has no
+/// receiver calls; a generic body's type parameter calls nothing.
+#[test]
+fn a_receiver_call_naming_no_text_fn_is_refused_where_it_is_written() {
+    refused(
+        "fn main() {\n    let s = \"abc\";\n    println(s.trimm());\n}\n",
+        "recv_near",
+        "3:13",
+        "no fn `trimm` in `std::str` takes a `String` first, so `.trimm` names nothing on it — the nearest are `.trim`, `.trim_end`, `.trim_start`",
+    );
+    refused(
+        "fn main() {\n    let s = \"abc\";\n    println(s.frobnicate());\n}\n",
+        "recv_far",
+        "3:13",
+        "no fn `frobnicate` in `std::str` takes a `String` first, so `.frobnicate` names nothing on it",
+    );
+    refused(
+        "fn shout(s: String) -> String { return s; }\nfn main() {\n    let s = \"abc\";\n    println(s.shout());\n}\n",
+        "recv_user_fn",
+        "4:13",
+        "no fn `shout` in `std::str` takes a `String` first, so `.shout` names nothing on it — `shout` is a fn of the program's: call it as `shout(x, …)`",
+    );
+    refused(
+        "fn main() {\n    let s = \"abc\";\n    println(s.len());\n}\n",
+        "recv_len",
+        "3:13",
+        "no field `len` on `String` — the length of a String is the builtin `len(s)`",
+    );
+    refused(
+        "fn main() {\n    let b = std::bytes::from_string(\"abc\");\n    println(b.lower());\n}\n",
+        "recv_bytes",
+        "3:13",
+        "no fn `lower` in `std::bytes` takes a `Bytes` first, so `.lower` names nothing on it",
+    );
+    refused(
+        "type Point { x: Int; }\nfn main() {\n    let p = Point { x: 1 };\n    println(p.trim());\n}\n",
+        "recv_record",
+        "4:13",
+        "no field `trim` on `Point`",
+    );
+    refused(
+        "fn main() {\n    let n = 5;\n    println(n.trim());\n}\n",
+        "recv_int",
+        "3:13",
+        "no field `trim` on `Int`",
+    );
+    refused(
+        "fn main() {\n    let s = \"abc\";\n    let f = s.trim;\n    println(\"x\");\n}\n",
+        "recv_value",
+        "3:13",
+        "no field `trim` on `String` — `trim` is the fn `std::str::trim`, called on the value as `.trim(…)`; it is not a field",
+    );
+    refused(
+        "fn g<T>(x: T) -> String {\n    return x.trim();\n}\nfn main() {\n    println(g(\"x\"));\n}\n",
+        "recv_type_param",
+        "2:12",
+        "`.trim(…)` on a value of a type parameter calls nothing",
+    );
+}
+
+/// GH #2068 (F.59): a receiver call is the path call it means to every
+/// pass after the check, so a program spelled with receiver calls and
+/// the same program spelled with the paths have one allocation summary
+/// (positions aside), meet one `@effects` contract, and build and run to
+/// one output.
+#[test]
+fn a_receiver_call_is_summarized_and_built_as_its_path_call() {
+    let receiver = "@effects(none: { syscall, block })\nfn norm(s: String) -> String {\n    return s.trim().lower().replace(\"a\", \"b\");\n}\n\nfn total(s: String) -> Int {\n    let mut t = 0;\n    for p in s.split(\",\") {\n        t = t + (p.trim().parse_int() or 0);\n    }\n    return t + s.words().filter(len(it) > 1).count();\n}\n\nfn main() {\n    println(norm(\" A \"), total(\"1,22\"));\n}\n";
+    let path = "@effects(none: { syscall, block })\nfn norm(s: String) -> String {\n    return std::str::replace(std::str::lower(std::str::trim(s)), \"a\", \"b\");\n}\n\nfn total(s: String) -> Int {\n    let mut t = 0;\n    for p in std::str::split(s, \",\") {\n        t = t + (std::str::parse_int(std::str::trim(p)) or 0);\n    }\n    return t + std::str::words(s).filter(len(it) > 1).count();\n}\n\nfn main() {\n    println(norm(\" A \"), total(\"1,22\"));\n}\n";
+    let summary = |src: &str, tag: &str| -> String {
+        let d: PathBuf = std::env::temp_dir().join(format!("hale_check_build_refusals_{}_{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("main.hl");
+        std::fs::write(&f, src).unwrap();
+        let (ok, out) = hale(&["check", "--dump-alloc-summary", &f.to_string_lossy()]);
+        let bin = d.join("bin");
+        let (built, bout) = hale(&["build", &f.to_string_lossy(), "-o", &bin.to_string_lossy()]);
+        assert!(ok && built, "{tag}: {out}{bout}");
+        let run = Command::new(&bin).output().expect("run");
+        let _ = std::fs::remove_dir_all(&d);
+        // positions are the spelling's; what the summary says is not
+        let mut s = String::new();
+        for line in out.lines() {
+            let mut l = String::new();
+            let mut rest = line;
+            while let Some(at) = rest.find(" @") {
+                l.push_str(&rest[..at]);
+                rest = rest[at + 2..].trim_start_matches(|c: char| c.is_ascii_digit() || c == '.');
+            }
+            l.push_str(rest);
+            s.push_str(&l);
+            s.push('\n');
+        }
+        s + "run: " + &String::from_utf8_lossy(&run.stdout)
+    };
+    let (a, b) = (summary(receiver, "recv_summary"), summary(path, "path_summary"));
+    assert!(a.contains("<unresolved: std::str::trim>") && a.contains("run: b24"), "{a}");
+    assert_eq!(a, b);
+}
+
+/// GH #2068, on review: a text source over a part of another is typed only
+/// once the outer loop is desugared, so the snapshot settles in rounds
+/// until a walk resolves nothing, however deep the loops nest: eight
+/// `for vN in v(N-1).words()` build and run as the path spelling does.
+#[test]
+fn receiver_text_sources_nested_eight_deep_build() {
+    let mut src = String::from("fn main() {\n    let v = \"ab\";\n");
+    let mut prev = "v".to_string();
+    for k in 0..8 {
+        src.push_str(&format!("{}for v{k} in {prev}.words() {{\n", "    ".repeat(k + 1)));
+        prev = format!("v{k}");
+    }
+    src.push_str(&format!("{}println({prev}.upper());\n", "    ".repeat(9)));
+    for k in (0..8).rev() {
+        src.push_str(&format!("{}}}\n", "    ".repeat(k + 1)));
+    }
+    src.push_str("}\n");
+    let d: PathBuf = std::env::temp_dir().join(format!("hale_check_build_refusals_{}_nested8", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("main.hl");
+    std::fs::write(&f, &src).unwrap();
+    let bin = d.join("bin");
+    let (built, bout) = hale(&["build", &f.to_string_lossy(), "-o", &bin.to_string_lossy()]);
+    assert!(built, "{src}\n{bout}");
+    let run = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_dir_all(&d);
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "AB");
+}

@@ -1695,7 +1695,10 @@ capacity is part of the type (K made value-level, the F.22
 philosophy). Works in `type` fields and locus `params`.
 
 Operations are GRAMMAR INTRINSICS (like `len(s)`), not methods, so
-the types-have-no-methods axiom holds:
+the types-have-no-methods axiom holds (the one exception, the text
+types' receiver calls of `std::str` and `std::bytes` fns, F.59, is the
+path call spelled on the value, spec/semantics.md § Receiver calls on
+text values):
 
 ```hale
 push(f, x)       -> ()  fallible(CapacityError)  // full = error;

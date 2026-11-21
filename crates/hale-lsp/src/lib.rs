@@ -875,8 +875,8 @@ fn seed_typing(changed: &Path, overlays: &BTreeMap<PathBuf, String>, previous: O
             return SeedCheck::Once(per_file, previous);
         }
     };
-    // GH #2069: what the check decides that a pass before it could not
-    // is written in with the previous snapshot's typing reused, or
+    // What the check decides that a pass before it could not (GH #2069,
+    // #2068) is written in with the previous snapshot's typing reused, or
     // without one.
     let snap = match previous {
         Some(previous) => snap.reusing_typing(previous),
@@ -1630,6 +1630,12 @@ fn completion(
         if let Some(snap) = &snap {
             complete_self_members(snap, &path, offset, partial, &mut items);
         }
+    } else if ctx.ends_with('.') && ctx.len() >= 2 && !ctx[..ctx.len() - 1].ends_with(|c: char| c.is_whitespace() || c == '.') {
+        // GH #2068 (F.59): after `x.` on a text value, the fns of its
+        // namespace that take it first, which a receiver call may name.
+        if let Some(recv) = receiver_type_before(&path, &src, overlays, word_start - 1, offset) {
+            complete_receiver_fns(&recv, partial, &mut items);
+        }
     } else if ctx.ends_with("::") {
         // Collect the `::`-joined path segments left of the cursor.
         let mut segs: Vec<String> = Vec::new();
@@ -1660,6 +1666,103 @@ fn completion(
     }
 
     Some(json!({ "isIncomplete": false, "items": items }))
+}
+
+/// GH #2068: the name the receiver probe reads (`receiver_type_before`).
+const RECEIVER_PROBE: &str = "__hale_complete";
+
+/// GH #2068: the type the check gives the expression that ends at `dot`
+/// in `path`'s text `src`, where the editor completes `x.`: the text with
+/// `.partial` (from `dot` to `offset`) read as `.__hale_complete`, and a
+/// `;` after it when the statement does not parse without one, typed; the
+/// probe's receiver is the expression. Its type is the checker's row for
+/// it, or, for a local's read (which has none), its binding's.
+fn receiver_type_before(
+    path: &Path,
+    src: &str,
+    overlays: &BTreeMap<PathBuf, String>,
+    dot: usize,
+    offset: usize,
+) -> Option<hale_types::ty::Ty> {
+    use hale_types::expr_walk::{for_each_expression_root, visit_block, visit_expr, Root, Visited};
+    use hale_syntax::ast::{Expr, Stmt, TopDecl};
+    for tail in ["", ";"] {
+        let text = format!("{}.{RECEIVER_PROBE}{tail}{}", &src[..dot], &src[offset..]);
+        let mut masked = overlays.clone();
+        masked.insert(path.to_path_buf(), text);
+        let Ok(snap) = unsettled_editor_snapshot(path, &masked) else { continue };
+        let Ok(typed) = snap.demand_typed_bodies() else { continue };
+        let Some((key, program)) = snap.programs().iter().find(|(p, _)| same_file(p, path)) else { continue };
+        let views = typed.views().get(&key.display().to_string())?;
+        fn probe_in<'a>(item: &'a TopDecl) -> (Option<&'a Expr>, Vec<&'a hale_syntax::ast::Ident>) {
+            let mut receiver: Option<&'a Expr> = None;
+            let mut lets: Vec<&'a hale_syntax::ast::Ident> = Vec::new();
+            let mut visit = |v: Visited<'a>| match v {
+                Visited::Expr(Expr::Field { receiver: r, name, .. }) if name.name == RECEIVER_PROBE => {
+                    receiver = Some(r.as_ref())
+                }
+                Visited::Stmt(Stmt::Let { name, .. }) if receiver.is_none() => lets.push(name),
+                Visited::Stmt(Stmt::For { name, .. }) if receiver.is_none() => lets.push(name),
+                _ => {}
+            };
+            for_each_expression_root(std::slice::from_ref(item), &mut |root| match root {
+                Root::Block(b) => visit_block(b, &mut visit),
+                Root::Expr(e) => visit_expr(e, &mut visit),
+            });
+            (receiver, lets)
+        }
+        for (i, item) in program.items.iter().enumerate() {
+            let (receiver, lets) = probe_in(item);
+            let Some(recv) = receiver else { continue };
+            let vt = views.get(i)?;
+            if vt.has_expr(recv) {
+                return Some(vt.expr(recv).clone());
+            }
+            let hale_syntax::ast::Expr::Ident(id) = recv else { return None };
+            // a local's read: its latest `let` or `for` before it, else a
+            // parameter of the declaration holding it
+            if let Some(b) = lets.iter().rev().find(|b| b.name == id.name) {
+                return Some(vt.binding(b).clone());
+            }
+            let params: Vec<&hale_syntax::ast::Param> = match item {
+                TopDecl::Fn(f) => f.params.iter().collect(),
+                TopDecl::Locus(l) => l
+                    .members
+                    .iter()
+                    .filter_map(|m| match m {
+                        hale_syntax::ast::LocusMember::Fn(f) if f.span.start <= recv.span().start && recv.span().end <= f.span.end => {
+                            Some(f.params.iter())
+                        }
+                        _ => None,
+                    })
+                    .flatten()
+                    .collect(),
+                _ => Vec::new(),
+            };
+            return params.iter().find(|p| p.name.name == id.name).map(|p| vt.binding(&p.name).clone());
+        }
+    }
+    None
+}
+
+/// GH #2068: the receiver calls a value of `recv` may name: the public
+/// fns of `std::str` (a String, a StringView) or `std::bytes` (a Bytes or
+/// a view of one) that take it first, with their signatures.
+fn complete_receiver_fns(recv: &hale_types::ty::Ty, partial: &str, items: &mut Vec<Value>) {
+    let Some(ns) = hale_types::stdlib_surface::receiver_namespace(recv) else { return };
+    for name in hale_types::stdlib_surface::receiver_fn_names(recv) {
+        if !name.starts_with(partial) {
+            continue;
+        }
+        let detail = hale_types::stdlib_surface::signature_for(&["std", ns, name]).map(|sig| {
+            format!(
+                "std::{ns}::{name}({}) -> {}",
+                sig.params.iter().map(sig_ty_str).collect::<Vec<_>>().join(", "),
+                sig_ty_str(&sig.ret)
+            )
+        });
+        push_item(items, name, ci_kind::FUNCTION, Some(detail.unwrap_or_else(|| format!("std::{ns}::{name}"))));
+    }
 }
 
 /// LSP CompletionItemKind constants (the handful we use).
@@ -2300,6 +2403,8 @@ pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> String {
         I256 => "I256".to_string(),
         Duration => "Duration".to_string(),
         Time => "Time".to_string(),
+        StrView => "StringView".to_string(),
+        BytesView => "BytesView".to_string(),
         Unit => "()".to_string(),
         Any => "…".to_string(),
         // GH #771: a struct return/param carries the MANGLED name
@@ -3761,6 +3866,53 @@ fn main() { App { }; }\n";
         check_open_seeds(&mut out, &[file.clone()], &mut state, &mut || true);
         assert!(out.is_empty());
         assert_eq!(state.pending, vec![file.clone()], "the superseded pass's files wait for the next");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GH #2068 (F.59): completion after `x.` on a text value offers the
+    /// fns of its namespace that take it first, from the type the check
+    /// gives `x` (a local, a field, a call's result); on a record it
+    /// offers none of them.
+    #[test]
+    fn completion_after_a_dot_on_a_string_offers_its_receiver_fns() {
+        let dir = std::env::temp_dir().join(format!("hale_lsp_receiver_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.hl");
+        let uri = format!("file://{}", file.display());
+        let ask = |src: &str, needle: &str| -> Vec<(String, String)> {
+            std::fs::write(&file, src).unwrap();
+            let at = src.find(needle).unwrap() + needle.len();
+            let line = src[..at].matches('\n').count();
+            let character = at - src[..at].rfind('\n').map_or(0, |i| i + 1);
+            let mut overlays = BTreeMap::new();
+            overlays.insert(file.clone(), src.to_string());
+            let msg = json!({ "params": { "textDocument": { "uri": uri }, "position": { "line": line, "character": character } } });
+            let v = completion(&msg, &overlays).expect("a completion");
+            v["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| (i["label"].as_str().unwrap_or("").to_string(), i["detail"].as_str().unwrap_or("").to_string()))
+                .collect()
+        };
+        let labels = |items: &[(String, String)]| items.iter().map(|(l, _)| l.clone()).collect::<Vec<_>>();
+        // a local String, mid-word
+        let got = ask("fn main() {\n    let raw = \" a \";\n    let t = raw.tr\n    println(\"x\");\n}\n", "raw.tr");
+        assert!(got.iter().any(|(l, d)| l == "trim" && d == "std::str::trim(String) -> String"), "{got:?}");
+        assert!(labels(&got).iter().all(|l| l.starts_with("tr")), "{got:?}");
+        // a record's String field, right after the dot
+        let got = ask(
+            "type Line { text: String; }\nfn f(l: Line) -> Bool {\n    return l.text.\n}\nfn main() { }\n",
+            "l.text.",
+        );
+        assert!(labels(&got).contains(&"starts_with".to_string()) && labels(&got).contains(&"lower".to_string()), "{got:?}");
+        // a parameter of Bytes
+        let got = ask("fn f(b: Bytes) -> Int {\n    return b.re\n}\nfn main() { }\n", "b.re");
+        assert!(labels(&got).contains(&"read_u8".to_string()), "{got:?}");
+        // a record: no text fns
+        let got = ask("type Line { text: String; }\nfn f(l: Line) {\n    let x = l.\n}\nfn main() { }\n", "l.");
+        assert!(!labels(&got).contains(&"trim".to_string()), "{got:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

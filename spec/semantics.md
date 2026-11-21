@@ -37,6 +37,55 @@ A `fn name(args) -> ret { body }` invocation:
    return, the implicit locus drains and dissolves (waits for
    all children to finish; depth-first cascade per F.4).
 
+### Receiver calls on text values
+
+For `x` of type `String`, `StringView` or `std::str::ByteView`, a call
+`x.f(args)` is the call `std::str::f(x, args)`; for `x` of type `Bytes`,
+`BytesView` or `BytesMut`, it is `std::bytes::f(x, args)` (GH #2068,
+F.59). It applies when that fn is public and takes a value of `x`'s type
+first (`v.find("\n", 0)` on a `ByteView` is `std::str::find(v, "\n",
+0)`):
+
+```hale
+fn main() {
+    let raw = "  Key = Value  ";
+    let (k, v) = raw.cut("=") or { return; };
+    println(k.trim().lower(), "|", v.trim());
+    let b = std::bytes::from_string("hale");
+    println(b.at(0) or -1);
+}
+```
+
+- **It is the path call.** The check types `x.f(args)` as
+  `std::str::f(x, args)` and records it; the program is then read with
+  the path call written in its place, so every analysis after the check
+  (effects, allocation, ownership, the summaries) and lowering see one
+  call, classified as the path call is. A diagnostic about the call (an
+  argument's type, an unaddressed failure) is the path call's, at the
+  name `f`.
+- **Calls chain left to right**, each receiver the value the call
+  before it returned: `raw.trim().lower()`.
+- **Text sources.** In a `for` loop's source and an element chain's,
+  `x.split(sep)`, `x.lines()` and `x.words()` on a string are the
+  sources `std::str::split(x, sep)`, `std::str::lines(x)` and
+  `std::str::words(x)` (§ Text sources). Whether `x` is a string is the
+  check's to say, so such a loop or chain is desugared once the receiver
+  calls are written as path calls: on a string it is the text source's
+  scan, and on any other value (a locus's own `words()`) it is the loop
+  over that method's result it always was.
+- **Nothing else is a receiver call.** A record type has no methods, a
+  locus's methods are its own, and a fn of the program's is never called
+  on a value (`s.shout()` is refused; write `shout(s)`). On a text value,
+  a name that is no fn of the namespace taking that type first is a type
+  error at the name, with the nearest fns ("no fn \`trimm\` in
+  \`std::str\` takes a \`String\` first, so \`.trimm\` names nothing on
+  it — the nearest are \`.trim\`, …"); `s.len()` points to the builtin
+  `len(s)`. `x.f` without the call is no value.
+- **Generic bodies.** A receiver call is resolved on the body's own
+  types: on a value of a type parameter it calls nothing, and a
+  specialization that would make it text is refused ("write
+  \`std::str::trim(…)\`").
+
 ### Implicit Int → Float widening at call sites
 
 When a function parameter has type `Float` and the call-site

@@ -86,6 +86,42 @@ pub fn source_of(callee: &Expr) -> Option<(&'static str, usize)> {
     SOURCES.iter().copied().find(|(n, _)| *n == f.name)
 }
 
+/// The text source a `for`'s or a chain's source call is, and its
+/// arguments, the string first: `std::str::lines(s)` at the source's own
+/// arity.
+pub fn source_call(e: &Expr) -> Option<(&'static str, Vec<Expr>)> {
+    let Expr::Call { callee, args, .. } = e else { return None };
+    let (name, arity) = source_of(callee)?;
+    (args.len() == arity).then(|| (name, args.clone()))
+}
+
+/// GH #2068 (F.59): whether `e` is a receiver call that may be a text
+/// source, `x.lines()` (`x.split(sep)`, `x.words()`, at the source's
+/// arity, `x` not `self`): only the check knows whether `x` is a string.
+/// A `for` or a chain over one is left as written until the snapshot has
+/// written the receiver calls the check resolved as their path calls
+/// (`desugar_str_sources_from`, `chains::desugar_deferred_chains`); one
+/// whose receiver is no string (a locus's method) stays the call it is.
+pub fn receiver_source_shape(e: &Expr) -> bool {
+    let Expr::Call { callee, args, .. } = e else { return false };
+    let Expr::Field { receiver, name, .. } = callee.as_ref() else { return false };
+    !matches!(receiver.as_ref(), Expr::KwSelf(_))
+        && SOURCES.iter().any(|(n, arity)| *n == name.name && args.len() + 1 == *arity)
+}
+
+/// GH #2068: where the snapshot's later desugars of the text sources
+/// number their scans and a chain's temporaries from, past every number
+/// the first one gave.
+pub const SETTLED_BASE: usize = 1 << 32;
+
+/// GH #2068: where the snapshot's desugar in its settling round `round`
+/// numbers from: past the first pass's and every earlier round's, so a
+/// loop a round exposes (one over a part of a loop an earlier round
+/// desugared) never reuses a name.
+pub fn settled_base(round: usize) -> usize {
+    SETTLED_BASE + (round << 24)
+}
+
 /// The checker's refusal of a source left as written: a call used as a
 /// value, or one with the wrong number of arguments.
 pub fn refusal(name: &str, arity: usize, got: usize) -> String {
@@ -138,7 +174,14 @@ pub fn argument_refusal(source: &str, param: &str, got: &str) -> String {
 
 /// Rewrite every loop over a text source in `program`.
 pub fn desugar_str_sources(program: &mut Program) {
-    let mut n = 0usize;
+    desugar_str_sources_from(program, 0);
+}
+
+/// [`desugar_str_sources`], numbering the scans from `start`: the
+/// snapshot's second run, once receiver calls are path calls (GH #2068),
+/// from [`SETTLED_BASE`].
+pub fn desugar_str_sources_from(program: &mut Program, start: usize) {
+    let mut n = start;
     items(&mut program.items, &mut n);
 }
 
@@ -167,15 +210,12 @@ fn items(items_: &mut [TopDecl], n: &mut usize) {
 fn body(b: &mut Block, n: &mut usize) {
     crate::desugar::each_stmt_mut(b, &mut |s| {
         let Stmt::For { name, iter, body, span, .. } = s else { return };
-        let Expr::Call { callee, args, span: call_span, .. } = iter else { return };
-        let Some((source, arity)) = source_of(callee) else { return };
-        if args.len() != arity {
-            return;
-        }
+        let Some((source, args)) = source_call(iter) else { return };
+        let call_span = iter.span();
         let k = *n;
         *n += 1;
         let user_body = std::mem::replace(body, Block { stmts: Vec::new(), tail: None, span: *span });
-        let stmts = scan(source, std::mem::take(args), *call_span, &k.to_string(), name.clone(), user_body, *span);
+        let stmts = scan(source, args, call_span, &k.to_string(), name.clone(), user_body, *span);
         *s = Stmt::Block(Block { stmts, tail: None, span: *span });
     });
 }
