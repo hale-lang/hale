@@ -87,6 +87,7 @@ pub mod placement;
 pub mod probes;
 pub mod printable;
 pub mod purity;
+pub mod checked_rewrites;
 pub mod quantitative;
 pub mod raise_conversion;
 pub mod resolve;

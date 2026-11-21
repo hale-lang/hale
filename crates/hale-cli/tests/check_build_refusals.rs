@@ -858,23 +858,33 @@ fn a_variant_pattern_naming_the_wrong_number_of_values_is_refused_at_the_pattern
 }
 
 /// GH #2069, on review: the shadowing desugar runs before the check, so
-/// a `.Use(f)` arm against a value whose enum the match does not show (a
-/// field, a call, an element), when several enums declare `Use`, binds `f`
-/// as a fn value where any of them declares a `fn(..)` there. Against the
-/// enum whose `Use` is an `Int`, a call of `f` is then a call through that
-/// `Int`, which the check refuses, saying to spell the enum; it is never
-/// accepted, and spelled, it calls the program's fn.
+/// against a value whose enum the match does not show (a field, a call,
+/// an element) and several enums declaring `Use`, it cannot tell whether
+/// `.Use(f)`'s `f` is a fn value. The check can: a call of `f` is the call
+/// through the binding where `f` is the payload's fn, and the program's fn
+/// where `f` is an `Int`, exactly as `Apply::Use(f)` and `Count::Use(f)`.
 #[test]
-fn a_dot_variant_binding_of_a_fns_name_the_desugar_could_not_type_is_refused_when_it_is_no_fn() {
-    let decl = "type Apply = enum { Use(fn(Int) -> Int), Skip };\ntype Count = enum { Use(Int), Skip };\ntype Holder { c: Count; }\nfn f(n: Int) -> Int { return n + 1; }\n";
-    refused(
-        &format!("{decl}fn g(h: Holder) -> Int {{\n    return match h.c {{\n        .Use(f) -> f(1),\n        .Skip -> 0,\n    }};\n}}\nfn main() {{ println(g(Holder {{ c: Count::Use(3) }})); }}\n"),
-        "dot_shadow_int",
-        "7:20",
-        "`f` here is the `Int` a pattern binds, not a fn, and a call of the name calls it",
-    );
-    let ok_src = format!("{decl}fn g(h: Holder) -> Int {{\n    return match h.c {{\n        Count::Use(f) -> f(1) + f,\n        Count::Skip -> 0,\n    }};\n}}\nfn main() {{ println(g(Holder {{ c: Count::Use(3) }})); }}\n");
-    let ((ok, out), (built, bout)) = check_and_build(&ok_src, "dot_shadow_spelled");
-    assert!(ok, "check: {out}");
-    assert!(built, "build: {bout}");
+fn a_dot_variant_binding_of_a_fns_name_calls_what_the_spelled_pattern_does() {
+    let decl = "type Apply = enum { Use(fn(Int) -> Int), Skip };\ntype Count = enum { Use(Int), Skip };\ntype Holder { a: Apply; c: Count; }\nfn f(n: Int) -> Int { return n + 1; }\nfn tenfold(n: Int) -> Int { return n * 10; }\n";
+    let main = "fn main() {\n    let h = Holder { a: Apply::Use(tenfold), c: Count::Use(3) };\n    println(viaa(h), \" \", viac(h));\n}\n";
+    for (pa, pc, tag) in [
+        ((".Use(f)", ".Skip"), (".Use(f)", ".Skip"), "dot_shadow_dotted"),
+        (("Apply::Use(f)", "Apply::Skip"), ("Count::Use(f)", "Count::Skip"), "dot_shadow_spelled"),
+    ] {
+        let src = format!(
+            "{decl}fn viaa(h: Holder) -> Int {{\n    return match h.a {{\n        {} -> f(2),\n        {} -> 0,\n    }};\n}}\nfn viac(h: Holder) -> Int {{\n    return match h.c {{\n        {} -> f(1) + f,\n        {} -> 0,\n    }};\n}}\n{main}",
+            pa.0, pa.1, pc.0, pc.1
+        );
+        let d: PathBuf = std::env::temp_dir().join(format!("hale_check_build_refusals_{}_{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("main.hl");
+        std::fs::write(&f, &src).unwrap();
+        let bin = d.join("bin");
+        let (built, bout) = hale(&["build", &f.to_string_lossy(), "-o", &bin.to_string_lossy()]);
+        assert!(built, "{tag}: {bout}");
+        let run = Command::new(&bin).output().expect("run");
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "20 5", "{tag}");
+    }
 }

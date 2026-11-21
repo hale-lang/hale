@@ -666,9 +666,10 @@ impl Walk<'_> {
             // type, which this pass, before the check, does not have: the
             // enum the match spells or its scrutinee's binding is declared
             // as (`enum_hint`), else the one enum (generic ones counted) the
-            // program declares a variant `V` in; else every enum declaring
-            // `V`, a value declared a fn value if one of them declares a fn
-            // there (below).
+            // program declares a variant `V` in; else none, and the binding
+            // says nothing of its type here: the check, which resolves the
+            // pattern, has a call of its name call it when it is a fn value
+            // (`TypingRecord::binding_calls`), as `E::V(f)` does.
             Pattern::DotVariant { variant, args, .. } => {
                 let fields = match enum_hint.and_then(|e| self.variants.get(&(e.to_string(), variant.name.clone()))) {
                     Some(fields) => Some(fields),
@@ -678,21 +679,7 @@ impl Walk<'_> {
                     None => None,
                 };
                 for (i, a) in args.iter().enumerate() {
-                    let declared = match fields {
-                        Some(f) => f.get(i),
-                        // The match shows no enum and several declare `V`: the
-                        // value is declared a fn value where any of them
-                        // declares a `fn(..)` there. The check, which knows the
-                        // enum, refuses the call it then makes through a
-                        // binding that is no fn, saying to spell the enum.
-                        None => self
-                            .variants
-                            .iter()
-                            .filter(|((_, v), _)| *v == variant.name)
-                            .filter_map(|(_, f)| f.get(i))
-                            .find(|t| matches!(t, TypeExpr::Function { .. })),
-                    };
-                    self.pattern_bindings(a, declared, None, out);
+                    self.pattern_bindings(a, fields.and_then(|f| f.get(i)), None, out);
                 }
             }
             Pattern::Tuple(args, _) => {

@@ -1351,6 +1351,12 @@ pub struct TypingRecord {
     /// declaring it and the pattern's span. Kept across discarded walks,
     /// as `ident_reads` is: a pattern resolves the same on every path.
     pub variant_patterns: BTreeMap<(u32, u32, u32), VariantPattern>,
+    /// GH #2069 (F.58): each call, by its node id, whose bare callee
+    /// names a fn value a `.Variant` arm binds where the shadowing desugar
+    /// could not see the variant's enum: the call is through the binding,
+    /// as `E::V(f)`'s is, and the snapshot writes it so
+    /// ([`crate::checked_rewrites`]). Kept across discarded walks.
+    pub binding_calls: std::collections::BTreeSet<u32>,
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,
@@ -1477,6 +1483,15 @@ impl TypingRecord {
             return;
         }
         self.variant_patterns.entry((body.0, span.start.0, span.end.0)).or_insert(pattern);
+    }
+
+    /// GH #2069: the call `call` calls the fn value its callee's name binds
+    /// (`binding_calls`). A call the snapshot has not numbered is not
+    /// recorded.
+    pub fn binding_call(&mut self, call: NodeId) {
+        if !call.is_none() {
+            self.binding_calls.insert(call.0);
+        }
     }
 
     /// GH #1984: the call whose callee is at `callee` in the body `body` is

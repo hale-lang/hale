@@ -854,7 +854,7 @@ fn seed_typing(changed: &Path, overlays: &BTreeMap<PathBuf, String>, previous: O
     // path → published diagnostics (start EMPTY for every file so a
     // clean pass clears old squiggles).
     let mut per_file: BTreeMap<PathBuf, Vec<Value>> = BTreeMap::new();
-    let snap = match editor_snapshot(changed, overlays) {
+    let snap = match unsettled_editor_snapshot(changed, overlays) {
         Ok(snap) => snap,
         // The import graph refused the seed (an import that does not
         // resolve, a library that does not parse or read): what `hale
@@ -875,9 +875,12 @@ fn seed_typing(changed: &Path, overlays: &BTreeMap<PathBuf, String>, previous: O
             return SeedCheck::Once(per_file, previous);
         }
     };
+    // GH #2069: what the check decides that a pass before it could not
+    // is written in with the previous snapshot's typing reused, or
+    // without one.
     let snap = match previous {
         Some(previous) => snap.reusing_typing(previous),
-        None => snap,
+        None => snap.settled(),
     };
     let typed = match snap.demand_typing() {
         // The editor's config carries the build rules and the allocation
@@ -952,6 +955,16 @@ fn placed(snap: &Snapshot, diags: &[hale_syntax::Diag]) -> BTreeMap<PathBuf, Vec
 /// ([`Snapshot::linked`]); only the outline reads its members
 /// ([`editor_load`]).
 fn editor_snapshot(
+    changed: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Result<Snapshot, LoadError> {
+    unsettled_editor_snapshot(changed, overlays).map(Snapshot::settled)
+}
+
+/// [`editor_snapshot`] before what the check decides is written into it
+/// (`Snapshot::settled`), which needs the seed typed: what a hover or a
+/// completion reads (the scope, a `std::` path) never needs that.
+fn unsettled_editor_snapshot(
     changed: &Path,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Result<Snapshot, LoadError> {
@@ -1607,7 +1620,7 @@ fn completion(
         let mut text = src.clone();
         text.replace_range(from..offset, &" ".repeat(offset - from));
         masked.insert(path.clone(), text);
-        editor_snapshot(&path, &masked).ok()
+        unsettled_editor_snapshot(&path, &masked).ok()
     };
 
     let mut items: Vec<Value> = Vec::new();
@@ -1921,7 +1934,7 @@ fn hover(msg: &Value, overlays: &BTreeMap<PathBuf, String>) -> Option<Value> {
         msg.pointer("/params/position/character")?.as_u64()? as u32;
 
     let src = Overlay::new(overlays).read(&path).ok()?;
-    let snap = editor_snapshot(&path, overlays).ok();
+    let snap = unsettled_editor_snapshot(&path, overlays).ok();
     hover_at(snap.as_ref(), &path, &src, line, character)
 }
 
@@ -3775,7 +3788,7 @@ fn main() { App { }; }\n";
         let (line, character) = at(".Pending");
         let h = hover_at(Some(&snap), &file, src, line, character).expect("a hover");
         assert!(h["contents"]["value"].as_str().unwrap_or("").contains("Outcome::Pending\n"), "{h}");
-        let snap = load(&file);
+        let Ok(snap) = unsettled_editor_snapshot(&file, &BTreeMap::new()) else { panic!("the editor's load failed") };
         let (line, character) = at(".n,");
         let _ = hover_at(Some(&snap), &file, src, line, character);
         assert_eq!(snap.builds()["expression_typing"], 0, "a field's hover types nothing: {:?}", snap.builds());

@@ -2854,7 +2854,10 @@ fn mark_synthetic(mut items: Vec<TopDecl>) -> Vec<TopDecl> {
 /// Every expression a program evaluates: the bodies, and the initializers
 /// (a `params` field's, a parameter's default, a struct field's default, a
 /// `const`'s), where a call is as much a call as in a body.
-pub(crate) fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
+/// Visit every call (after its callee and arguments) and every value-
+/// position path in `items`' bodies, defaults and initializers, a
+/// closure's assertion and a match arm's guard included.
+pub fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
     fn defaults(ps: &mut [crate::ast::Param], visit: &mut dyn FnMut(&mut Expr)) {
         for p in ps {
             if let Some(d) = &mut p.default {
@@ -2893,6 +2896,29 @@ pub(crate) fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Ex
                         LocusMember::Fn(fd) => {
                             defaults(&mut fd.params, visit);
                             rewrite_block(&mut fd.body, visit);
+                        }
+                        LocusMember::Failure(fd) => {
+                            defaults(&mut fd.params, visit);
+                            rewrite_block(&mut fd.body, visit);
+                        }
+                        LocusMember::BirthCheck(bc) => rewrite_expr(&mut bc.cond, visit),
+                        LocusMember::Bus(b) => {
+                            for m in &mut b.members {
+                                if let crate::ast::BusMember::Subscribe {
+                                    key_filter: Some(crate::ast::KeyFilter::Specific { expr, .. }),
+                                    ..
+                                } = m
+                                {
+                                    rewrite_expr(expr, visit);
+                                }
+                            }
+                        }
+                        LocusMember::Closure(cd) => {
+                            if let Some(a) = &mut cd.assertion {
+                                rewrite_expr(&mut a.left, visit);
+                                rewrite_expr(&mut a.right, visit);
+                                rewrite_expr(&mut a.tolerance, visit);
+                            }
                         }
                         LocusMember::Params(pb) => {
                             for p in &mut pb.params {
@@ -2986,6 +3012,9 @@ fn rewrite_if(if_stmt: &mut IfStmt, visit: &mut dyn FnMut(&mut Expr)) {
 fn rewrite_match(m: &mut MatchStmt, visit: &mut dyn FnMut(&mut Expr)) {
     rewrite_expr(&mut m.scrutinee, visit);
     for arm in &mut m.arms {
+        if let Some(g) = &mut arm.guard {
+            rewrite_expr(g, visit);
+        }
         match &mut arm.body {
             MatchArmBody::Block(b) => rewrite_block(b, visit),
             MatchArmBody::Expr(e) => rewrite_expr(e, visit),
@@ -3044,7 +3073,7 @@ fn rewrite_expr(e: &mut Expr, visit: &mut dyn FnMut(&mut Expr)) {
         Expr::ArrayRepeat { val, .. } => rewrite_expr(val, visit),
         Expr::Or { inner, disposition, .. } => {
             rewrite_expr(inner, visit);
-            if let OrDisposition::Substitute(s) = disposition {
+            if let OrDisposition::Substitute(s) | OrDisposition::Fail(s, _) = disposition {
                 rewrite_expr(s, visit);
             }
         }

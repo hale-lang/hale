@@ -1380,6 +1380,7 @@ fn walk_bundle(
         templates: &templates,
         generic_bindings: BTreeMap::new(),
         specializing: None,
+        dot_bound: Vec::new(),
         block_may_leave: false,
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
@@ -11577,6 +11578,11 @@ struct Checker<'a> {
     /// on the ordinary walk.
     generic_bindings: BTreeMap<String, Ty>,
     specializing: Option<Vec<Ty>>,
+    /// GH #2069: the names a `.Variant` arm in scope binds, by the locals
+    /// frame binding them: a call of such a name, a fn value whose payload
+    /// type the shadowing desugar could not see, calls the binding
+    /// (`TypingRecord::binding_calls`).
+    dot_bound: Vec<(usize, std::collections::BTreeSet<String>)>,
     /// Set by a consumer that supplies a value of its own when the block
     /// it is about to check leaves (an `if` expression's arm, with the
     /// other arm; an `or { … }` substitute, with the call's success) for
@@ -18026,7 +18032,7 @@ impl<'a> Checker<'a> {
         // Arms that disagree make the match's type unknown, as an `if`
         // expression's do, so its consumer adds no refusal of its own.
         let mut mismatched = false;
-        for arm in &stmt.arms {
+        for (arm_index, arm) in stmt.arms.iter().enumerate() {
             // GH #721: an arm's pattern BINDS — `v`, `(a, b)`,
             // `Event::Tick(n)` — and the binders are in scope for the
             // guard and the body (codegen's `bindings` vector does
@@ -18037,6 +18043,26 @@ impl<'a> Checker<'a> {
             self.locals.push();
             self.bind_arm_pattern(&arm.pattern, &scrut_ty);
             self.note_view_pattern(&arm.pattern, &scrut_ty);
+            // GH #2069: the names this arm binds through a `.Variant`
+            // pattern, whose payload types the shadowing desugar may not
+            // have seen (`Checker::dot_bound`).
+            let dot_names: std::collections::BTreeSet<String> = written
+                .arms
+                .get(arm_index)
+                .map(|w| {
+                    let mut names = Vec::new();
+                    for alt in w.pattern.alternatives() {
+                        if matches!(alt, Pattern::DotVariant { .. }) {
+                            pattern_binders(alt, &mut names);
+                        }
+                    }
+                    names.into_iter().map(str::to_string).collect()
+                })
+                .unwrap_or_default();
+            let dot_frame = !dot_names.is_empty();
+            if dot_frame {
+                self.dot_bound.push((self.locals.frames.len() - 1, dot_names));
+            }
             // GH #1995 E2: each alternative of an or-pattern is checked
             // as the arm's whole pattern would be.
             for alt in arm.pattern.alternatives() {
@@ -18092,6 +18118,9 @@ impl<'a> Checker<'a> {
                     Ty::Unknown
                 }
             };
+            if dot_frame {
+                self.dot_bound.pop();
+            }
             self.locals.pop();
             if as_expr {
                 match &joined {
@@ -24011,7 +24040,19 @@ impl<'a> Checker<'a> {
                     if !generated && self.names_fn_or_builtin(&id.name) {
                         // A binding of a type the check does not know (a
                         // tuple pattern's) may be a fn value as well.
-                        if let Some(sym) = self.locals.lookup(&id.name) {
+                        // GH #2069: a fn value a `.Variant` arm binds, whose
+                        // enum the shadowing desugar could not see: the call
+                        // is through the binding, as `E::V(f)`'s is, and the
+                        // snapshot writes it so (`TypingRecord::binding_calls`).
+                        let dot_bound_fn = self.locals.lookup(&id.name).is_some_and(|sym| {
+                            matches!(sym.ty, Ty::Function { .. })
+                                && self.locals.frame_of(&id.name).is_some_and(|f| {
+                                    self.dot_bound.iter().any(|(d, names)| *d == f && names.contains(&id.name))
+                                })
+                        });
+                        if dot_bound_fn && !call_id.is_none() {
+                            self.typed.binding_call(*call_id);
+                        } else if let Some(sym) = self.locals.lookup(&id.name) {
                             if matches!(sym.ty, Ty::Function { .. } | Ty::Unknown) {
                                 let bound = if matches!(sym.ty, Ty::Unknown) {
                                     "bound here to a value the check cannot type, which may be a fn"
@@ -24023,9 +24064,8 @@ impl<'a> Checker<'a> {
                                     format!(
                                         "`{n}` is {bound}, and a call of the name runs the {what} `{n}`: \
                                          a binding shadows it in a call only where it is declared as a fn value (a \
-                                         parameter or a `let` written with a `fn(..)` type, a `let` of a fn's name, \
-                                         a variant's `fn(..)` value in a pattern whose enum is spelled, `E::V(f)`, or \
-                                         is the declared type of the value matched) — write its type, or rename it",
+                                         parameter or a `let` written with a `fn(..)` type, a `let` of a fn's name) \
+                                         — write its type, or rename it",
                                         n = id.name,
                                         bound = bound,
                                         what = if self.top.lookup(&id.name).is_some() || self.generic_fns.contains_key(id.name.as_str()) {
@@ -24965,33 +25005,10 @@ impl<'a> Checker<'a> {
                     _ => false,
                 };
                 if through_value && !matches!(callee_ty, Ty::Function { .. } | Ty::Unknown) {
-                    // GH #2069: the shadowing desugar's `{ f }` around a name
-                    // (the block at the name's own span) where a `.V(f)` arm
-                    // bound `f` against a value whose enum the desugar could
-                    // not see, and another enum declares a `fn(..)` there.
-                    let wrapped = match callee.as_ref() {
-                        Expr::Block(b) if b.stmts.is_empty() => match b.tail.as_deref() {
-                            Some(Expr::Ident(id)) if id.span == b.span && self.names_fn_or_builtin(&id.name) => {
-                                Some(id.name.clone())
-                            }
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    let message = match wrapped {
-                        Some(n) => format!(
-                            "`{n}` here is the `{}` a pattern binds, not a fn, and a call of the name calls it: the \
-                             match's enum is not visible before the check (another enum declares a `fn(..)` value \
-                             for its variant), so a `.Variant` binding of a fn's name is a fn value; spell the enum \
-                             in the pattern (`E::Variant({n})`) to call the fn `{n}`, or rename the binding",
-                            callee_ty.display()
-                        ),
-                        None => format!(
-                            "this is a value of type `{}`, not a fn: there is nothing to call",
-                            callee_ty.display()
-                        ),
-                    };
-                    self.diags.push(Diag::ty(callee.span(), message));
+                    self.diags.push(Diag::ty(
+                        callee.span(),
+                        format!("this is a value of type `{}`, not a fn: there is nothing to call", callee_ty.display()),
+                    ));
                     for a in args {
                         let _ = self.check_expr(a);
                     }
