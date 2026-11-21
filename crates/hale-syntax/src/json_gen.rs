@@ -504,8 +504,9 @@ pub enum Conv {
     /// narrowing from the wire's `Int` may leave the range, which is a
     /// wrong type — `Lvl(n) or fail …` and `Int(l)`. The `Int` is the
     /// range's zero, the value an absent optional field of it holds: `0`
-    /// where the range holds it, its least value where it does not.
-    Range(String, i64, PrimType),
+    /// where the range holds it, its least value where it does not (a
+    /// `U64`'s may be past `Int`'s max).
+    Range(String, i128, PrimType),
 }
 
 impl Conv {
@@ -562,65 +563,84 @@ fn prim_type_name(p: PrimType) -> &'static str {
 /// wire as their `Int`, by name (a point does not: its origin is not a
 /// count).
 pub fn scalar_convs(programs: &[&Program]) -> std::collections::BTreeMap<String, Conv> {
-    use crate::ast::{ScalarClause, ScalarKind};
-    fn walk(items: &[TopDecl], out: &mut std::collections::BTreeMap<String, Conv>) {
-        for item in items {
-            match item {
-                TopDecl::Type(td) => {
-                    let TypeDeclBody::Scalar(sd) = &td.body else { continue };
-                    let name = td.name.name.clone();
-                    let ranged = sd.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }));
-                    // the range's zero: 0 where it holds it, its least value otherwise
-                    let lit = |e: &Expr| match e {
-                        Expr::Literal(Literal::Int(n), _) => Some(*n),
-                        Expr::Unary { op: crate::ast::UnaryOp::Neg, operand, .. } => match operand.as_ref() {
-                            Expr::Literal(Literal::Int(n), _) => Some(-*n),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    let zero = sd
-                        .clauses
-                        .iter()
-                        .find_map(|c| match c {
-                            ScalarClause::Range { lo, hi, inclusive, .. } => {
-                                let (lo, hi) = (lit(lo)?, lit(hi)?);
-                                let holds = lo <= 0 && if *inclusive { 0 <= hi } else { 0 < hi };
-                                Some(if holds { 0 } else { lo })
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    // GH #2131: the integer it is written over, `Int` or `U64`
-                    let int = match sd.base {
-                        TypeExpr::Primitive(p, _) if p.machine_int().is_some() => p,
-                        _ => PrimType::Int,
-                    };
-                    let conv = match sd.kind {
-                        Some(ScalarKind::Point) => None,
-                        Some(ScalarKind::Quantity) => sd
-                            .denom
-                            .as_ref()
-                            .filter(|_| matches!(sd.base, TypeExpr::Primitive(p, _) if p.machine_int().is_some()))
-                            .map(|d| Conv::Quantity(d.multiple, d.unit.name.clone(), int)),
-                        Some(ScalarKind::Distinct) => Some(if ranged {
-                            Conv::Range(name.clone(), zero, int)
-                        } else {
-                            Conv::Identity(name.clone(), int)
-                        }),
-                        None => ranged.then(|| Conv::Range(name.clone(), zero, int)),
-                    };
-                    if let Some(c) = conv {
-                        out.insert(name, c);
-                    }
+    use crate::ast::{ScalarClause, ScalarDecl, ScalarKind};
+    let mut decls: std::collections::BTreeMap<&str, &ScalarDecl> = std::collections::BTreeMap::new();
+    let mut order: Vec<(&str, &ScalarDecl)> = Vec::new();
+    for p in programs {
+        for item in &p.items {
+            if let TopDecl::Type(td) = item {
+                if let TypeDeclBody::Scalar(sd) = &td.body {
+                    decls.insert(td.name.name.as_str(), sd);
+                    order.push((td.name.name.as_str(), sd));
                 }
-                _ => {}
             }
         }
     }
+    // GH #2131: the integer a scalar counts, `Int` or `U64`: the machine
+    // integer at the root of its chain, a refinement's its parent's (as
+    // the unit rows read it)
+    let counted = |sd: &ScalarDecl| -> PrimType {
+        let mut at = sd;
+        for _ in 0..=decls.len() {
+            match &at.base {
+                TypeExpr::Primitive(p, _) if p.machine_int().is_some() => return *p,
+                TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
+                    match decls.get(path.segments[0].name.as_str()) {
+                        Some(next) => at = next,
+                        None => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        PrimType::Int
+    };
+    // a range bound: an integer literal, a `U64`'s past `Int`'s max included
+    let lit = |e: &Expr| -> Option<i128> {
+        match e {
+            Expr::Literal(Literal::Int(n), _) => Some(i128::from(*n)),
+            Expr::Literal(Literal::U64(n), _) => Some(i128::from(*n)),
+            Expr::Unary { op: crate::ast::UnaryOp::Neg, operand, .. } => match operand.as_ref() {
+                Expr::Literal(Literal::Int(n), _) => Some(-i128::from(*n)),
+                Expr::Literal(Literal::U64(n), _) => Some(-i128::from(*n)),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
     let mut out = std::collections::BTreeMap::new();
-    for p in programs {
-        walk(&p.items, &mut out);
+    for (name, sd) in order {
+        let name = name.to_string();
+        let ranged = sd.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }));
+        // the range's zero: 0 where it holds it, its least value otherwise
+        let zero = sd
+            .clauses
+            .iter()
+            .find_map(|c| match c {
+                ScalarClause::Range { lo, hi, inclusive, .. } => {
+                    let (lo, hi) = (lit(lo)?, lit(hi)?);
+                    let holds = lo <= 0 && if *inclusive { 0 <= hi } else { 0 < hi };
+                    Some(if holds { 0 } else { lo })
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        let int = counted(sd);
+        let conv = match sd.kind {
+            Some(ScalarKind::Point) => None,
+            Some(ScalarKind::Quantity) => sd
+                .denom
+                .as_ref()
+                .filter(|_| matches!(sd.base, TypeExpr::Primitive(p, _) if p.machine_int().is_some()))
+                .map(|d| Conv::Quantity(d.multiple, d.unit.name.clone(), int)),
+            Some(ScalarKind::Distinct) => {
+                Some(if ranged { Conv::Range(name.clone(), zero, int) } else { Conv::Identity(name.clone(), int) })
+            }
+            None => ranged.then(|| Conv::Range(name.clone(), zero, int)),
+        };
+        if let Some(c) = conv {
+            out.insert(name, c);
+        }
     }
     out
 }

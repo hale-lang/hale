@@ -14,6 +14,9 @@ unit gwei = 1_000_000_000 wei;
 type Wei = quantity U64 in wei;
 type Nonce = distinct U64;
 type Port = U64 { range: 1..65536; }
+// a range above `Int`'s max, and a refinement of it: each counts a `U64`
+type High = U64 { range: 9223372036854775808..18446744073709551615; }
+type Narrow = High { range: 9223372036854775808..9223372036854775811; }
 
 type Side = enum { Flat, By(Nonce) };
 
@@ -30,12 +33,22 @@ type Tagged {
     nonce: Nonce `json:"nonce"`;
 }
 
+// an optional field holds its range's least value when the payload leaves
+// it out, past `Int`'s max here
+type Upper {
+    narrow: Narrow;
+    high: High;
+    has_high: Bool;
+}
+
 api PbUnits {
     rpc Probe::transfer;
+    rpc Probe::upper;
 }
 
 locus Probe {
     fn transfer(t: Transfer) -> Transfer { return t; }
+    fn upper(u: Upper) -> Upper { return u; }
 }
 
 locus Tokens {
@@ -146,6 +159,30 @@ main locus Desk {
             "08ffffffffffffffffff01",
             "a uint64 varint of all 64 bits",
         );
+
+        // a refinement counts its parent's `U64` on the wire, and an absent
+        // optional field is its range's least value
+        let u = __api_decode_Upper("{\"narrow\":\"9223372036854775810\"}") or {
+            std::test::assert(false, "a refined U64 range: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(
+            U64(u.narrow) == 9223372036854775810,
+            "a refinement's U64, past Int's max",
+        );
+        std::test::assert(!u.has_high, "absent");
+        std::test::assert(
+            U64(u.high) == 9223372036854775808,
+            "an absent field holds the range's least value",
+        );
+        let back_u = __api_pb_decode_Upper(__api_pb_encode_Upper(u)) or {
+            std::test::assert(
+                false,
+                "a refined U64 range, protobuf: " + err.kind + " " + err.field,
+            );
+            return;
+        };
+        std::test::assert(U64(back_u.narrow) == 9223372036854775810, "through protobuf");
 
         // the tagged codec, `to_json` / `from_json`
         let g = Tagged { value: 18_000_000_000gwei, nonce: 9 };
