@@ -1805,6 +1805,13 @@ fn build_resolved_lowered(
             None,
         )
     })?;
+    let expr_types = resolved.expr_types().ok_or_else(|| {
+        CodegenError::missing_row(
+            "expression_typing",
+            "the checker's expression types by body (`expr_types`), which lowering reads a value's type from",
+            None,
+        )
+    })?;
     let entry = resolved.entry().ok_or_else(|| {
         CodegenError::missing_row(
             "entrypoint",
@@ -2230,6 +2237,7 @@ fn build_resolved_lowered(
         current_instantiation_replica_index: 0,
         owner_table,
         owned_views,
+        expr_types,
         uses: &resolved.snapshot,
         cell_part_flags: HashMap::new(),
         cow_exempt_slots: HashSet::new(),
@@ -5269,6 +5277,8 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// (`hale_types::view_bindings`, GH #1554). Those bind an owned copy,
     /// every other one the field's own pointer.
     pub(crate) owned_views: &'p hale_types::view_bindings::OwnedViews,
+    /// GH #2111: the checker's expression types by body (`typed_seam`).
+    pub(crate) expr_types: &'p hale_types::typed_bodies::ExprTypes,
     /// Per local (its slot) and part, the flag a copy on write reads:
     /// does the frame own the part yet, or does the form's cell it was
     /// read from (`hale_types::view_bindings`, the cell-read rule)?
@@ -6879,19 +6889,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
         self.mangled_for_path(&refs)
-    }
-
-    /// The generic fn template a callee names: a bare name, or an
-    /// imported seed's path (`lib::id`), by its name in the merged
-    /// program.
-    pub(crate) fn generic_template_of_callee(&self, callee: &Expr) -> Option<String> {
-        match callee {
-            Expr::Ident(i) if self.generic_fn_templates.contains_key(&i.name) && !self.user_fns.contains_key(&i.name) => {
-                Some(i.name.clone())
-            }
-            Expr::Path(qn) => self.imported_generic_template(qn),
-            _ => None,
-        }
     }
 
     /// GH #1964: the generic fn template an imported seed's path names
@@ -19172,11 +19169,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             "count" | "clear" | "truncate"
                         ) && args.len()
                             == if name == "truncate" { 2 } else { 1 }
-                            && !self.user_fn_shadows_bounded_intrinsic(
-                                name, args, scope,
-                            )
+                            && !self.user_fn_shadows_bounded_intrinsic(name, args)
                             && self
-                                .bounded_recv_spec(args, scope)
+                                .bounded_recv_spec(args)
                                 .is_some()
                         {
                             // bounded[T; N] count/clear/truncate at
@@ -19185,7 +19180,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             // bounded owns the name — fall through to
                             // the `user_fns` arm below.
                             let (elem, cap) = self
-                                .bounded_recv_spec(args, scope)
+                                .bounded_recv_spec(args)
                                 .expect("guard checked");
                             match name {
                                 "count" => {
@@ -23908,7 +23903,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // where the iterand statically types as bounded — counted
         // loop over the live slots [0, len).
         if let Some(CodegenTy::Bounded(belem, bcap)) =
-            self.static_expr_codegen_ty(iter, scope)
+            self.ty_at(iter)
         {
             return self.lower_for_bounded(
                 var_name,
@@ -27269,15 +27264,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "count" | "clear" | "truncate"
                     ) && args.len()
                         == if i.name == "truncate" { 2 } else { 1 }
-                        && !self.user_fn_shadows_bounded_intrinsic(
-                            i.name.as_str(),
-                            args,
-                            scope,
-                        )
-                        && self.bounded_recv_spec(args, scope).is_some() =>
+                        && !self.user_fn_shadows_bounded_intrinsic(i.name.as_str(), args)
+                        && self.bounded_recv_spec(args).is_some() =>
                 {
                     let (elem, cap) = self
-                        .bounded_recv_spec(args, scope)
+                        .bounded_recv_spec(args)
                         .expect("guard checked");
                     match i.name.as_str() {
                         "count" => self

@@ -68,7 +68,7 @@ fn main() {
 ```
 
 - **Element types:** Can be any scalar (`Int`, `String`, etc.) or user-defined `type` record (`type Player { id: String; score: Int; }`).
-- **Iteration via `.items`:** Always iterate a `@form(vec)` with `for x in v.items` regardless of the slot name written in `capacity { heap my_slot of T; }` (writing `v.my_slot` produces a diagnostic pointing to `v.items`). Use indexed `while i < v.len()` + `v.get(i)` only when you need the index.
+- **Iteration via `.items`:** Always iterate a `@form(vec)` with `for x in v.items` regardless of the slot name written in `capacity { heap my_slot of T; }` (writing `v.my_slot` produces a diagnostic pointing to `v.items`). Use indexed `while i < v.len()` + `v.get(i)` only when you need the index. On a locus with no `@form`, `items` and `entries` are ordinary names: a `bounded` param called `items` is walked as the field it is, and the loop variable has its element type.
 - **Value ownership and memory reuse:** `get` and `pop` return an independent copy of elements containing `String` or `Bytes`. `pop`, `set`, `clear()`, and `truncate(n)` immediately reclaim the memory of dropped or overwritten elements so a long-lived vec used as a queue or per-message scratch buffer (cleared via `clear()`) maintains a flat memory footprint.
 
 ## Keyed Maps (`@form(hashmap)`), Sets (`@form(set)`), and Caches (`@form(lru_cache)`)

@@ -28,7 +28,8 @@
 //!   parameters, `[T; N]` arrays, a payload enum, a generic record, a fn
 //!   value, `@form(vec)` and `@form(hashmap)` over `T` drawn from Int,
 //!   String, Decimal, U256, I256, a payload enum, a record and the
-//!   program's own records and enums;
+//!   program's own records and enums; a locus with no form whose own
+//!   `items` / `entries` param a `for` walks;
 //! - call shapes: a method as a free fn, a call through a fn value, a
 //!   forwarding wrapper, interface dispatch;
 //! - fallible plumbing: an `or` clause given another disposition (`or

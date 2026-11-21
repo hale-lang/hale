@@ -806,7 +806,12 @@ contract; will be answered as workloads surface demand.
    itself (`v.sum(0.0d)`) is refused with the hint an array gets,
    naming the surface: "write `v.items.map(it).sum(…)`"
    (2026-11-06, downstream handoff) (a slot is not a field; friction sweep
-   2026-10-12).
+   2026-10-12). A locus with no form has no pseudo-field: its own
+   field named `items` or `entries` (a `bounded[T; N]` param) is
+   walked as the field, as a chain anchored on it is
+   (`spec/semantics.md`), and the loop variable is a `T` (GH #2111;
+   it was untyped, so a missing field read through it passed
+   `hale check` and was refused by `hale build`).
 2. **Bulk operations.** `extend(other: @form(vec))`, `clear()`,
    `truncate(n: Int)`. Useful but not foundational. Add after
    the core methods land.
