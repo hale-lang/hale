@@ -15,11 +15,13 @@ fn toolchain() -> String {
     return "hale";
 }
 
-// Run `argv` (newline-separated) in `dir`: discovery off, a cache of this
-// fixture's own so the host binary is found in one place.
+// Run `argv` (newline-separated) in `dir`: discovery off, no readings
+// served (`HALE_DNA_SENSES_PORT=0`: a host would bind the spine's fixed
+// 9464, which another body on the machine may hold, GH #2118), a cache of
+// this fixture's own so the host binary is found in one place.
 fn in_dir(dir: String, cache: String, argv: String) -> dna::RunResult {
     return dna::run_tool(
-        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n"
+        "sh\n-c\ncd \"$1\" && shift && export HALE_DNA_DISCOVER=off HALE_DNA_NODE_EXPORTER=off HALE_DNA_GRAFANA=off HALE_DNA_SENSES_PORT=0 XDG_CACHE_HOME=\"$1\" && shift && exec \"$@\"\nsh\n"
             + dir + "\n" + cache + "\n" + argv,
     );
 }
@@ -99,12 +101,19 @@ main locus App {
             in_dir(scratch, cache, "sh\n-c\n\"$1\" --version | head -1\nsh\n" + toolchain()).stdout,
         );
 
-        // a toolchain whose build takes twenty seconds
+        // a toolchain whose build, once host A holds the lease, lasts until
+        // the head has taken the lease over (the fixture writes `claimed`
+        // then; two minutes at most). It slept twenty seconds, and a claim
+        // that took longer than that on a loaded runner let A start its
+        // organization under the lease it still held (GH #2118).
         let slow = scratch + "/slowhale";
+        let claimed_mark = scratch + "/claimed";
         std::io::fs::write_file(
             slow,
-            "#!/bin/sh\nif [ \"$1\" = build ]; then sleep 20; fi\nexec \"" + toolchain()
-                + "\" \"$@\"\n",
+            "#!/bin/sh\nif [ \"$1\" = build ] && grep -q 'body lease taken' \"" + a
+                + "/a.log\" 2>/dev/null; then\n  i=0\n  while [ ! -f \"" + claimed_mark
+                + "\" ] && [ $i -lt 600 ]; do sleep 0.2; i=$((i + 1)); done\nfi\nexec \""
+                + toolchain() + "\" \"$@\"\n",
         ) or discard;
         let x = dna::run_tool("chmod\n+x\n" + slow);
 
@@ -136,6 +145,7 @@ main locus App {
             std::str::contains(claimed.stdout, "was taken by grace"),
             "the head took the lease: " + claimed.stdout + claimed.stderr,
         );
+        std::io::fs::write_file(claimed_mark, "") or discard;
 
         // A finishes its build and starts nothing
         let mut ended = false;
