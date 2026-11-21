@@ -338,7 +338,8 @@ Typecheck errors:
 
 A named type crosses only as a user struct (by pointer, its C struct
 kept layout-compatible by the library author), an identity, a range
-or a quantity (its `Int`). An enum, a locus or an interface has no
+or a quantity (the integer it counts: an `Int`'s `int64_t`, a `U64`'s
+`uint64_t`, GH #2131). An enum, a locus or an interface has no
 C layout at Stage 1, and is refused at the
 annotation (GH #1942):
 

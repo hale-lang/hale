@@ -116,6 +116,9 @@ pub struct KnownNames {
     imports: BTreeMap<String, String>,
     /// Lexically bound type parameters shadow declarations and aliases.
     parameters: BTreeMap<String, Ty>,
+    /// GH #2131: the integer each typed scalar declaration counts, its
+    /// representation (`units::typed_scalar_names`).
+    scalar_ints: BTreeMap<String, PrimType>,
 }
 
 impl std::ops::Deref for KnownNames {
@@ -241,9 +244,10 @@ fn resolve_alias_targets(
     // registers them, so a use of one is no second error beside the
     // laws', never a mismatch.
     let typed = crate::units::typed_scalar_names(&scalars);
-    for name in scalars.keys().filter(|n| !typed.contains(*n)) {
+    for name in scalars.keys().filter(|n| !typed.contains_key(*n)) {
         known.set_alias(name.to_string(), Ty::Unknown);
     }
+    known.scalar_ints = typed.into_iter().map(|(n, p)| (n.to_string(), p)).collect();
     if raw.is_empty() {
         return;
     }
@@ -1436,13 +1440,16 @@ fn register_type(
     let kind = match &decl.body {
         TypeDeclBody::Alias(te) => TypeKind::Alias(resolve_type_expr(te, known)),
         // GH #1076: an identity, a range, a quantity or a point is a
-        // scalar type, represented as an `Int`. A declaration the laws
-        // refuse is the alias of `Unknown` the alias pre-pass made it, so a
-        // use of the name is no second error: the unit laws judge the
-        // declaration.
+        // scalar type, represented as the integer it counts (`Int`, a
+        // `U64`: GH #2131). A declaration the laws refuse is the alias of
+        // `Unknown` the alias pre-pass made it, so a use of the name is no
+        // second error: the unit laws judge the declaration.
         TypeDeclBody::Scalar(_) => match known.alias_target(&decl.name.name) {
             Some(t) => TypeKind::Alias(t.clone()),
-            None => TypeKind::Scalar(TypeKind::scalar_representation()),
+            None => match known.scalar_ints.get(&decl.name.name) {
+                Some(p) => TypeKind::Scalar(Ty::Prim(*p)),
+                None => TypeKind::Scalar(TypeKind::scalar_representation()),
+            },
         },
         TypeDeclBody::Struct(fields) => {
             let infos: Vec<FieldInfo> = fields

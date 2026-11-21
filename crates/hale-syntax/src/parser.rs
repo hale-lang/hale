@@ -2039,7 +2039,12 @@ impl Parser {
         };
         let (n, unit) = match &tok.kind {
             TokenKind::IntLit(n) => (*n, None),
-            TokenKind::QuantityLit(n, s) => (*n, Some(Ident::new(s.clone(), suffix(s.len())))),
+            TokenKind::QuantityLit(n, s) => (
+                i64::try_from(*n).map_err(|_| {
+                    Diag::parse(tok.span, format!("a {what} is at most `Int`'s max (9223372036854775807)"))
+                })?,
+                Some(Ident::new(s.clone(), suffix(s.len()))),
+            ),
             other => {
                 return Err(Diag::parse(
                     tok.span,
@@ -7118,7 +7123,12 @@ impl Parser {
                     };
                     let (n, unit) = match &tok.kind {
                         TokenKind::IntLit(n) => (*n, None),
-                        TokenKind::QuantityLit(n, s) => (*n, Some(suffix(s))),
+                        TokenKind::QuantityLit(n, s) => (
+                            i64::try_from(*n).map_err(|_| {
+                                Diag::parse(tok.span, "an `origin` is at most `Int`'s max (9223372036854775807)")
+                            })?,
+                            Some(suffix(s)),
+                        ),
                         other => {
                             return Err(Diag::parse(
                                 tok.span,

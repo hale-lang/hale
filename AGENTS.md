@@ -284,7 +284,9 @@ Filter these reflexes before they cost you time.
   integer literal is a `U64` where its place is one (`let n: U64 = 7;`,
   `x + 1`), and its overflow or division by zero stops the process
   (`U64::wrapping_*` wrap, `U64::checked_*` fail into an `or`). It never
-  mixes with `Int`: `U64::from_int(n)`, `U64::to_int(x) or ...`.
+  mixes with `Int`: `U64::from_int(n)`, `U64::to_int(x) or ...`. A unit
+  type may count one (`quantity U64 in wei`, `distinct U64`, `U64 {
+  range: 1..65536; }`) and has its arithmetic (spec/units.md § The base).
   Immutable covers the value too: a field or element write through a
   `let` (`p.x = 9;`, `xs[0] = 7;`) needs `let mut p` / `let mut xs`;
   without it the write is an error.

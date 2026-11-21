@@ -3257,6 +3257,19 @@ impl PrimType {
             _ => None,
         }
     }
+
+    /// A machine integer's width in bits and whether it is signed: `Int`
+    /// (64, signed) and `U64` (64, unsigned). `None` for every other
+    /// primitive, the 256-bit integers included. What the unit dialect
+    /// admits as a scalar's base (GH #2131): a quantity, an identity or a
+    /// range counts one of these, in its width and its signedness.
+    pub fn machine_int(self) -> Option<(u32, bool)> {
+        match self {
+            PrimType::Int => Some((64, true)),
+            PrimType::U64 => Some((64, false)),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3961,8 +3974,10 @@ pub enum Literal {
     Bytes(Vec<u8>),
     /// GH #1076: `500ms`, `3bp`, `1_250_000USD` — an integer
     /// immediately followed by a unit's name, as written; the catalogue
-    /// says which unit (the time units are the stdlib's, U4).
-    Quantity { value: i64, unit: String },
+    /// says which unit (the time units are the stdlib's, U4). Its
+    /// magnitude is any value of a `U64` (GH #2131): a count of a
+    /// quantity counting one may be past `Int`'s max.
+    Quantity { value: u64, unit: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]

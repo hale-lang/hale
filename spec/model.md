@@ -317,7 +317,7 @@ Both forms tag a field the same way when its type is flat:
 
 | field type | tag |
 |---|---|
-| `Int`, an identity, a range (`spec/units.md`) | `i` |
+| `Int`, an identity, a range (`spec/units.md`) | `i` (one counting a `U64`, `u64`: GH #2131) |
 | `U64` | `u64` (GH #2121: the same 8 bytes as an `Int`, read as unsigned, so its own contract) |
 | `Float` | `f` |
 | `Bool` | `b` |
@@ -328,7 +328,7 @@ Both forms tag a field the same way when its type is flat:
 | `Duration` | `u` |
 | `String`, `StringView` | `s` |
 | `Bytes`, `BytesView`, `BytesMut` | `y` |
-| a quantity or a point | `q(<denomination>)`, `q(<denomination> point)`, `q(<denomination> point <origin>)` (`spec/units.md` § Layout and the wire) |
+| a quantity or a point | `q(<denomination>)`, `q(<denomination> point)`, `q(<denomination> point <origin>)`; one counting a `U64` names it first, `q(u64 <denomination>)` (`spec/units.md` § Layout and the wire) |
 
 A struct's shape is its fields in declaration order, each
 `<field>:<tag>`, joined by `;`. A **flat struct** is one whose every

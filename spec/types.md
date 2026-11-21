@@ -226,10 +226,10 @@ at its scale (a string with the tag), its schema `{"type": "number",
 "x-hale-type": "Decimal<S>"}` (`"string"` with the tag), protobuf as
 its digits in a string.
 
-**Units.** A quantity, an identity and a range count an `Int`
-(spec/units.md), so `quantity Decimal<18> in wei` is refused as
-`quantity Decimal in wei` is ("a quantity counts an `Int`, and
-`Decimal<18>` is not one").
+**Units.** A quantity, an identity and a range count an integer, an
+`Int` or a `U64` (spec/units.md § The base), so `quantity Decimal<18>
+in wei` is refused as `quantity Decimal in wei` is ("a quantity counts
+an integer (\`Int\`, \`U64\`), and \`Decimal<18>\` is not one").
 
 **Generics.** `Decimal<S>` is a generic argument like any primitive:
 `Box<Decimal<18>>` is the monomorph `Box_Decimal18` (plain `Decimal`
@@ -430,11 +430,23 @@ protobuf codecs (spec/api.md § Codecs):
 
 It is no routing key,
 no `Numeric` generic bound's argument and no accumulator's element
-(`sum(self.x)`). The unit dialect's scalars count an `Int`
-(spec/units.md), so `quantity U64 in …`, `distinct U64` and `U64 {
-range: … }` are refused at the type, naming `Int`: a scalar's
-representation, its range checks and its conversions are an `Int`'s,
-signed, and admitting a `U64` there is its own change.
+(`sum(self.x)`).
+
+**Units over `U64`** (GH #2131, F.61). The unit dialect's base integer
+is a parameter (spec/units.md § The base), and a `U64` is one: `type
+Wei = quantity U64 in wei;`, `type Nonce = distinct U64;` and `type
+Port = U64 { range: 1..65536; }` are each a `U64` that never mixes.
+Each one's arithmetic, range checks and conversion factors are a
+`U64`'s: unsigned, an overflow a violation; a literal where one is
+expected is typed from its place as above; `U64(nonce)` is an
+identity's `U64` and `Nonce(n)` of a `U64` the identity; and an `Int`
+beside one is refused naming the conversion, as beside a `U64`. A
+component counts one integer, so an `Int` count and a `U64` count of
+one denomination never mix (spec/units.md law 5): the stdlib's
+`Duration` counts an `Int`, and a `U64` count of time is a quantity of
+a unit of its own. On the wire, in a shape and across `@ffi("c")` each
+is the `U64` it counts (`q(u64 wei)`, `u64`, a JSON string of its
+digits, a `uint64`, a `uint64_t`).
 
 **Postgres** has no unsigned integer column: `bigint` stops at `2^63 -
 1`. A `U64` is stored in a `numeric(20)` column (twenty digits hold
@@ -450,13 +462,14 @@ types. spec/units.md is their whole contract (the declarations, the
 laws, the algebra, the conversions and their policies, printing and the
 wire); what the type system holds of them is this. Each is a nominal
 named type, not a new primitive: the name survives resolution, two of
-them never unify, and each is represented as an `Int`.
+them never unify, and each is represented as the integer it counts, an
+`Int` or a `U64` (spec/units.md § The base).
 
 | Kind | Declared | As a type |
 |---|---|---|
-| Identity | `type OrderId = distinct Int;`, optionally `{ range: a..b; }` | no arithmetic; compares within one; widens to nothing (`Int(id)`, `OrderId(n)` convert) |
-| Range | `type Byte = Int { range: 0..256; }`, or over an identity or a range | widens to its parent for free; narrowing into it is `Byte(n) or …` |
-| Quantity | `type Money = quantity Int in cent;`, or a boundary denomination of one, `type Ledger = quantity Int in cent { round: half_even; }` | carries its denomination; converts by an exact factor |
+| Identity | `type OrderId = distinct Int;` (`distinct U64`), optionally `{ range: a..b; }` | no arithmetic; compares within one; widens to nothing (`Int(id)`, `OrderId(n)` convert) |
+| Range | `type Byte = Int { range: 0..256; }` (`U64 { range: … }`), or over an identity or a range | widens to its parent for free; narrowing into it is `Byte(n) or …` |
+| Quantity | `type Money = quantity Int in cent;` (`quantity U64 in wei`), or a boundary denomination of one, `type Ledger = quantity Int in cent { round: half_even; }` | carries its denomination; converts by an exact factor |
 | Point | `type Price = point Tick;`, optionally `{ origin: N UNIT; }` | a position over its quantity |
 
 An expression's quantity or point type carries its denomination, and
@@ -2263,7 +2276,7 @@ one.
 A non-primitive argument is a single-segment named type (a user
 `type`, or another generic instantiation, which mangles
 recursively). An identity or a range (spec/units.md) is one too, and
-lowers as its `Int`. A quantity or a point declared by the program is
+lowers as the integer it counts. A quantity or a point declared by the program is
 not: its unit lives in the checker's rows for the places that name the
 type, and a generic body names `T`, so it would print and convert as
 the bare count. A generic fn call that would bind one is refused at

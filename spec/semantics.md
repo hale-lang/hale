@@ -3414,7 +3414,8 @@ payload picks the consumer mode:
   / `U64` / `U256` / `I256`, a `U64` or a 256-bit integer as a JSON
   string of its decimal digits or `0x` hex, or an integer number that
   fits),
-  a scalar of the unit dialect as its `Int`, a `Time` as its RFC 3339
+  a scalar of the unit dialect as the integer it counts (an `Int`, or a
+  `U64` as a `U64` is, GH #2131), a `Time` as its RFC 3339
   text, a `Duration` as its nanoseconds, a `std::json::Value` as its
   text, an enum (a payload-free variant as its name in a JSON string,
   `"Buy"`, one with values as the api codec writes it, `{"Circle": 1.5}`;
@@ -3636,7 +3637,7 @@ The typechecker validates three classes of constraint issue
    the whole value, so a raw memcpy of it is the value on the
    other side. Flat are the fixed-layout primitives (`Int`,
    `Float`, `Decimal`, `Bool`, `Time`, `Duration`), a struct
-   whose fields are all flat, an identity or a range (its `Int`),
+   whose fields are all flat, an identity or a range (its integer),
    and a **fixed-size array of `Int`, `Float`, `Bool`,
    `Decimal` or `Duration`** (and a `bounded[T; N]` of those):
    codegen lays a scalar-element `[T; N]` field out inline in its
