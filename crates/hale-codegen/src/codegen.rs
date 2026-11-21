@@ -782,6 +782,13 @@ pub enum CodegenError {
     /// `None` for an input with no place in the program's sources (a
     /// `[ffi] link` the build was handed).
     CapabilityRefused(String, Option<hale_syntax::Span>),
+    /// GH #2134 (F.63): a loop of a `@vectorize` fn the build's optimizer
+    /// did not vectorize on the build's target, with the reason. Its own
+    /// kind: it is a target-dependent build assertion (what the check can
+    /// prove cannot vectorize it refuses first), so the check/build parity
+    /// gate counts it apart from a divergence. The flag: the span is in a
+    /// Hale-source stdlib body's space.
+    NotVectorized(String, hale_syntax::Span, bool),
     /// GH #2111 (phase 1): under `BuildOptions::seam_strict`, every
     /// expression lowering typed without the checker's row, in the order
     /// of their spans.
@@ -840,6 +847,7 @@ impl CodegenError {
             CodegenError::Link(s) => CodegenError::Link(f(&s)),
             CodegenError::MissingTsShim(s, at) => CodegenError::MissingTsShim(f(&s), at),
             CodegenError::CapabilityRefused(s, at) => CodegenError::CapabilityRefused(f(&s), at),
+            CodegenError::NotVectorized(s, at, std) => CodegenError::NotVectorized(f(&s), at, std),
             CodegenError::MissingRows(rows) => CodegenError::MissingRows(rows),
         }
     }
@@ -862,6 +870,10 @@ impl std::fmt::Display for CodegenError {
             CodegenError::Link(s) => write!(f, "link failed: {}", s),
             CodegenError::MissingTsShim(s, _) => write!(f, "{}", s),
             CodegenError::CapabilityRefused(s, _) => write!(f, "{}", s),
+            CodegenError::NotVectorized(s, at, true) => {
+                write!(f, "{s} ({})", hale_types::stdlib_bodies::stdlib_span_note(*at))
+            }
+            CodegenError::NotVectorized(s, _, false) => write!(f, "{s}"),
             CodegenError::MissingRows(rows) => {
                 write!(f, "strict mode: {} expression(s) lowered without the checker's type", rows.len())?;
                 for r in rows {
@@ -975,7 +987,10 @@ impl CodegenError {
     /// refusal a program can reach to it.
     pub fn is_located(&self) -> bool {
         match self {
-            CodegenError::UnsupportedAt(..) | CodegenError::UnsupportedInStdlib(..) | CodegenError::Refused(..) => true,
+            CodegenError::UnsupportedAt(..)
+            | CodegenError::UnsupportedInStdlib(..)
+            | CodegenError::Refused(..)
+            | CodegenError::NotVectorized(..) => true,
             CodegenError::MissingTsShim(_, at) | CodegenError::CapabilityRefused(_, at) => at.is_some(),
             // every row names its span
             CodegenError::MissingRows(_) => true,
@@ -2060,7 +2075,14 @@ fn build_resolved_lowered(
         bubble.clone()
     };
 
+    // GH #2134 (F.63): the loop vectorizer's remarks, for `@vectorize`.
+    // Turned on before this build runs any pass (process-global options),
+    // and collected by a handler declared before the context, which it
+    // outlives.
+    crate::vectorize::enable_vectorizer_remarks();
+    let vec_remarks = crate::vectorize::Remarks::default();
     let context = Context::create();
+    vec_remarks.install(&context);
     let module = context.create_module("lotus_main");
     let builder = context.create_builder();
 
@@ -2372,6 +2394,12 @@ fn build_resolved_lowered(
         di_current_loc: None,
         di_current_pos: None,
         di_pending_params: Vec::new(),
+        vec_check: false,
+        vec_fn: None,
+        vec_loops: Vec::new(),
+        vec_synth: Vec::new(),
+        vec_synth_file: None,
+        di_file_names: Vec::new(),
     };
 
     // 2026-07-01 debug story stage 2: DWARF line tables for the Hale
@@ -2380,9 +2408,24 @@ fn build_resolved_lowered(
     // addr2line, ASAN reports, and gdb frame listings consume;
     // variable info is a later stage. Native only (wasm DWARF is a
     // separate story).
+    // GH #2134 (F.63): whether this build holds `@vectorize` fns to what
+    // the vectorizer does. A build that does gets debug locations for
+    // their loops even when it emits no DWARF (synthetic ones, stripped
+    // after the pipeline: `crate::vectorize`).
+    cx.vec_check = crate::vectorize::skipped(options.dev_profile, options.asan, is_wasm).is_none()
+        && program_has_vectorize(cx.program);
+    if cx.vec_check {
+        vec_remarks.collect();
+    }
+    let no_files = DebugSources::default();
     if !is_wasm {
-        if let Some(dbg) = &options.debug {
-            if !dbg.files.is_empty() {
+        let dbg = options
+            .debug
+            .as_ref()
+            .filter(|d| !d.files.is_empty())
+            .or(if cx.vec_check { Some(&no_files) } else { None });
+        if let Some(dbg) = dbg {
+            {
                 let i32_t = cx.context.i32_type();
                 cx.module.add_basic_value_flag(
                     "Debug Info Version",
@@ -2394,8 +2437,10 @@ fn build_resolved_lowered(
                     inkwell::module::FlagBehavior::Warning,
                     i32_t.const_int(5, false),
                 );
-                let entry = &dbg.files[0];
-                let (entry_name, entry_dir) = di_split_path(&entry.path);
+                let (entry_name, entry_dir) = match dbg.files.first() {
+                    Some(entry) => di_split_path(&entry.path),
+                    None => (crate::vectorize::SYNTH_FILE.to_string(), ".".to_string()),
+                };
                 let (dib, cu) = cx.module.create_debug_info_builder(
                     true,
                     // DW_LANG_C: the closest stable tag every DWARF
@@ -2432,14 +2477,19 @@ fn build_resolved_lowered(
                             line_starts.push(i as u32 + 1);
                         }
                     }
-                    files.push(DiFileEntry {
-                        base: f.base,
-                        len: f.len,
-                        file: difile,
-                        line_starts,
-                    });
+                    files.push((
+                        DiFileEntry {
+                            base: f.base,
+                            len: f.len,
+                            file: difile,
+                            line_starts,
+                        },
+                        name,
+                    ));
                 }
-                files.sort_by_key(|e| e.base);
+                files.sort_by_key(|(e, _)| e.base);
+                let (files, names): (Vec<DiFileEntry>, Vec<String>) = files.into_iter().unzip();
+                cx.di_file_names = names;
                 cx.di = Some(DiState {
                     builder: dib,
                     cu,
@@ -2783,6 +2833,24 @@ fn build_resolved_lowered(
         cx.module
             .run_passes(pass_pipeline, &machine, pb_opts)
             .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+    }
+    // GH #2134 (F.63): every innermost loop of a `@vectorize` fn against
+    // what the vectorizer reported; then the debug info that existed only
+    // for the check goes.
+    if cx.vec_check {
+        let remarks = vec_remarks.take();
+        let target_name = format!("{} ({cpu})", triple.as_str().to_string_lossy());
+        let site = |l: &crate::vectorize::VecLoop| {
+            if l.stdlib {
+                return None;
+            }
+            let s = cx.site_of(l.span);
+            (!s.is_empty()).then_some(s)
+        };
+        crate::vectorize::judge(&cx.vec_loops, &remarks, &target_name, &site)?;
+        if options.debug.as_ref().is_none_or(|d| d.files.is_empty()) {
+            cx.module.strip_debug_info();
+        }
     }
     if let Some(p) = &options.dump_ir_optimized {
         let _ = cx.module.print_to_file(p);
@@ -5511,6 +5579,25 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// lazily there — the prologue has no scope to attach to yet).
     pub(crate) di_pending_params:
         Vec<(PointerValue<'ctx>, String, CodegenTy)>,
+    /// GH #2134 (F.63): whether this build checks `@vectorize`
+    /// (`crate::vectorize::skipped` is `None` and a fn carries it).
+    pub(crate) vec_check: bool,
+    /// The `@vectorize` fn being lowered: its name as written and its
+    /// `min_width`, with whether it is a Hale-source stdlib fn.
+    pub(crate) vec_fn: Option<(String, Option<u32>, bool)>,
+    /// Every loop lowering met in a `@vectorize` fn, in order.
+    pub(crate) vec_loops: Vec<crate::vectorize::VecLoop>,
+    /// The synthetic locations of the loops being lowered, innermost
+    /// last: the function, the location, and the one it replaced.
+    pub(crate) vec_synth: Vec<(
+        FunctionValue<'ctx>,
+        inkwell::debug_info::DILocation<'ctx>,
+        Option<inkwell::debug_info::DILocation<'ctx>>,
+    )>,
+    /// [`crate::vectorize::SYNTH_FILE`]'s DIFile, made on first use.
+    pub(crate) vec_synth_file: Option<inkwell::debug_info::DIFile<'ctx>>,
+    /// Each real DIFile's name, in `di.files`' order.
+    pub(crate) di_file_names: Vec<String>,
 }
 
 /// DWARF emission state (debug story stage 2). One DIBuilder +
@@ -5537,6 +5624,32 @@ pub(crate) struct DiFileEntry<'ctx> {
     /// Byte offset (file-local) of each line's first byte; index i
     /// is line i+1's start. Binary-searchable.
     pub(crate) line_starts: Vec<u32>,
+}
+
+/// GH #2134: whether a function of this name gets no real debug info
+/// (a stdlib body, or a synthesized `__*` helper): see `di_enter_stmt`.
+fn di_skips(fn_name: &str) -> bool {
+    (fn_name.starts_with("__") && !fn_name.starts_with("__lib_"))
+        || fn_name.starts_with("__Std")
+        || fn_name.starts_with("__std")
+}
+
+/// GH #2134: whether a program declares a `@vectorize` fn (a free fn or
+/// a locus method).
+fn program_has_vectorize(p: &Program) -> bool {
+    p.items.iter().any(|item| match item {
+        TopDecl::Fn(f) => f.vectorize.is_some(),
+        TopDecl::Locus(l) => l.members.iter().any(|m| matches!(m, LocusMember::Fn(f) if f.vectorize.is_some())),
+        _ => false,
+    })
+}
+
+/// What [`Cx::vec_loop_enter`] did.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VecLoopEntry {
+    None,
+    Real,
+    Synthetic,
 }
 
 /// Split a path into (file name, directory) strings for DIFile
@@ -10100,6 +10213,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     unbounded: false,
                     bounded_by: None,
                     rpc: None,
+                    vectorize: None,
                     budget: None,
                     hot: false,
                     effects: Vec::new(),
@@ -11389,8 +11503,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.backedge_stop_fn = Some(main_fn);
         }
+        // GH #2134: `fn main`'s own loops are held to its `@vectorize` as
+        // any fn's are (lowered here, not through `lower_user_fn_body`).
         let end = self
-            .in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope))
+            .with_vec_fn(&main_decl, "main".to_string(), false, |cx| {
+                cx.in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope))
+            })
             .map_err(|e| e.located_at(main_decl.name.span));
         self.backedge_stop_fn = None;
         let end = end?;
@@ -14103,6 +14221,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 unbounded: fd.unbounded,
                 bounded_by: fd.bounded_by.clone(),
                     rpc: fd.rpc.clone(),
+                vectorize: fd.vectorize.clone(),
                 budget: fd.budget,
                 hot: fd.hot,
                 effects: Vec::new(),
@@ -14337,6 +14456,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             unbounded: template.unbounded,
             bounded_by: template.bounded_by.clone(),
             rpc: template.rpc.clone(),
+            vectorize: template.vectorize.clone(),
             budget: template.budget,
             hot: template.hot,
             effects: Vec::new(),
@@ -15872,7 +15992,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_user_fn_body(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
         // A specialization is its template's declaration (it keeps the
         // template's id), whose rows the checker recorded.
-        self.in_body(f.id, |cx| cx.lower_user_fn_body_at(f))
+        let stdlib = stdlib_named(&f.name.name);
+        self.with_vec_fn(f, f.name.name.clone(), stdlib, |cx| cx.in_body(f.id, |cx| cx.lower_user_fn_body_at(f)))
     }
 
     fn lower_user_fn_body_at(&mut self, f: &FnDecl) -> Result<(), CodegenError> {
@@ -18434,14 +18555,130 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
-        if self.di.is_none() {
-            return self.lower_stmt_inner(stmt, scope);
+        let vec_loop = self.vec_loop_enter(stmt);
+        let r = if self.di.is_none() {
+            self.lower_stmt_inner(stmt, scope)
+        } else {
+            let entered = self.di_enter_stmt(stmt.span());
+            let r = self.lower_stmt_inner(stmt, scope);
+            if entered {
+                self.di_exit_stmt();
+            }
+            r
+        };
+        if vec_loop == VecLoopEntry::Synthetic {
+            self.vec_loop_exit();
         }
-        let entered = self.di_enter_stmt(stmt.span());
-        let r = self.lower_stmt_inner(stmt, scope);
-        if entered {
-            self.di_exit_stmt();
+        r
+    }
+
+    /// GH #2134 (F.63): a `for` or `while` of the `@vectorize` fn being
+    /// lowered is recorded with the location its remarks will carry
+    /// (`crate::vectorize`): the statement's real span when the build
+    /// emits DWARF for this fn, else line `n` of the synthetic file, set
+    /// on every instruction of the loop until [`Self::vec_loop_exit`].
+    fn vec_loop_enter(&mut self, stmt: &Stmt) -> VecLoopEntry {
+        if !self.vec_check {
+            return VecLoopEntry::None;
         }
+        let Some((fn_name, min_width, stdlib)) = self.vec_fn.clone() else {
+            return VecLoopEntry::None;
+        };
+        let (body, span) = match stmt {
+            Stmt::While { body, span, .. } | Stmt::For { body, span, .. } => (body, *span),
+            _ => return VecLoopEntry::None,
+        };
+        let Some(func) = self.builder.get_insert_block().and_then(|b| b.get_parent()) else {
+            return VecLoopEntry::None;
+        };
+        let innermost = !hale_types::vectorize::block_has_loop(body);
+        let llvm_name = func.get_name().to_string_lossy().into_owned();
+        let end = hale_syntax::Span::new(span.end.0.saturating_sub(1) as usize, span.end.0 as usize);
+        let real = if stdlib || di_skips(&llvm_name) {
+            None
+        } else {
+            self.di_locate(span).zip(self.di_locate(end))
+        };
+        let key = match real {
+            Some(((fi, l0, c0), (_, l1, c1))) => crate::vectorize::LoopKey::Real {
+                file: self.di_file_names.get(fi).cloned().unwrap_or_default(),
+                start: (l0, c0),
+                end: (l1, c1),
+            },
+            None => crate::vectorize::LoopKey::Synthetic(self.vec_loops.len() as u32 + 1),
+        };
+        let synth = match key {
+            crate::vectorize::LoopKey::Synthetic(n) => Some(n),
+            _ => None,
+        };
+        self.vec_loops.push(crate::vectorize::VecLoop { span, fn_name, min_width, innermost, stdlib, key });
+        let Some(line) = synth else { return VecLoopEntry::Real };
+        use inkwell::debug_info::{AsDIScope, DIFlagsConstants};
+        let Some(di) = self.di.as_ref() else { return VecLoopEntry::Real };
+        let file = *self
+            .vec_synth_file
+            .get_or_insert_with(|| di.builder.create_file(crate::vectorize::SYNTH_FILE, "."));
+        let sp = match func.get_subprogram() {
+            Some(sp) => sp,
+            None => {
+                let fn_ty = di.builder.create_subroutine_type(file, None, &[], inkwell::debug_info::DIFlags::PUBLIC);
+                let sp = di.builder.create_function(
+                    file.as_debug_info_scope(),
+                    &llvm_name,
+                    None,
+                    file,
+                    0,
+                    fn_ty,
+                    false,
+                    true,
+                    0,
+                    inkwell::debug_info::DIFlags::PUBLIC,
+                    true,
+                );
+                func.set_subprogram(sp);
+                sp
+            }
+        };
+        // A block in the synthetic file, so the location names that file
+        // whichever file the fn's own subprogram is in.
+        let block = di.builder.create_lexical_block(sp.as_debug_info_scope(), file, line, 1);
+        let loc = di.builder.create_debug_location(self.context, line, 1, block.as_debug_info_scope(), None);
+        let prev = self.di_current_loc;
+        self.builder.set_current_debug_location(loc);
+        self.di_current_loc = Some(loc);
+        self.vec_synth.push((func, loc, prev));
+        VecLoopEntry::Synthetic
+    }
+
+    /// Leave the loop [`Self::vec_loop_enter`] gave a synthetic location:
+    /// the location before it comes back (in the same function).
+    fn vec_loop_exit(&mut self) {
+        let Some((func, _, prev)) = self.vec_synth.pop() else { return };
+        let cur = self.builder.get_insert_block().and_then(|b| b.get_parent());
+        if cur != Some(func) {
+            return;
+        }
+        match prev {
+            Some(loc) => self.builder.set_current_debug_location(loc),
+            None => self.builder.unset_current_debug_location(),
+        }
+        self.di_current_loc = prev;
+    }
+
+    /// Lower `f` with its `@vectorize` attribute (if any) as the current
+    /// fn's (GH #2134). `name` is the fn as written; `stdlib` says its
+    /// body is a Hale-source stdlib body.
+    pub(crate) fn with_vec_fn<R>(
+        &mut self,
+        f: &FnDecl,
+        name: String,
+        stdlib: bool,
+        body: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let attr = f.vectorize.as_ref().map(|v| (name, v.min_width, stdlib));
+        let outer = std::mem::replace(&mut self.vec_fn, attr);
+        let r = body(self);
+        self.vec_fn = outer;
         r
     }
 
@@ -18460,6 +18697,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return false;
         };
         let fn_name = func.get_name().to_string_lossy().into_owned();
+        // GH #2134: inside a `@vectorize` loop that carries a synthetic
+        // location, every statement keeps it.
+        if let Some(&(f, loc, _)) = self.vec_synth.last() {
+            if f == func {
+                let prev = self.di_current_loc;
+                let prev_pos = self.di_current_pos;
+                self.builder.set_current_debug_location(loc);
+                self.di_current_loc = Some(loc);
+                self.di_loc_stack.push((func, prev, prev_pos));
+                return true;
+            }
+        }
         // No debug info for (a) stdlib bodies — their spans live in
         // the separately-parsed hale_stdlib::AP_SOURCE coordinate space,
         // which overlaps user file ranges — and (b) synthesized
@@ -18471,10 +18720,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // bases and keep their debug info. Any location still live
         // from an earlier statement must not leak onto skipped
         // functions' instructions.
-        let skip_di = (fn_name.starts_with("__")
-            && !fn_name.starts_with("__lib_"))
-            || fn_name.starts_with("__Std")
-            || fn_name.starts_with("__std");
+        let skip_di = di_skips(&fn_name);
         if skip_di {
             if self.di_current_loc.is_some() {
                 self.builder.unset_current_debug_location();

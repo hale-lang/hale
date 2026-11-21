@@ -38,6 +38,15 @@ pub enum Verdict {
     /// Checked clean and the build refused it, or lowering panicked. The
     /// rendered error.
     Diverges(String),
+    /// GH #2134 (F.63): checked clean, and the build refused a loop of a
+    /// `@vectorize` fn its optimizer did not vectorize on this target.
+    /// That refusal is a target-dependent build assertion, not a gap
+    /// between check and build: `hale check` refuses what no target
+    /// vectorizes, and what is left (an in-order `Float` reduction, the
+    /// cost model, the vector width) is decided by the target. It is
+    /// counted apart and never listed as a divergence (spec/semantics.md
+    /// § Vectorized loops). The rendered error.
+    TargetAssertion(String),
 }
 
 fn overlay(files: &Files) -> BTreeMap<PathBuf, String> {
@@ -65,14 +74,29 @@ pub fn check_clean(files: &Files) -> bool {
 /// harness's, with lowering gated on the check as the verb gates it),
 /// then codegen. `Err` is the build's refusal, rendered.
 pub fn build(files: &Files, tag: &str) -> Result<(), String> {
+    build_err(files, tag).map_err(|e| match e {
+        BuildErr::Codegen(e) => render(&e),
+        BuildErr::Before(msg) => msg,
+    })
+}
+
+/// Why [`build_err`] did not build: a codegen error, or a refusal before
+/// codegen (the load, the lowering view), rendered.
+pub enum BuildErr {
+    Codegen(CodegenError),
+    Before(String),
+}
+
+/// [`build`], with codegen's error as it was raised.
+pub fn build_err(files: &Files, tag: &str) -> Result<(), BuildErr> {
     let options = build_opts::options();
     let mut config = build_opts::harness_config(&options);
     config.check_gates_lowering = true;
     let buffers = overlay(files);
     let snap = match Snapshot::load(&entry(), LoadMode::WholeSeed, &Overlay::new(&buffers), config) {
         Ok(s) => s,
-        Err(LoadError::Refused(msg)) => return Err(format!("load refused: {msg}")),
-        Err(LoadError::Load(f)) => return Err(format!("load failed: {}", f.text())),
+        Err(LoadError::Refused(msg)) => return Err(BuildErr::Before(format!("load refused: {msg}"))),
+        Err(LoadError::Load(f)) => return Err(BuildErr::Before(format!("load failed: {}", f.text()))),
     };
     let view = match snap.demand_lowering() {
         Ok(v) => v,
@@ -80,13 +104,13 @@ pub fn build(files: &Files, tag: &str) -> Result<(), String> {
             let why = b.refused.clone().unwrap_or_else(|| {
                 b.because.iter().map(|d| d.message.clone()).collect::<Vec<_>>().join("; ")
             });
-            return Err(format!("lowering view blocked ({}): {why}", b.family));
+            return Err(BuildErr::Before(format!("lowering view blocked ({}): {why}", b.family)));
         }
     };
     let bin = harness::unique_bin(tag);
     let out = hale_codegen::build_resolved(view, &bin, &options);
     let _ = std::fs::remove_file(&bin);
-    out.map_err(|e| render(&e))
+    out.map_err(BuildErr::Codegen)
 }
 
 fn render(e: &CodegenError) -> String {
@@ -101,9 +125,11 @@ pub fn verdict(files: &Files, tag: &str) -> Verdict {
     if !checked {
         return Verdict::CheckRejects;
     }
-    match std::panic::catch_unwind(|| build(files, tag)) {
+    match std::panic::catch_unwind(|| build_err(files, tag)) {
         Ok(Ok(())) => Verdict::Built,
-        Ok(Err(msg)) => Verdict::Diverges(msg),
+        Ok(Err(BuildErr::Codegen(e @ CodegenError::NotVectorized(..)))) => Verdict::TargetAssertion(render(&e)),
+        Ok(Err(BuildErr::Codegen(e))) => Verdict::Diverges(render(&e)),
+        Ok(Err(BuildErr::Before(msg))) => Verdict::Diverges(msg),
         Err(payload) => {
             let msg = payload
                 .downcast_ref::<String>()

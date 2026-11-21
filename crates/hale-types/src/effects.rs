@@ -464,7 +464,7 @@ fn lifecycle_name(kind: LifecycleKind) -> &'static str {
 }
 
 /// Human label for an allocation site kind.
-fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
+pub(crate) fn describe_alloc(kind: &alloc_summary::AllocKind) -> String {
     match kind {
         alloc_summary::AllocKind::StructLit(n) => {
             format!("an allocation (struct `{}`)", n)

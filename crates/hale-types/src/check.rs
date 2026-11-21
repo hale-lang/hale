@@ -1397,6 +1397,8 @@ fn walk_bundle(
         templates: &templates,
         generic_bindings: BTreeMap::new(),
         specializing: None,
+        vec_fn: None,
+        vec_loop: None,
         dot_bound: Vec::new(),
         dot_resolution: std::collections::HashMap::new(),
         block_may_leave: false,
@@ -1628,6 +1630,16 @@ pub fn check_bundle_rules(
     // (hoisted field / `recv_into`).
     let rows = HotPathRows { summary: inputs.alloc_summary, top, stdlib: false, advisory: inputs.hot_path_advisory };
     diags.extend(Law { rule: HOT_PATH, eval: check_hot_path_alloc }.diags(&rows));
+    // GH #2134 (F.63): what an innermost loop of a `@vectorize` fn calls,
+    // allocates or publishes that no target's vectorizer takes.
+    {
+        // (the effect rows are demanded only by a program that has one:
+        // a check with no `@vectorize` runs no effects fixpoint for it)
+        let programs: Vec<&Program> = bundle.programs.values().copied().collect();
+        if crate::vectorize::declares_any(&programs) {
+            diags.extend(crate::vectorize::call_laws(&programs, inputs.alloc_summary, (inputs.effects)()));
+        }
+    }
     // A subscriber built and dissolved inside one call on a classic
     // cooperative pool: its deliveries are always dropped (spec/runtime.md
     // § "Subscriptions follow the tower").
@@ -11597,6 +11609,10 @@ struct Checker<'a> {
     /// on the ordinary walk.
     generic_bindings: BTreeMap<String, Ty>,
     specializing: Option<Vec<Ty>>,
+    /// GH #2134 (F.63): the `@vectorize` fn being walked (its name as
+    /// written) and the innermost loop of it being walked.
+    vec_fn: Option<String>,
+    vec_loop: Option<crate::vectorize::LoopFindings>,
     /// GH #2069: the names a `.Variant` arm in scope binds, by the locals
     /// frame binding them: a call of such a name, a fn value whose payload
     /// type the shadowing desugar could not see, calls the binding
@@ -16129,6 +16145,18 @@ impl<'a> Checker<'a> {
     }
 
     fn check_fn(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
+        let vec_fn = decl.vectorize.as_ref().filter(|_| self.specializing.is_none()).map(|_| match locus {
+            Some(l) => format!("{}.{}", l.name, decl.name.name),
+            None => decl.name.name.clone(),
+        });
+        let prev_vec = std::mem::replace(&mut self.vec_fn, vec_fn);
+        let prev_vec_loop = self.vec_loop.take();
+        self.check_fn_vectorized(decl, locus);
+        self.vec_fn = prev_vec;
+        self.vec_loop = prev_vec_loop;
+    }
+
+    fn check_fn_vectorized(&mut self, decl: &'a FnDecl, locus: Option<&'a LocusInfo>) {
         let prev_body = std::mem::replace(&mut self.body, decl.id);
         let prev_tpl = std::mem::replace(
             &mut self.in_display_template,
@@ -17093,6 +17121,43 @@ impl<'a> Checker<'a> {
     }
 
     fn check_stmt(&mut self, stmt: &Stmt) {
+        if self.vec_fn.is_none() {
+            return self.check_stmt_at(stmt);
+        }
+        // GH #2134 (F.63): what an innermost loop of a `@vectorize` fn
+        // holds that no target's vectorizer takes.
+        use crate::vectorize::Cannot;
+        let mut entered = None;
+        match stmt {
+            Stmt::While { .. } | Stmt::For { .. } => {
+                if let Some(findings) = crate::vectorize::LoopFindings::of(stmt) {
+                    entered = Some(self.vec_loop.replace(findings));
+                }
+            }
+            Stmt::Return(_, span) | Stmt::Break(span) => {
+                if self.vec_loop.as_ref().is_some_and(|l| l.exits_more_than_once()) {
+                    self.vec_note(*span, Cannot::SecondExit);
+                }
+            }
+            Stmt::Send { span, .. } if self.vec_loop.is_some() => self.vec_note(*span, Cannot::Send),
+            _ => {}
+        }
+        self.check_stmt_at(stmt);
+        if let Some(outer) = entered {
+            let done = std::mem::replace(&mut self.vec_loop, outer);
+            if let (Some(done), Some(name)) = (done, self.vec_fn.as_ref()) {
+                self.diags.extend(done.diags(name));
+            }
+        }
+    }
+
+    fn vec_note(&mut self, span: Span, what: crate::vectorize::Cannot) {
+        if let Some(l) = self.vec_loop.as_mut() {
+            l.note(span, what);
+        }
+    }
+
+    fn check_stmt_at(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Let { is_mut, name, ty, value, .. } => {
                 let declared = ty.as_ref().map(|te| crate::resolve::resolve_type_expr(te, &self.top.names));
@@ -18265,11 +18330,20 @@ impl<'a> Checker<'a> {
         span: Span,
     ) {
         let payload_ty = self.check_expr(value);
-        // Phase 3 routing keys (2026-05-25): the `or DISPOSITION`
-        // clause on Send is legal only when the target topic
-        // declares `on_unmatched: fail`. Conversely, fail topics
-        // REQUIRE the clause — a fail-policy publish without an
-        // or-disposition leaves the no-match err unhandled. The
+        // The `or DISPOSITION` clause on Send is legal only when the
+        // target topic can refuse the send: it declares
+        // `on_unmatched: fail` (Phase 3 routing keys, 2026-05-25) or
+        // `on_full: fail` (GH #255 phase 2). Conversely, such a topic
+        // REQUIRES the clause — a refusal-fallible publish without an
+        // or-disposition leaves the refusal unhandled. Which
+        // dispositions each admits (GH #2146):
+        //
+        //   on_full: fail       raise, discard, wait
+        //   on_unmatched: fail  raise, discard, handler(err), fail <p>
+        //   both                raise, discard
+        //
+        // `or wait` outwaits a full queue, never an unmatched key; the
+        // err-payload dispositions are not wired for a full topic. The
         // topic is the one the subject names in the topic rows — a
         // literal by the wire subject it delivers on, a topic reference
         // by its name — and both directions are validated.
@@ -18361,6 +18435,8 @@ impl<'a> Checker<'a> {
             // through so the fail-policy matrix doesn't
             // mis-diagnose it as an illegal disposition.
             (_, Some(OrDisposition::Wait(_))) => {}
+            // the `on_full: fail` block above already asked for one
+            (Some(UnmatchedPolicy::Fail), None) if target_full_fail => {}
             (Some(UnmatchedPolicy::Fail), None) => {
                 self.diags.push(Diag::ty(
                     span,
@@ -18449,12 +18525,17 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            // GH #2146: an `on_full: fail` topic's send is refusal-
+            // fallible on its own, keyed or not. Raise and discard
+            // pass; handler(err) / fail <p> were refused by the
+            // `on_full: fail` block above.
+            (_, Some(_)) if target_full_fail => {}
             (_, Some(_)) => {
                 self.diags.push(Diag::ty(
                     span,
                     "`or` disposition on a bus send is only legal \
-                     when the target topic declares \
-                     `on_unmatched: fail`",
+                     when the target topic declares `on_full: fail` \
+                     or `on_unmatched: fail`",
                 ));
             }
             (_, None) => {

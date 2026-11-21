@@ -580,6 +580,7 @@ fn fn_decl<'a>(fd: &'a FnDecl, f: &mut Visit<'_, 'a>) {
         effects,
         quantities: _,
         rpc,
+        vectorize: _,
         decorators,
         body,
         span: _,

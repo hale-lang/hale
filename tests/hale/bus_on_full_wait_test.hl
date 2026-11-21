@@ -1,0 +1,42 @@
+// GH #2146: a send to an unkeyed `bounded(N); on_full: fail;` topic
+// carries `or wait`: a publisher on its own thread parks while the
+// subscriber's queue is at the bound and resumes as main drains it, so
+// nothing is shed and nothing is refused.
+type E { n: Int = 0; }
+topic Evt { payload: E; subject: "t_on_full_wait.evt"; bounded(2); on_full: fail; }
+
+locus Tally {
+    params { seen: Int = 0; sum: Int = 0; }
+    bus { subscribe Evt as on_e; }
+    fn on_e(e: E) {
+        self.seen = self.seen + 1;
+        self.sum = self.sum + e.n;
+    }
+}
+
+locus Pusher {
+    bus { publish Evt; }
+    run() {
+        let mut i = 0;
+        while i < 20 {
+            Evt <- E { n: i } or wait;
+            i = i + 1;
+        }
+    }
+}
+
+main locus App {
+    params { t: Tally = Tally { }; p: Pusher = Pusher { }; }
+    placement { p: pinned(core = 0); }
+    run() {
+        // until every event is delivered (up to 10 s)
+        let deadline = std::time::monotonic_ns() + 10000000000;
+        while self.t.seen < 20 && std::time::monotonic_ns() < deadline {
+            std::time::sleep(10ms);
+        }
+        std::test::assert_eq_int(self.t.seen, 20, "all 20 delivered");
+        std::test::assert_eq_int(self.t.sum, 190, "each once");
+    }
+}
+
+fn main() { App { }; }
