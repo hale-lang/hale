@@ -1,0 +1,165 @@
+name: build-image
+
+# The public toolchain image, ghcr.io/<repository>, for linux/amd64 and
+# linux/arm64: each architecture built natively on its own runner and
+# pushed by digest, then joined into one manifest list under the tags the
+# caller names. The build half of image.yml (a `v*` tag: the version's
+# tags and `latest`) and of nightly.yml (main, daily: `nightly` and the
+# day's); moved here unchanged from image.yml, whose header says why it is
+# built this way.
+
+on:
+  workflow_call:
+    inputs:
+      tags:
+        description: >-
+          docker/metadata-action `tags` for the manifest list: evaluated
+          against the caller's event, so `type=semver` reads a tag push's
+          ref.
+        type: string
+        required: true
+      flavor:
+        description: docker/metadata-action `flavor` (empty is its default).
+        type: string
+        required: false
+        default: ""
+      labels:
+        description: >-
+          docker/metadata-action `labels` overriding the generated
+          org.opencontainers.image.* ones (empty overrides none).
+        type: string
+        required: false
+        default: ""
+      version:
+        description: >-
+          The version the image's `hale --version` reports, written into
+          Cargo.toml's [workspace.package] before the build. Empty keeps
+          Cargo.toml's, as a release does.
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # A nightly's image reports the nightly's version, as its tarballs do
+      # (build-binaries.yml): the image compiles `hale` from this checkout.
+      - name: Set the version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: scripts/nightly.sh set-version "$VERSION"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          labels: ${{ inputs.labels }}
+
+      # pushed by digest alone: the merge job below names it
+      # the runners' resolver stopped answering for Ubuntu's archive
+      # (2026-11-11): the image's apt reaches it at an address a public
+      # resolver gives (a known one if it gives none)
+      - name: Pin Ubuntu's archive
+        id: archive
+        run: |
+          # the first of the archive's addresses that serves it from here: a
+          # public resolver's answer can name one the runners cannot reach (2026-11-16)
+          ip=$(for c in $( { dig +short +time=3 +tries=2 @1.1.1.1 archive.ubuntu.com A; dig +short +time=3 +tries=2 @8.8.8.8 archive.ubuntu.com A; } 2>/dev/null | grep -E '^[0-9.]+$'; echo 185.125.190.81 185.125.190.83 91.189.91.82 91.189.91.83); do if curl -fsS -m 5 -o /dev/null -H 'Host: archive.ubuntu.com' "http://$c/ubuntu/dists/noble/Release"; then echo "$c"; break; fi; done || true)
+          echo "ip=${ip:-185.125.190.81}" >> "$GITHUB_OUTPUT"
+
+      - name: Build + push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          add-hosts: |
+            archive.ubuntu.com:${{ steps.archive.outputs.ip }}
+            security.ubuntu.com:${{ steps.archive.outputs.ip }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
+
+      - name: Keep the digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: ${{ inputs.tags }}
+          flavor: ${{ inputs.flavor }}
+
+      # one manifest list per tag, naming both architectures' digests
+      - name: Join the architectures under the tags
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+
+      - name: Both architectures are there
+        run: |
+          tag="$(jq -r '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")"
+          docker buildx imagetools inspect "$tag" | tee /tmp/inspect
+          grep -q 'linux/amd64' /tmp/inspect
+          grep -q 'linux/arm64' /tmp/inspect
