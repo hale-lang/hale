@@ -666,9 +666,9 @@ impl Walk<'_> {
             // type, which this pass, before the check, does not have: the
             // enum the match spells or its scrutinee's binding is declared
             // as (`enum_hint`), else the one enum (generic ones counted) the
-            // program declares a variant `V` in, else none: the binding then
-            // says nothing of its type, as a tuple pattern's, and the check
-            // refuses a call of its name that may be a call through it.
+            // program declares a variant `V` in; else every enum declaring
+            // `V`, a value declared a fn value if one of them declares a fn
+            // there (below).
             Pattern::DotVariant { variant, args, .. } => {
                 let fields = match enum_hint.and_then(|e| self.variants.get(&(e.to_string(), variant.name.clone()))) {
                     Some(fields) => Some(fields),
@@ -678,7 +678,21 @@ impl Walk<'_> {
                     None => None,
                 };
                 for (i, a) in args.iter().enumerate() {
-                    self.pattern_bindings(a, fields.and_then(|f| f.get(i)), None, out);
+                    let declared = match fields {
+                        Some(f) => f.get(i),
+                        // The match shows no enum and several declare `V`: the
+                        // value is declared a fn value where any of them
+                        // declares a `fn(..)` there. The check, which knows the
+                        // enum, refuses the call it then makes through a
+                        // binding that is no fn, saying to spell the enum.
+                        None => self
+                            .variants
+                            .iter()
+                            .filter(|((_, v), _)| *v == variant.name)
+                            .filter_map(|(_, f)| f.get(i))
+                            .find(|t| matches!(t, TypeExpr::Function { .. })),
+                    };
+                    self.pattern_bindings(a, declared, None, out);
                 }
             }
             Pattern::Tuple(args, _) => {

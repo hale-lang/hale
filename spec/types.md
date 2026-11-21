@@ -2553,9 +2553,14 @@ declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`).
 The rule is read before the check, so a `.Use(f)` pattern (F.58) names
 its variant's enum through what the match shows of it: an arm spelling
 the enum, the matched value's binding declared as the enum (`o: Op`,
-`let o = Op::Use(ten);`), or the one enum declaring a variant `Use`; with
-none of them the binding says nothing of its type, as a tuple pattern's
-part (below). So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
+`let o = Op::Use(ten);`), or the one enum declaring a variant `Use`.
+Where it shows none of them (a field, a call, an element matched, and
+several enums declaring `Use`), `f` is declared a fn value when any of
+those enums declares a `fn(..)` value there; against an enum whose value
+there is no fn, a call of `f` is then a call through that value, which
+the check refuses at the call ("\`f\` here is the \`Int\` a pattern
+binds, not a fn, … spell the enum in the pattern"). It is never called as
+something it is not. So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
 beside a `fn f` calls the parameter, and `{ let helper = zero; helper() }`
 calls `zero`.
 

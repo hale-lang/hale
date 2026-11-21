@@ -199,6 +199,31 @@ fn mixed() -> Int {
     };
 }
 
+// scrutinees whose enum only the check knows (a field, a call, an
+// element), every arm dotted: the binding of a fn's name is the fn value
+type Holder { op: Apply; }
+
+fn from_field(h: Holder) -> Int {
+    return match h.op {
+        .Use(f) -> f(2),
+        .Skip -> 0,
+    };
+}
+
+fn from_call() -> Int {
+    return match make_apply() {
+        .Use(f) -> f(3),
+        .Skip -> 0,
+    };
+}
+
+fn from_element(ops: [Apply; 2], i: Int) -> Int {
+    return match ops[i] {
+        .Use(f) -> f(i + 1),
+        .Skip -> -1,
+    };
+}
+
 // spelled with the enum, so the parity gate's `dot_variant_spelling`
 // respells these shared-name patterns with a dot
 fn applied_spelled(a: Apply) -> Int {
@@ -295,6 +320,15 @@ fn main() {
     std::test::assert_eq_int(counted(Count::Skip), 2, "the program's fn");
     std::test::assert_eq_int(applied_local(), 40, "a local constructed as the enum");
     std::test::assert_eq_int(mixed(), 10, "an arm spelling the enum names it");
+    std::test::assert_eq_int(
+        from_field(Holder { op: Apply::Use(tenfold) }),
+        20,
+        "a field scrutinee's fn payload",
+    );
+    std::test::assert_eq_int(from_call(), 30, "a call scrutinee's fn payload");
+    let ops = [Apply::Skip, Apply::Use(tenfold)];
+    std::test::assert_eq_int(from_element(ops, 1), 20, "an element scrutinee's fn payload");
+    std::test::assert_eq_int(from_element(ops, 0), -1, "an element scrutinee's other variant");
     std::test::assert_eq_int(applied_spelled(Apply::Use(tenfold)), 50, "spelled with the enum");
     std::test::assert_eq_int(
         counted_spelled(Count::Use(7)) + counted_spelled(Count::Skip),

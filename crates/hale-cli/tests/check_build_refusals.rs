@@ -856,3 +856,25 @@ fn a_variant_pattern_naming_the_wrong_number_of_values_is_refused_at_the_pattern
         "the variant `Rest` carries no value, so its pattern takes no parentheses, and this pattern names 1",
     );
 }
+
+/// GH #2069, on review: the shadowing desugar runs before the check, so
+/// a `.Use(f)` arm against a value whose enum the match does not show (a
+/// field, a call, an element), when several enums declare `Use`, binds `f`
+/// as a fn value where any of them declares a `fn(..)` there. Against the
+/// enum whose `Use` is an `Int`, a call of `f` is then a call through that
+/// `Int`, which the check refuses, saying to spell the enum; it is never
+/// accepted, and spelled, it calls the program's fn.
+#[test]
+fn a_dot_variant_binding_of_a_fns_name_the_desugar_could_not_type_is_refused_when_it_is_no_fn() {
+    let decl = "type Apply = enum { Use(fn(Int) -> Int), Skip };\ntype Count = enum { Use(Int), Skip };\ntype Holder { c: Count; }\nfn f(n: Int) -> Int { return n + 1; }\n";
+    refused(
+        &format!("{decl}fn g(h: Holder) -> Int {{\n    return match h.c {{\n        .Use(f) -> f(1),\n        .Skip -> 0,\n    }};\n}}\nfn main() {{ println(g(Holder {{ c: Count::Use(3) }})); }}\n"),
+        "dot_shadow_int",
+        "7:20",
+        "`f` here is the `Int` a pattern binds, not a fn, and a call of the name calls it",
+    );
+    let ok_src = format!("{decl}fn g(h: Holder) -> Int {{\n    return match h.c {{\n        Count::Use(f) -> f(1) + f,\n        Count::Skip -> 0,\n    }};\n}}\nfn main() {{ println(g(Holder {{ c: Count::Use(3) }})); }}\n");
+    let ((ok, out), (built, bout)) = check_and_build(&ok_src, "dot_shadow_spelled");
+    assert!(ok, "check: {out}");
+    assert!(built, "build: {bout}");
+}

@@ -24965,10 +24965,33 @@ impl<'a> Checker<'a> {
                     _ => false,
                 };
                 if through_value && !matches!(callee_ty, Ty::Function { .. } | Ty::Unknown) {
-                    self.diags.push(Diag::ty(
-                        callee.span(),
-                        format!("this is a value of type `{}`, not a fn: there is nothing to call", callee_ty.display()),
-                    ));
+                    // GH #2069: the shadowing desugar's `{ f }` around a name
+                    // (the block at the name's own span) where a `.V(f)` arm
+                    // bound `f` against a value whose enum the desugar could
+                    // not see, and another enum declares a `fn(..)` there.
+                    let wrapped = match callee.as_ref() {
+                        Expr::Block(b) if b.stmts.is_empty() => match b.tail.as_deref() {
+                            Some(Expr::Ident(id)) if id.span == b.span && self.names_fn_or_builtin(&id.name) => {
+                                Some(id.name.clone())
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let message = match wrapped {
+                        Some(n) => format!(
+                            "`{n}` here is the `{}` a pattern binds, not a fn, and a call of the name calls it: the \
+                             match's enum is not visible before the check (another enum declares a `fn(..)` value \
+                             for its variant), so a `.Variant` binding of a fn's name is a fn value; spell the enum \
+                             in the pattern (`E::Variant({n})`) to call the fn `{n}`, or rename the binding",
+                            callee_ty.display()
+                        ),
+                        None => format!(
+                            "this is a value of type `{}`, not a fn: there is nothing to call",
+                            callee_ty.display()
+                        ),
+                    };
+                    self.diags.push(Diag::ty(callee.span(), message));
                     for a in args {
                         let _ = self.check_expr(a);
                     }
