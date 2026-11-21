@@ -71,6 +71,8 @@ when the type-system / operational-semantics docs are drafted.
    **Resolved (delivery plan, commitment 7):** modes share the
    locus's arena via the arena cascade. No double allocation;
    no copy. Compiler verifies modes don't write-conflict.
+   **Withdrawn (spec/decisions.md F.61):** modes were removed; the
+   write-conflict check was never built and had nothing to find.
 
 ## Bus interface
 

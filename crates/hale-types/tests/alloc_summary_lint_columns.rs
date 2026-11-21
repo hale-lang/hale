@@ -1,6 +1,6 @@
 //! What the hot-path lint reads, as columns of the allocation summary's
-//! rows (F.40 phase 3, E3a part C, 2 of 3): a fn's `@hot` and whether
-//! it is a mode, the order of the declarations, where a site or a call
+//! rows (F.40 phase 3, E3a part C, 2 of 3): a fn's `@hot`, the order
+//! of the declarations, where a site or a call
 //! is written (a `return` payload resets `loop_depth`, not `in_loop`),
 //! the struct literal written as a whole statement or as the whole
 //! right side of a `self.<field> =` replace (the in-place one, which
@@ -39,7 +39,7 @@ locus Sink {
     params { last: P = P { }; }
     bus { subscribe "t" as on_t of type Int; }
     fn on_t(v: Int) { self.last = P { x: 1 }; }
-    mode bulk() -> Int { return 1; }
+    fn bulk() -> Int { return 1; }
 }
 main locus App {
     params { s: Sink = Sink { }; }
@@ -67,25 +67,25 @@ fn literal<'a>(sites: &'a [AllocSite], name: &str) -> &'a AllocSite {
     sites.iter().find(|s| s.kind == AllocKind::StructLit(name.to_string())).unwrap_or_else(|| panic!("{name}"))
 }
 
-/// The rows in the order the declarations are written, with `@hot` and
-/// the mode marked.
+/// The rows in the order the declarations are written, with `@hot`
+/// marked.
 #[test]
-fn decl_order_hot_and_mode() {
+fn decl_order_and_hot() {
     let rows = rows();
     let mut order: Vec<(&FnSummary, String)> = rows.values().map(|f| (f, f.key.display())).collect();
     order.sort_by_key(|(f, _)| f.decl_index);
-    let order: Vec<(String, bool, bool)> = order.into_iter().map(|(f, k)| (k, f.hot, f.mode)).collect();
+    let order: Vec<(String, bool)> = order.into_iter().map(|(f, k)| (k, f.hot)).collect();
     assert_eq!(
         order,
         [
-            ("Child::get".to_string(), false, false),
-            ("make".to_string(), false, false),
-            ("pump".to_string(), true, false),
-            ("pick".to_string(), false, false),
-            ("Sink::on_t".to_string(), false, false),
-            ("Sink::bulk".to_string(), false, true),
-            ("App::run".to_string(), false, false),
-            ("main".to_string(), false, false),
+            ("Child::get".to_string(), false),
+            ("make".to_string(), false),
+            ("pump".to_string(), true),
+            ("pick".to_string(), false),
+            ("Sink::on_t".to_string(), false),
+            ("Sink::bulk".to_string(), false),
+            ("App::run".to_string(), false),
+            ("main".to_string(), false),
         ]
     );
 }

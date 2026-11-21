@@ -142,9 +142,6 @@ const RESERVED: &[&str] = &[
     "accept",
     "release",
     "on_failure",
-    "bulk",
-    "harmonic",
-    "resolution",
     "closure",
 ];
 

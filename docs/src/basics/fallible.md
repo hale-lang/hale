@@ -202,7 +202,7 @@ Hale separates failures into two orthogonal channels:
 2. **Structural channel (`↑` — closure tests, `violate`, and `on_failure`):** Component-level invariant violations and supervision policies, covered in [When Things Fail](../services/failure.md).
 
 > [!IMPORTANT]
-> **`fallible(E)` is rejected on substrate-invoked surfaces:** lifecycle hooks (`birth`, `run`, `dissolve`), mode bodies (`bulk`, `harmonic`, `resolution`), closure-assertion bodies, and bus-subscribed handlers (`subscribe Topic as handler`).
+> **`fallible(E)` is rejected on substrate-invoked surfaces:** lifecycle hooks (`birth`, `run`, `dissolve`), closure-assertion bodies, and bus-subscribed handlers (`subscribe Topic as handler`).
 >
 > Because the runtime invokes these hooks directly rather than a caller frame in your code, there is no call site to attach an `or` clause. Inside a lifecycle hook or bus handler, resolve fallible calls with `or <fallback>`, `or { ... }`, `or discard`, or bridge to the structural channel using an error-check method that executes `violate`.
 

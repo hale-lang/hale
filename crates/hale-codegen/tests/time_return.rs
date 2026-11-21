@@ -2,7 +2,7 @@
 //!
 //! `Time` is a point over `Duration` (U4, GH #1415), an `i64` count.
 //! `declare_locus_methods` listed `CodegenTy::Time` with the
-//! pointer-returned types, so a locus method (or mode) returning one
+//! pointer-returned types, so a locus method returning one
 //! was declared `ptr`; a call that read the result as an integer —
 //! `println(c.start())`, `c.start() == Time(3ns)` — panicked inkwell
 //! ("Found PointerValue ... but expected the IntValue variant"). Free
@@ -44,7 +44,7 @@ const CLOCK: &str = r#"
             if !ok { fail E { kind: "no" }; }
             return self.base + 1s;
         }
-        mode bulk() -> Time { return self.base; }
+        fn now() -> Time { return self.base; }
     }
 "#;
 
@@ -87,12 +87,12 @@ fn a_fallible_method_returning_time_takes_both_paths() {
 }
 
 #[test]
-fn a_mode_returning_time_is_compared() {
+fn a_method_returning_time_is_compared() {
     let out = run(
-        "mode",
+        "compared",
         &format!(
             "{CLOCK}\nfn main() {{ let c = Clock {{ }}; \
-             println(c.bulk() == Time(3ns)); }}"
+             println(c.now() == Time(3ns)); }}"
         ),
     );
     assert_eq!(out, "true\n");

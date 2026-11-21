@@ -238,7 +238,7 @@ fn constitution_digest(
 /// Groups name DECLARED PROGRAM ELEMENTS (loci, free fns); each claim
 /// projects them onto the sorts its relation needs. `reaches`
 /// evaluates over the fn-grained path graph — a locus member projects
-/// to all of its methods, lifecycle hooks, and modes (everything the
+/// to all of its methods and lifecycle hooks (everything the
 /// summary holds under its name), which only ever ADDS sources and
 /// sinks: the conservative direction.
 struct ResolvedGroup {

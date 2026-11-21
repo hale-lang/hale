@@ -38,10 +38,10 @@ fn run(bin: &std::path::PathBuf) -> String {
 
 #[test]
 fn accepts_far_more_than_sixteen_children() {
-    // 50 leaves accepted in a loop, then iterated via two modes.
+    // 50 leaves accepted in a loop, then iterated via two methods.
     // Pre-fix the 17th accept wrote past `__children[16]` into
     // adjacent struct fields, corrupting `__child_count` / the
-    // mode reads (or crashing). Expect count=50, bulk=sum(0..49).
+    // method reads (or crashing). Expect count=50, bulk=sum(0..49).
     let src = r#"
         locus LeafL {
             params { value: Int = 0; }
@@ -50,12 +50,12 @@ fn accepts_far_more_than_sixteen_children() {
         locus AggregatorL {
             contract { consume value: Int; }
             accept(c: LeafL) { }
-            mode bulk() -> Int {
+            fn bulk() -> Int {
                 let mut total: Int = 0;
                 for child in self.children { total = total + child.value; }
                 return total;
             }
-            mode harmonic() -> Int {
+            fn harmonic() -> Int {
                 let mut n: Int = 0;
                 for child in self.children { n = n + 1; }
                 return n;
@@ -100,12 +100,12 @@ fn growth_spans_several_doublings() {
         locus AggregatorL {
             contract { consume value: Int; }
             accept(c: LeafL) { }
-            mode harmonic() -> Int {
+            fn harmonic() -> Int {
                 let mut n: Int = 0;
                 for child in self.children { n = n + 1; }
                 return n;
             }
-            mode bulk() -> Int {
+            fn bulk() -> Int {
                 let mut total: Int = 0;
                 for child in self.children { total = total + child.value; }
                 return total;

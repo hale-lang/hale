@@ -163,7 +163,7 @@ fn run(capacity: Int) -> Int {
 
 Two declaration positions disallow contextual keywords to avoid ambiguity:
 
-1. **Locus methods cannot use lifecycle hook or mode names:** Writing `fn run()` inside a `locus` is rejected because `run() { ... }` (without `fn`) is the lifecycle hook syntax.
+1. **Locus methods cannot use lifecycle hook names:** Writing `fn run()` inside a `locus` is rejected because `run() { ... }` (without `fn`) is the lifecycle hook syntax.
 2. **Free functions cannot use recovery statement names:** Writing `fn restart(...)` is rejected because `restart(x);` at statement start is the supervision recovery command.
 
 The hard keywords, the declaration and statement words (`fn`, `type`, `let`, `if`, `match`, `while`, `return`, `self` and the rest, listed in `spec/keywords.txt`) and the literals `true`, `false` and `nil`, cannot be used as identifiers anywhere, and Hale has no raw/escaped identifier syntax (`spec/tokens.md` § Reserved words).

@@ -31,21 +31,21 @@ fn summarize(src: &str) -> AllocSummary {
     summarize_identified(&[(&program, &ids)], &[])
 }
 
-/// A free fn, a method, an authored hook and a mode, each calling one
-/// helper.
+/// A free fn, two methods and an authored hook, the methods each
+/// calling one helper.
 const MEMBERS: &str = r#"
         fn helper(n: Int) -> Int { return n + 1; }
         locus W {
             params { n: Int = 0; }
             birth { self.n = helper(1); }
             fn step(k: Int) -> Int { return helper(k); }
-            mode bulk() { }
+            fn idle() { }
         }
         fn main() { W { }; }
     "#;
 
 /// Each row's key names the declaration it was walked from: a free fn,
-/// a method, an authored hook and a mode, by their own sites.
+/// a method and an authored hook, by their own sites.
 #[test]
 fn every_row_is_keyed_by_its_declarations_site() {
     let (program, ids) = minted(MEMBERS);
@@ -61,7 +61,6 @@ fn every_row_is_keyed_by_its_declarations_site() {
                     let (name, id) = match m {
                         hale_syntax::ast::LocusMember::Fn(f) => (f.name.name.clone(), f.id),
                         hale_syntax::ast::LocusMember::Lifecycle(lc) if !lc.synthesized => ("birth".to_string(), lc.id),
-                        hale_syntax::ast::LocusMember::Mode(md) => ("bulk".to_string(), md.id),
                         _ => continue,
                     };
                     expected.push((format!("{}::{}", l.name.name, name), DeclId::user(id).expect("minted")));
@@ -104,9 +103,6 @@ fn the_models_functions_carry_their_declarations_site() {
                         }
                         hale_syntax::ast::LocusMember::Lifecycle(lc) if !lc.synthesized => {
                             sites.insert("W::birth".to_string(), lc.id.0);
-                        }
-                        hale_syntax::ast::LocusMember::Mode(md) => {
-                            sites.insert("W::bulk".to_string(), md.id.0);
                         }
                         _ => {}
                     }

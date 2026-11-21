@@ -20,7 +20,7 @@ pub use hale_graph::ids::SeedId;
 pub use hale_graph::provenance::{ProvenanceId, SourceId};
 
 table_id!(
-    /// A function, method, lifecycle hook, or mode body.
+    /// A function, method, lifecycle hook, or failure handler body.
     FunctionId
 );
 table_id!(

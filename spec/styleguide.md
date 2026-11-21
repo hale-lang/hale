@@ -39,7 +39,7 @@ one-table summary of what the compiler checks for you.
 > loci-in-waiting — the smallest growth stage on the locus
 > gradient.
 
-If a thing has lifecycle, contracts, bus participation, modes,
+If a thing has lifecycle, contracts, bus participation,
 closures, capacity slots, or projection class, it is a
 fully-grown **locus**. If it is pure data (record, returnable by
 value, no flow), it is a **type**. The two are points on one
@@ -443,7 +443,7 @@ locus DbConnection {
   failure and the caller's `or` says what happens next: here, nothing
   is published.
 - The two-channel rule: substrate-facing surfaces (lifecycle,
-  modes, closure assertions, bus handlers) cannot declare
+  closure assertions, bus handlers) cannot declare
   `fallible(E)`; user-declared `fn` members and free fns can.
   See `spec/decisions.md` F.27.
 - Loci whose methods can't return through the value channel use

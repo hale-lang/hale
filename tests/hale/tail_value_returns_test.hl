@@ -3,7 +3,7 @@
 // carry it to their leaves, so each of these returns what its last
 // statement yields, for every kind of result: `Int`, `String`, a
 // record, an enum, a `Decimal<S>`; in a free fn, a locus method, a
-// fallible fn and a mode. `while true` with no `break` never reaches
+// fallible fn and a locus method. `while true` with no `break` never reaches
 // the end. Each of these passed `hale check` and was refused by
 // `hale build` as falling through, with no file or line.
 
@@ -94,7 +94,7 @@ locus Namer {
 locus Box {
     params { k: Int; }
 
-    mode bulk() -> String {
+    fn bulk() -> String {
         match self.k { 0 -> "empty", _ -> "full" }
     }
 }
@@ -131,7 +131,7 @@ fn main() {
     std::test::assert_eq_int(n.pt(5).x, 5, "a locus method's trailing block of a record");
 
     let full = Box { k: 1 };
-    std::test::assert_eq_str(full.bulk(), "full", "a mode's tail match");
+    std::test::assert_eq_str(full.bulk(), "full", "a method's tail match");
     let empty = Box { k: 0 };
     std::test::assert_eq_str(empty.bulk(), "empty", "its other arm");
 }

@@ -606,7 +606,6 @@ fn estimate_locus(
     for member in &locus.members {
         let body_opt = match member {
             LocusMember::Lifecycle(lc) => Some(&lc.body),
-            LocusMember::Mode(md) => Some(&md.body),
             LocusMember::Fn(fd) => Some(&fd.body),
             LocusMember::Failure(ff) => Some(&ff.body),
             _ => None,

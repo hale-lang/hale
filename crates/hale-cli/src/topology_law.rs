@@ -435,7 +435,7 @@ impl RefContext {
                         .ok_or("law.fn_universe[*].kind")?;
                     if !matches!(
                         kind,
-                        "hook" | "method" | "free" | "mode"
+                        "hook" | "method" | "free"
                             | "failure"
                     ) {
                         return Err(format!(

@@ -118,7 +118,7 @@ body that returns nothing is that `if` statement. (GH #2016; until then
 the check passed these and the build refused the call as having no
 binding.)
 
-A **fn-shaped body** (free fn, locus method, mode) with a
+A **fn-shaped body** (free fn, locus method) with a
 declared return type treats its trailing expression as an
 implicit `return`: `fn double(n: Int) -> Int { let d = n * 2;
 d }` returns `d` (2026-08-11 — previously the typechecker
@@ -140,7 +140,7 @@ an `if` or a block: its arms and tails carry the value down, each leaf a
 return (§ "Definite return", below).
 
 Such a body returns nothing, so a `return` in it carries no value: a
-`return <expr>;` in a fn or mode with no `-> T` (a fallible fn's
+`return <expr>;` in a fn with no `-> T` (a fallible fn's
 success type is then `()`) or in a lifecycle hook (`birth`, `run`,
 `accept`, `drain`, …) is a type error at the value, a call with no
 value of its own included (`return touch() or fail err;` in a
@@ -150,8 +150,8 @@ exit").
 
 ```text
 main.hl:1:66: type error: `return` carries a value, but this body
-returns nothing: a fn or mode with no `-> T`, or a lifecycle hook,
-which never returns a value. Declare the return type (`fn f() -> T`),
+returns nothing: a fn with no `-> T`, or a lifecycle hook, which
+never returns a value. Declare the return type (`fn f() -> T`),
 or write `return;`.
 ```
 
@@ -490,8 +490,8 @@ introduces no `Option` (F.52). No keyword is added.
 
 ## Definite return
 
-A body with a declared return type (a fn, a locus method, a mode with
-`-> T`, a fallible fn with a success type) returns a value on every
+A body with a declared return type (a fn, a locus method, a fallible
+fn with a success type) returns a value on every
 path that reaches its end.
 
 **The result position.** Its tail is its value (above), and when its
@@ -1034,7 +1034,7 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    at all reaches no subscription of it; `hale check` warns where it
    can see one in a body.
 5. `birth(args)` runs synchronously.
-6. Modes are reachable for invocation.
+6. Its `fn` members are reachable for invocation.
 7. If `run` declared, scheduled to run on the locus's
    scheduler. For a locus placed `pinned` or on a
    cooperative pool other than `main`, "scheduled" means
@@ -1824,13 +1824,10 @@ self.reg.counter("ticks").inc();   // would leak per call
 The `counter()` method declaration is the rejection site. The
 diagnostic names three canonical alternatives:
 
-**Mode keywords in contract names:** mode names
-(`bulk` / `harmonic` / `resolution`) are admitted in expose-entry
-position — `expose bulk: Float;` — making the exposed-mode pull
-rule below expressible (it was a parse error before). The exposed
-type is checked against the mode's declared return; expose entries
-in general must bind a real params field, mode, or fn member at a
-matching type (M3 stage 4).
+**Expose entries bind what the locus declares:** an `expose` entry
+must bind a real params field or `fn` member at a matching type (M3
+stage 4); an entry named like a method is checked against its
+declared return.
 
 1. **Parent-child + contract reads.** `Counter` becomes an
    accepted child of `Registry`; `Registry` reads counter
@@ -1925,7 +1922,7 @@ catch:
 - **Methods returning nothing.** Commands stay commands.
 - **Namespace-lotus pattern.** `__StdLangLang.parse(src) -> Int`
   is fine — the locus's methods return data, not loci.
-- **Lifecycle / mode / failure handler bodies.** These don't
+- **Lifecycle / failure handler bodies.** These don't
   have value-bearing return types.
 
 #### Migration
@@ -2012,8 +2009,8 @@ reveal to that one use, on the path `hale check`, `build`, `run` and
 `test` share. **A revealed secret is consumed in the statement that
 reveals it:**
 
-- A reveal is called in a **locus method** (a fn, lifecycle method,
-  mode or `on_failure` of a locus), never a free fn, a constant, a param
+- A reveal is called in a **locus method** (a fn, lifecycle method
+  or `on_failure` of a locus), never a free fn, a constant, a param
   default or any other place.
 - Its value reaches a **consumer** within the same statement:
   - the **payload** of a wire write: the data argument of
@@ -2673,21 +2670,6 @@ make("q") }`, in a body, a default, or another factory — is owned
 by that literal: the literal is the construction site, so this is
 not the ambiguous store above, and the frame that made the call
 does not reclaim the result at its exit (dna/FRICTION.md F.17).
-
-## Mode invocation
-
-`self.bulk()` / `self.harmonic()` / `self.resolution()` invoke
-mode declarations. Modes are:
-
-- Synchronous functions taking the receiver as implicit
-  argument.
-- Read/write the locus's arena directly (no copies).
-- Compiled to per-projection-class implementations.
-
-Mode invocation from outside the locus (e.g., `child.bulk()`
-from a parent) is permitted iff `bulk` is contract-exposed
-on the child; goes through the contract's typed surface (per
-F.14).
 
 ## Topic declarations
 
@@ -5793,8 +5775,8 @@ shadows one; see `types.md` § Reserved member names.
 
 Allowed everywhere else that has `self`: named locus method
 bodies, bus-handler methods (`subscribe X as foo` → `fn foo`),
-`run()`, lifecycle methods (`birth()`, `dissolve()`, `drain()`),
-mode-method bodies. The same body shape gets the same primitive.
+`run()`, lifecycle methods (`birth()`, `dissolve()`, `drain()`).
+The same body shape gets the same primitive.
 
 ## Recovery primitives
 
@@ -6258,8 +6240,6 @@ sites. The mapping is canonical, not advisory:
     there's no caller frame in user code to address a value
     error. Physically rejected at the AST level
     (`LifecycleDecl` carries no `fallible` field).
-  - **Mode methods** (`bulk` / `harmonic` / `resolution`).
-    Same shape: AST doesn't carry the field.
   - **Closure assertions.** Substrate evaluates the
     assertion at the epoch boundary; there's no caller in
     the expression's frame to address a value error.
@@ -6277,7 +6257,7 @@ sites. The mapping is canonical, not advisory:
 The rule is **two-channel separation at substrate-facing
 surfaces**, not "no fallible on any locus method." The
 load-bearing constraint is *who's the caller* — when the
-substrate orchestrates a method (lifecycle, mode, closure
+substrate orchestrates a method (lifecycle, closure
 assertion, bus handler) there's no caller frame to address
 the error channel, so `fallible(E)` would describe a
 contract that cannot be satisfied. User-declared `fn`

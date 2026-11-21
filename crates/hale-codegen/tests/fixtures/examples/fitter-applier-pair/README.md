@@ -80,9 +80,6 @@ Acknowledged gaps that are real but out of scope:
 
 - `self.children` iteration. fitter/applier-pair's coordination is
   bus-mediated, not parent-child.
-- Mode declarations (`bulk` / `harmonic` / `resolution`).
-  Fitter and applier are single-mode loci; modes serve
-  internal kernel projection.
 - `accept` lifecycle. No parent-child structure here.
 - Recovery primitives (`on_failure` handlers). Failures
   bubble to runtime root.

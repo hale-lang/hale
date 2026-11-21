@@ -1,22 +1,15 @@
-// 50-mode-defaults — m54: default param values on locus mode
+// 50-method-defaults — m54: default param values on locus
 // methods.
 //
 // m32 shipped defaults on free fns; m34 extended them to locus
-// `fn` methods called via `self.method(...)`. Modes
-// (`bulk` / `harmonic` / `resolution`) had been left out at
-// codegen-declare time with a "not yet lowered" rejection. The
-// CHECKPOINT polish entry blamed F.10 for a "tighter param
-// surface", but F.10 only governs mode-keyword-as-member-name
-// parsing — not param shape. Modes ARE just locus methods named
-// after their kind, and `lower_self_method_call` already routes
-// Fn and Mode through the same default-fill-in path. The only
-// thing m54 changes is lifting the codegen-declare rejection
-// (replaced with the same suffix-only ordering check the locus
-// `fn` path already uses).
+// `fn` methods called via `self.method(...)`. This example was
+// `50-mode-defaults`, written when m54 lifted the same defaults
+// onto locus modes; modes were removed (spec/decisions.md F.61)
+// and its two modes are the `fn` members below.
 //
 // What this example exercises:
 //
-//   mode bulk(scale: Int = 10) -> Int — caller can omit `scale`,
+//   fn bulk(scale: Int = 10) -> Int — caller can omit `scale`,
 //   the call site fills the default at call-site lowering time
 //   (same flow as free-fn defaults: literal defaults reduce to
 //   constants, expressions evaluate at the call site in caller
@@ -30,14 +23,14 @@
 //     the override.
 //   - Calling `self.harmonic()` with zero args (harmonic has no
 //     params) still works — establishing that adding defaults
-//     to ONE mode doesn't break the others.
+//     to ONE method doesn't break the others.
 
 locus AggregatorL {
     params {
         items: [Int; 4] = [1, 2, 3, 4];
     }
 
-    mode bulk(scale: Int = 10) -> Int {
+    fn bulk(scale: Int = 10) -> Int {
         let mut sum: Int = 0;
         for i in 0..4 {
             sum = sum + self.items[i] * scale;
@@ -45,7 +38,7 @@ locus AggregatorL {
         return sum;
     }
 
-    mode harmonic() -> Int {
+    fn harmonic() -> Int {
         let mut count: Int = 0;
         for _ in 0..4 {
             count = count + 1;

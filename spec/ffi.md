@@ -36,7 +36,6 @@ Any other ABI string is rejected at parse time.
 The annotation is rejected on:
 
 - Locus methods (`locus L { fn ...; }`).
-- Mode bodies (`mode bulk { ... }`, `mode harmonic { ... }`, ...).
 - Interface method signatures.
 - Closure declarations.
 

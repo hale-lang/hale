@@ -30,7 +30,6 @@ pub enum SiteKind {
     Interface,
     Closure,
     Lifecycle,
-    Mode,
     Failure,
     Const,
     Group,
@@ -226,12 +225,6 @@ macro_rules! walk {
                         bound_params(& $($m)? ld.params, f);
                         opt_ty(& $($m)? ld.ret, f);
                         block(& $($m)? ld.body, f);
-                    }
-                    LocusMember::Mode(md) => {
-                        f(SiteKind::Mode, md.span, None, & $($m)? md.id);
-                        bound_params(& $($m)? md.params, f);
-                        opt_ty(& $($m)? md.ret, f);
-                        block(& $($m)? md.body, f);
                     }
                     LocusMember::Failure(fd) => {
                         f(SiteKind::Failure, fd.span, None, & $($m)? fd.id);

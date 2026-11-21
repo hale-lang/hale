@@ -162,10 +162,6 @@ impl Walk<'_> {
                 w.opt_ty(&ld.ret);
                 w.block(&ld.body);
             }),
-            LocusMember::Mode(md) => self.body(&md.params, |w| {
-                w.opt_ty(&md.ret);
-                w.block(&md.body);
-            }),
             LocusMember::Failure(fd) => self.body(&fd.params, |w| w.block(&fd.body)),
             LocusMember::Closure(cd) => {
                 if let Some(a) = &cd.assertion {

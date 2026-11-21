@@ -562,7 +562,6 @@ fn rewrite_locus(l: &mut LocusDecl, topics: &Topics, out: &mut Vec<TopicRewrite>
                 }
             }
             LocusMember::Lifecycle(lc) => rewrite_block(&mut lc.body, topics, out),
-            LocusMember::Mode(md) => rewrite_block(&mut md.body, topics, out),
             LocusMember::Fn(fd) => rewrite_block(&mut fd.body, topics, out),
             // An `on_failure` body publishes like any other (`Evt <- …;`
             // reporting the failure): left unrewritten, lowering met the
@@ -802,7 +801,6 @@ fn acc_items(items: &mut [TopDecl], w: &WireLayouts) {
                 for member in &mut l.members {
                     match member {
                         LocusMember::Lifecycle(lc) => acc_block(&mut lc.body, w),
-                        LocusMember::Mode(md) => acc_block(&mut md.body, w),
                         LocusMember::Fn(fd) => acc_block(&mut fd.body, w),
                         LocusMember::Failure(f) => acc_block(&mut f.body, w),
                         _ => {}
@@ -1396,9 +1394,6 @@ fn intra_rewrite_locus(
             LocusMember::Lifecycle(lc) => {
                 intra_rewrite_block(&mut lc.body, &locus_name, eligible, out);
             }
-            LocusMember::Mode(md) => {
-                intra_rewrite_block(&mut md.body, &locus_name, eligible, out);
-            }
             LocusMember::Fn(fd) => {
                 intra_rewrite_block(&mut fd.body, &locus_name, eligible, out);
             }
@@ -1687,7 +1682,6 @@ pub fn desugar_tail_returns(program: &mut Program) {
                     for m in &mut l.members {
                         match m {
                             LocusMember::Fn(f) => fn_body(f),
-                            LocusMember::Mode(md) if md.ret.is_some() => body(&mut md.body),
                             _ => {}
                         }
                     }

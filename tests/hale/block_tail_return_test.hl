@@ -5,8 +5,8 @@
 // returning a value", which is exactly the divergence that lets a
 // checked-green lib fail to ship).
 //
-// Covers the three fn-shaped surfaces that declare return types:
-// free fns, locus methods, and modes — plus a tail behind an early
+// Covers the fn-shaped surfaces that declare return types:
+// free fns and locus methods — plus a tail behind an early
 // explicit return, and a fallible fn whose ok path is a tail.
 
 fn double(n: Int) -> Int {
@@ -41,11 +41,14 @@ locus Mx { capacity { heap cells of Float; } }
 
 locus Box {
     params { }
-    mode bulk() -> Mx {
-        let out = Mx { };
-        out.push(7.5);
-        out
-    }
+}
+
+// A locus-valued tail return, in the free fn over the locus that a
+// locus `mode` returning one migrated to (spec/decisions.md F.61).
+fn bulk(b: Box) -> Mx {
+    let out = Mx { };
+    out.push(7.5);
+    out
 }
 
 fn main() {
@@ -59,7 +62,7 @@ fn main() {
     std::test::assert_eq_int(c.doubled(), 8, "locus method tail return");
 
     let b = Box { };
-    let m = b.bulk();
-    std::test::assert_eq_int(m.len(), 1, "mode tail return survives");
-    std::test::assert((m.get(0) or 0.0) == 7.5, "mode tail return carries its cell");
+    let m = bulk(b);
+    std::test::assert_eq_int(m.len(), 1, "locus-valued tail return survives");
+    std::test::assert((m.get(0) or 0.0) == 7.5, "locus-valued tail return carries its cell");
 }

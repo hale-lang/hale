@@ -6,7 +6,7 @@
 // inkwell at build (downstream handoff, found building the API runtime).
 //
 // Covers a method, a free fn, a method returning a `Time` field, a
-// `fallible(E)` method, a mode, and the call as a direct operand.
+// `fallible(E)` method, a second method, and the call as a direct operand.
 
 type E { kind: String; }
 
@@ -30,7 +30,7 @@ locus Clock {
         return self.base + 1s;
     }
 
-    mode bulk() -> Time {
+    fn bulk() -> Time {
         return self.base;
     }
 }
@@ -42,7 +42,7 @@ fn main() {
     std::test::assert(c.start() == Time(3ns), "method returning a Time field");
     std::test::assert((c.checked(true) or Time(0ns)) == Time(3ns) + 1s, "fallible ok path");
     std::test::assert((c.checked(false) or Time(0ns)) == Time(0ns), "fallible fail path");
-    std::test::assert(c.bulk() == Time(3ns), "mode returning a Time");
+    std::test::assert(c.bulk() == Time(3ns), "method returning a Time, compared");
 
     let t = c.at(1s);
     std::test::assert(t == Time(3ns) + 1s, "bound result");

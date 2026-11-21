@@ -69,7 +69,6 @@
 - [Zero-Allocation Hot Paths](./systems/performance.md)
 - [Collection Forms Internals](./systems/forms.md)
 - [Zero-Copy Shared-Memory Bus](./systems/zero-copy-bus.md)
-- [Execution Modes (`bulk`, `harmonic`, `resolution`)](./systems/modes.md)
 - [C Interoperability (`@ffi("c")`)](./systems/binding-c.md)
 - [WebAssembly & Browser Targets](./systems/webassembly.md)
 - [Production Operations & Runtime Knobs](./systems/operations.md)
