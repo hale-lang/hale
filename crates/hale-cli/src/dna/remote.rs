@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
-use super::{default_habitat_image_tag, face_state_dir, head_url_file, http_surface_call, manifest_pin_in_text, usage_text, HABITAT_PIN, HALE_GIT};
+use super::{default_habitat_image_tag, face_state_dir, published_image, head_url_file, http_surface_call, manifest_pin_in_text, usage_text, HABITAT_PIN, HALE_GIT};
 use crate::dna::local_habitat_dir;
 
 /// The pointer's file, in the local habitat's directory.
@@ -460,15 +460,16 @@ fn tag_commit(ls_remote: &str, tag: &str) -> Option<String> {
 }
 
 /// Whether this toolchain is the build of its version's release: the
-/// release tag `v<version>` on the toolchain's repository names this
-/// build's commit. A build from any other commit shares the version string
-/// and is never one; so is any build when the tag cannot be read.
+/// release tag `v<version>` on the toolchain's repository (a nightly's,
+/// its `nightly-YYYY-MM-DD` tag) names this build's commit. A build from
+/// any other commit shares the version string and is never one; so is any
+/// build when the tag cannot be read.
 fn is_release_build() -> bool {
     let pin = HABITAT_PIN.trim();
     if pin.is_empty() {
         return false;
     }
-    let tag = format!("v{}", env!("CARGO_PKG_VERSION"));
+    let tag = super::hosted::release_tag(env!("CARGO_PKG_VERSION"));
     let out = Command::new("git")
         .args(["ls-remote", HALE_GIT, &format!("refs/tags/{tag}"), &format!("refs/tags/{tag}^{{}}")])
         .stdin(Stdio::null())
@@ -518,7 +519,7 @@ fn ensure_image(t: &Target, tag: &str) -> Result<String, String> {
         _ => String::new(),
     };
     if matches!(route, ImageRoute::Pull { .. }) {
-        let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
+        let published = published_image();
         super::progress(&format!("pulling {published} on {}{mismatch}", t.host));
         let ours = Command::new(std::env::current_exe().map_err(|e| e.to_string())?).arg("--version").output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
         let theirs = t.run(&format!("docker pull -q --platform {m} {p} >/dev/null 2>&1 && docker run --rm --platform {m} --entrypoint hale {p} --version", p = sq(&published), m = sq(&machine))).map(|s| s.trim().to_string()).unwrap_or_default();

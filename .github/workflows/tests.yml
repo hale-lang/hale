@@ -636,6 +636,10 @@ jobs:
             docker pull "ghcr.io/hale-lang/${pair%%=*}"
             docker tag "ghcr.io/hale-lang/${pair%%=*}" "${pair#*=}"
           done
+          # a fixture names this one by its mirror (dna::TEST_BUSYBOX); it is
+          # pulled here because some start it over SSH, through a docker CLI
+          # that holds no login to ghcr.io (GH #2141)
+          docker pull ghcr.io/hale-lang/ci-busybox:1.36
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
@@ -927,6 +931,10 @@ jobs:
             docker pull "ghcr.io/hale-lang/${pair%%=*}"
             docker tag "ghcr.io/hale-lang/${pair%%=*}" "${pair#*=}"
           done
+          # a fixture names this one by its mirror (dna::TEST_BUSYBOX); it is
+          # pulled here because some start it over SSH, through a docker CLI
+          # that holds no login to ghcr.io (GH #2141)
+          docker pull ghcr.io/hale-lang/ci-busybox:1.36
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
@@ -1071,6 +1079,10 @@ jobs:
             docker pull "ghcr.io/hale-lang/${pair%%=*}"
             docker tag "ghcr.io/hale-lang/${pair%%=*}" "${pair#*=}"
           done
+          # a fixture names this one by its mirror (dna::TEST_BUSYBOX); it is
+          # pulled here because some start it over SSH, through a docker CLI
+          # that holds no login to ghcr.io (GH #2141)
+          docker pull ghcr.io/hale-lang/ci-busybox:1.36
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 
@@ -1255,6 +1267,10 @@ jobs:
             docker pull "ghcr.io/hale-lang/${pair%%=*}"
             docker tag "ghcr.io/hale-lang/${pair%%=*}" "${pair#*=}"
           done
+          # a fixture names this one by its mirror (dna::TEST_BUSYBOX); it is
+          # pulled here because some start it over SSH, through a docker CLI
+          # that holds no login to ghcr.io (GH #2141)
+          docker pull ghcr.io/hale-lang/ci-busybox:1.36
       - name: Start NATS (JetStream)
         run: docker run -d --name nerves -p 127.0.0.1:4222:4222 nats:2 -js
 

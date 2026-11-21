@@ -83,6 +83,18 @@ pub(crate) fn default_habitat_image_tag(pin: &str) -> String {
     format!("hale-habitat:{}", &pin[..12.min(pin.len())])
 }
 
+/// This toolchain's published image, `ghcr.io/hale-lang/hale:<version>`. A
+/// nightly's version carries its commit as build metadata
+/// (`0.37.1-nightly.20261121+8fd8d68`), and a docker tag holds no `+`: the
+/// nightly workflow publishes it with `-` there, so this names it the same way.
+pub(super) fn published_image() -> String {
+    published_image_of(env!("CARGO_PKG_VERSION"))
+}
+
+fn published_image_of(version: &str) -> String {
+    format!("ghcr.io/hale-lang/hale:{}", version.replace('+', "-"))
+}
+
 pub(crate) fn default_habitat_image() -> String {
     default_habitat_image_tag(HABITAT_PIN)
 }
@@ -3161,7 +3173,7 @@ fn habitat_address() -> String {
 /// name, or `None` (none published, unreachable, or another build), when
 /// compose builds the image instead.
 fn pull_published(tag: &str) -> Option<String> {
-    let published = format!("ghcr.io/hale-lang/hale:{}", env!("CARGO_PKG_VERSION"));
+    let published = published_image();
     let ours = Command::new(std::env::current_exe().ok()?).arg("--version").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())?;
     progress(&format!("pulling {published}, this release's image"));
     if !matches!(docker(&["pull", "-q", &published]), Docker::Answered(_)) {
@@ -4905,6 +4917,14 @@ fn manifest_pin_in_text(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::grafana_restart_due;
+
+    #[test]
+    fn a_nightlys_published_image_is_tagged_without_its_plus() {
+        use super::published_image_of;
+        assert_eq!(published_image_of("0.37.0"), "ghcr.io/hale-lang/hale:0.37.0");
+        // nightly.yml tags the image `<version>` with `+` as `-`
+        assert_eq!(published_image_of("0.37.1-nightly.20261121+8fd8d68"), "ghcr.io/hale-lang/hale:0.37.1-nightly.20261121-8fd8d68");
+    }
 
     #[test]
     fn up_on_host_local_is_up_here() {

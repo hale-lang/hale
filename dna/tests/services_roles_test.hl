@@ -36,7 +36,8 @@ fn main() {
     let started = dna::run_tool(
         "docker\nrun\n-d\n--label\ncom.docker.compose.project=" + dna::local_habitat_project()
             + "\n--label\ncom.docker.compose.service=" + service
-            + "\n-p\n127.0.0.1::8080\nbusybox:1.36\nsh\n-c\nwhile true; do echo served | nc -l -p 8080; done",
+            + "\n-p\n127.0.0.1::8080\n" + dna::TEST_BUSYBOX
+            + "\nsh\n-c\nwhile true; do echo served | nc -l -p 8080; done",
     );
     let server = dna::trim_nl(started.stdout);
     std::test::assert(
@@ -47,7 +48,10 @@ fn main() {
     // on a network its file names, each saying what it was handed
     std::io::fs::write_file(
         scratch + "/compose.yaml",
-        "services:\n  client:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n    environment:\n      SEEN_DSN: \"${HALE_DNA_DATABASE_DSN:-unset}\"\n    volumes:\n      - \"${HALE_VAULT_DIR:-./no-vault}:/vault:ro\"\n  inner:\n    image: busybox:1.36\n    command: [\"sleep\", \"3600\"]\n    networks: [backend]\nnetworks:\n  backend: {}\n",
+        "services:\n  client:\n    image: " + dna::TEST_BUSYBOX
+            + "\n    command: [\"sleep\", \"3600\"]\n    environment:\n      SEEN_DSN: \"${HALE_DNA_DATABASE_DSN:-unset}\"\n    volumes:\n      - \"${HALE_VAULT_DIR:-./no-vault}:/vault:ro\"\n  inner:\n    image: "
+            + dna::TEST_BUSYBOX
+            + "\n    command: [\"sleep\", \"3600\"]\n    networks: [backend]\nnetworks:\n  backend: {}\n",
     ) or discard;
     // the role's vault entry, in the vault the habitat copies from
     let entry = "postgres-heart_5e5e" + pid;

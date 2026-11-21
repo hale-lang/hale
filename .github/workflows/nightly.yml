@@ -1,0 +1,132 @@
+name: nightly
+
+# A nightly build of main, once a day when main has moved: the same
+# tarballs a release ships (build-binaries.yml) as a GitHub pre-release
+# tagged `nightly-YYYY-MM-DD`, and the same multi-arch image
+# (build-image.yml) as ghcr.io/hale-lang/hale:nightly-YYYYMMDD and the
+# moving :nightly. Releases are the milestones; nightlies carry main's
+# day-to-day changes in between.
+#
+#   - The version: `<next>-nightly.<YYYYMMDD>+<commit>`, `<next>` being
+#     Cargo.toml's version with the patch bumped. It is CARGO_PKG_VERSION in
+#     the build, so `hale --version`, the lock's `[dna] toolchain` and the
+#     image a habitat pulls all name the nightly.
+#   - A tag is never moved: a second nightly on one day (a dispatch after
+#     the schedule, say) is `nightly-YYYY-MM-DD.2`, version
+#     `…-nightly.<YYYYMMDD>.2+<commit>`, image `nightly-YYYYMMDD.2`.
+#   - The newest 14 nightly pre-releases are kept, with their tags; older
+#     ones are deleted. Nothing named `v*` is touched, and the image's
+#     `latest` stays the newest release's.
+#   - install.sh: `HALE_VERSION=nightly` is the newest nightly,
+#     `HALE_VERSION=nightly-2026-11-21` that one.
+#
+# The steps are scripts/nightly.sh, which runs by hand as well.
+
+on:
+  schedule:
+    # 09:23 UTC: off the hour, which GitHub's scheduler delays most
+    - cron: "23 9 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even when main has not moved since the newest nightly
+        type: boolean
+        default: false
+
+# One nightly at a time, and never one cancelled for the next: a run that
+# has started publishing finishes.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+      tag: ${{ steps.plan.outputs.tag }}
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+      image_tags: ${{ steps.plan.outputs.image_tags }}
+      image_labels: ${{ steps.plan.outputs.image_labels }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Has main moved since the newest nightly
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || false }}
+        run: scripts/nightly.sh plan
+
+  binaries:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    uses: ./.github/workflows/build-binaries.yml
+    permissions:
+      contents: read
+    with:
+      name: ${{ needs.plan.outputs.tag }}
+      version: ${{ needs.plan.outputs.version }}
+
+  image:
+    needs: plan
+    if: needs.plan.outputs.build == 'true'
+    uses: ./.github/workflows/build-image.yml
+    permissions:
+      contents: read
+      packages: write
+    with:
+      version: ${{ needs.plan.outputs.version }}
+      tags: ${{ needs.plan.outputs.image_tags }}
+      labels: ${{ needs.plan.outputs.image_labels }}
+      # never `latest`: that is the newest release's
+      flavor: latest=false
+
+  # Published only when both halves built: the pre-release is what the next
+  # run's plan reads as "built", so a run whose image failed builds again.
+  publish:
+    needs: [plan, binaries, image]
+    if: needs.plan.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          # the notes list the PRs merged since the previous nightly
+          fetch-depth: 0
+
+      - name: Download the tarballs
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: hale-*
+          merge-multiple: true
+
+      - name: Create the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          scripts/nightly.sh notes "$TAG" "$VERSION" "$SHA" > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+          gh release create "$TAG" dist/*.tar.gz dist/*.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$SHA" \
+            --prerelease \
+            --latest=false \
+            --title "hale $VERSION" \
+            --notes-file notes.md
+
+      - name: Prune nightlies beyond the newest 14
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/nightly.sh prune

@@ -13,7 +13,18 @@ curl -fsSL https://hale-lang.org/install.sh | sh
 ```
 
 - Set `HALE_INSTALL=/custom/dir` to change the installation directory.
-- Set `HALE_VERSION=v0.37.0` to pin a specific version.
+- Set `HALE_VERSION=v0.37.0` to pin a specific version, or `HALE_VERSION=nightly` for the newest [nightly build](#nightly-builds).
+
+### Nightly Builds
+
+Releases are milestones. Between them, a **nightly build** of `main` is published every day that `main` has changed: the same archives as a release, as a GitHub pre-release tagged `nightly-YYYY-MM-DD`, and the same image as `ghcr.io/hale-lang/hale:nightly-YYYYMMDD` (`:nightly` is always the newest). A nightly reports its own version, such as `hale 0.37.1-nightly.20261121+8fd8d68`: the next release's version, the day, and the commit it was built from.
+
+```sh
+curl -fsSL https://hale-lang.org/install.sh | HALE_VERSION=nightly sh              # the newest nightly
+curl -fsSL https://hale-lang.org/install.sh | HALE_VERSION=nightly-2026-11-21 sh   # that day's
+```
+
+The newest 14 nightlies are kept. A nightly has had the full test suite (nothing reaches `main` without it) but none of a release's settling, and its changes are listed in its release notes rather than in `CHANGELOG.md` until the next release folds them in. Without `HALE_VERSION`, the script installs the latest release, never a nightly.
 
 ### Manual Archive Installation
 
