@@ -1381,6 +1381,7 @@ fn walk_bundle(
         generic_bindings: BTreeMap::new(),
         specializing: None,
         dot_bound: Vec::new(),
+        dot_resolution: std::collections::HashMap::new(),
         block_may_leave: false,
         next_handling: crate::typed_bodies::Handling::Bare,
         handling: crate::typed_bodies::Handling::Bare,
@@ -11583,6 +11584,9 @@ struct Checker<'a> {
     /// type the shadowing desugar could not see, calls the binding
     /// (`TypingRecord::binding_calls`).
     dot_bound: Vec<(usize, std::collections::BTreeSet<String>)>,
+    /// GH #2069: the enum each `.Variant` pattern of this walk resolved to,
+    /// by its span: what its bindings' types are read from.
+    dot_resolution: std::collections::HashMap<(u32, u32), String>,
     /// Set by a consumer that supplies a value of its own when the block
     /// it is about to check leaves (an `if` expression's arm, with the
     /// other arm; an `or { … }` substitute, with the call's success) for
@@ -17975,10 +17979,13 @@ impl<'a> Checker<'a> {
                     self.note_view_pattern(a, ty);
                 }
             }
-            // GH #2069: one the match's resolution left (refused there)
-            Pattern::DotVariant { args, .. } => {
-                for a in args {
-                    self.note_view_pattern(a, &Ty::Unknown);
+            // GH #2069: as the `E::Variant` it resolved to
+            // (`dot_variant_fields`), or refused there
+            Pattern::DotVariant { variant, args, span } => {
+                let fields = self.dot_variant_fields(*span, &variant.name);
+                for (i, a) in args.iter().enumerate() {
+                    let t = fields.get(i).cloned().unwrap_or(Ty::Unknown);
+                    self.note_view_pattern(a, &t);
                 }
             }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
@@ -18038,7 +18045,10 @@ impl<'a> Checker<'a> {
     fn check_match_core(&mut self, stmt: &MatchStmt, as_expr: bool) -> Ty {
         let scrut_ty = self.check_expr(&stmt.scrutinee);
         // GH #2069 (F.58): a `.Variant` an arm writes is `E::Variant`, `E`
-        // the scrutinee's enum; every rule below reads the match as that.
+        // the scrutinee's enum; every rule about the arms' patterns reads
+        // the match as that (`stmt`, a copy of its patterns). The arms'
+        // bindings, guards and bodies are typed where they are written
+        // (`written`), so every row keyed by a node is the program's own.
         let resolved = self.resolve_dot_variants(stmt, &scrut_ty);
         let written = stmt;
         let stmt = resolved.as_ref().unwrap_or(stmt);
@@ -18047,7 +18057,8 @@ impl<'a> Checker<'a> {
         // Arms that disagree make the match's type unknown, as an `if`
         // expression's do, so its consumer adds no refusal of its own.
         let mut mismatched = false;
-        for (arm_index, arm) in stmt.arms.iter().enumerate() {
+        for (arm_index, arm) in written.arms.iter().enumerate() {
+            let resolved_pattern = &stmt.arms[arm_index].pattern;
             // GH #721: an arm's pattern BINDS — `v`, `(a, b)`,
             // `Event::Tick(n)` — and the binders are in scope for the
             // guard and the body (codegen's `bindings` vector does
@@ -18061,26 +18072,22 @@ impl<'a> Checker<'a> {
             // GH #2069: the names this arm binds through a `.Variant`
             // pattern, whose payload types the shadowing desugar may not
             // have seen (`Checker::dot_bound`).
-            let dot_names: std::collections::BTreeSet<String> = written
-                .arms
-                .get(arm_index)
-                .map(|w| {
-                    let mut names = Vec::new();
-                    for alt in w.pattern.alternatives() {
-                        if matches!(alt, Pattern::DotVariant { .. }) {
-                            pattern_binders(alt, &mut names);
-                        }
+            let dot_names: std::collections::BTreeSet<String> = {
+                let mut names = Vec::new();
+                for alt in arm.pattern.alternatives() {
+                    if matches!(alt, Pattern::DotVariant { .. }) {
+                        pattern_binders(alt, &mut names);
                     }
-                    names.into_iter().map(str::to_string).collect()
-                })
-                .unwrap_or_default();
+                }
+                names.into_iter().map(str::to_string).collect()
+            };
             let dot_frame = !dot_names.is_empty();
             if dot_frame {
                 self.dot_bound.push((self.locals.frames.len() - 1, dot_names));
             }
             // GH #1995 E2: each alternative of an or-pattern is checked
             // as the arm's whole pattern would be.
-            for alt in arm.pattern.alternatives() {
+            for alt in resolved_pattern.alternatives() {
                 self.check_set_pattern(alt, &scrut_ty);
                 self.check_bare_variant_pattern(alt, &scrut_ty);
                 self.check_pattern_variants(alt);
@@ -20019,10 +20026,13 @@ impl<'a> Checker<'a> {
                     self.pattern_binding_types(first, ty, out);
                 }
             }
-            // GH #2069: one the match's resolution left (refused there)
-            Pattern::DotVariant { args, .. } => {
-                for a in args {
-                    self.pattern_binding_types(a, &Ty::Unknown, out);
+            // GH #2069: as the `E::Variant` it resolved to
+            // (`dot_variant_fields`), or refused there
+            Pattern::DotVariant { variant, args, span } => {
+                let fields = self.dot_variant_fields(*span, &variant.name);
+                for (i, a) in args.iter().enumerate() {
+                    let t = fields.get(i).cloned().unwrap_or(Ty::Unknown);
+                    self.pattern_binding_types(a, &t, out);
                 }
             }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
@@ -20318,6 +20328,19 @@ impl<'a> Checker<'a> {
         Err(DotRefusal::NotEnum(shown(name)))
     }
 
+    /// GH #2069: the declared value types of the variant `variant` of the
+    /// enum the `.Variant` pattern at `span` resolved to (in this walk),
+    /// as a constructor pattern's are read; none for one refused.
+    fn dot_variant_fields(&self, span: Span, variant: &str) -> Vec<Ty> {
+        let Some(e) = self.dot_resolution.get(&(span.start.0, span.end.0)) else { return Vec::new() };
+        match self.top.symbols.get(e) {
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                vs.iter().find(|v| v.name == variant).map(|v| v.fields.clone()).unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    }
+
     /// GH #2069: `p`, if it is a `.Variant`, made the `E::Variant` it means
     /// against the enum `target` names (and recorded), or refused.
     fn resolve_dot_variant(&mut self, p: &mut Pattern, target: &Result<(String, String, Vec<String>), DotRefusal>) {
@@ -20335,6 +20358,7 @@ impl<'a> Checker<'a> {
                     let enumeration = self.specializing.is_none().then(|| name.clone());
                     let row = crate::typed_bodies::VariantPattern { enumeration, variant: v.to_string() };
                     self.typed.variant_pattern(self.body, *span, row);
+                    self.dot_resolution.insert((span.start.0, span.end.0), name.clone());
                     let head = Ident::new(name.clone(), Span::new(span.start.as_usize(), span.start.as_usize() + 1));
                     *p = Pattern::Constructor {
                         path: QualifiedName { segments: vec![head, variant.clone()], span: *span },
