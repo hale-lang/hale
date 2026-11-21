@@ -704,11 +704,33 @@ pub struct TypedBody {
     /// RFC #2035: the `@display` template functions rendering each value
     /// calls, by the rendered value's span ([`CheckedCalls::renders`]).
     pub renders: BTreeMap<(u32, u32), Vec<String>>,
-    /// GH #2111: a generic body's expression types for each monomorph's
-    /// walk, by its type arguments, keyed as [`ExprTypes`]' rows are within
-    /// a body (span, kind, name). The template walk types a parameter's
-    /// values `Unknown`; these are what lowering reads in a monomorph.
-    pub specialized_exprs: Vec<(Vec<Ty>, std::collections::HashMap<(u32, u32, u8, u64), Ty>)>,
+    /// GH #2111: the body's expression types on the walks the `views`
+    /// column does not record, by [`ExprScope`] (a monomorph's walk, a
+    /// default's evaluation), keyed as [`ExprTypes`]' rows are within a
+    /// body (span, kind, name). The template walk types a parameter's
+    /// values `Unknown`, and the ordinary walk types a default where it is
+    /// declared, in no caller's scope; these are what lowering reads in a
+    /// monomorph and where it evaluates a default.
+    pub scoped_exprs: Vec<(ExprScope, std::collections::HashMap<(u32, u32, u8, u64), Ty>)>,
+}
+
+/// GH #2111: the walk an expression row of [`TypedBody::scoped_exprs`]
+/// was typed on: the monomorph's type arguments (`None` outside every
+/// specialization), and inside a default the evaluation path, as the
+/// `conversions` column keys it (the literal or call that leaves each
+/// default, outermost first; empty outside every default).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ExprScope {
+    pub args: Option<Vec<Ty>>,
+    pub path: Vec<u32>,
+}
+
+impl ExprScope {
+    /// Whether rows on this scope are the `views` column's (the ordinary
+    /// walk, outside every default and specialization).
+    pub fn is_views(&self) -> bool {
+        self.args.is_none() && self.path.is_empty()
+    }
 }
 
 /// How a raised error becomes the enclosing fn's (GH #1951, item 2):
@@ -775,6 +797,22 @@ fn checked_calls_of(bodies: &BTreeMap<u32, TypedBody>) -> CheckedCalls {
 pub struct Injection {
     pub set: String,
     pub member: String,
+}
+
+/// GH #2069 (F.58): the variant a `.Variant` pattern names, as the check
+/// resolved it against the value matched. Lowering reads it
+/// (`variant_pattern_in`) and names no enum from the spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantPattern {
+    /// The enum, by the name the check typed the value with (its declared,
+    /// merged name, an alias followed; a generic enum's instantiation, its
+    /// monomorph's). `None` for a pattern in a generic body against a value
+    /// of a type in its parameters: each walk per monomorph resolved it
+    /// against that monomorph's value (or refused it), so each
+    /// specialization's own value is its enum.
+    pub enumeration: Option<String>,
+    /// The variant's declared name.
+    pub variant: String,
 }
 
 /// What a monomorph's template is.
@@ -1216,7 +1254,7 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
         use hale_syntax::ast::Pattern;
         match p {
             Pattern::Binding(id) => out.push_name(id),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+            Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
                 args.iter().for_each(|a| pattern(a, out))
             }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
@@ -1334,6 +1372,12 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
     }
     let out = &mut W { body: NodeId(0), visit };
     match item {
+        // GH #2111: a constant's initializer, its own body, as lowering
+        // re-lowers it at a use (`Cx::in_const_body`)
+        TopDecl::Const(c) => {
+            out.body = c.id;
+            expr(&c.value, out);
+        }
         TopDecl::Fn(f) => {
             out.body = f.id;
             params(&f.params, out);
@@ -1361,6 +1405,16 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
                         out.body = d.id;
                         params(&d.params, out);
                         block(&d.body, out);
+                    }
+                    // GH #2111: a param's default, typed where the locus
+                    // declares it and lowered in the locus's own body
+                    LocusMember::Params(pb) => {
+                        out.body = l.id;
+                        for p in &pb.params {
+                            if let ParamInit::Value(init) = &p.init {
+                                expr(init, out);
+                            }
+                        }
                     }
                     // GH #2111: a closure's assertion, its own body
                     LocusMember::Closure(c) => {
@@ -1390,7 +1444,7 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
 /// sharing a span) are none, `Unknown`, which a reader takes as no row
 /// rather than guesses. A generic body's rows here are the template
 /// walk's, its parameters `Unknown`; a monomorph's are its own walk's
-/// ([`TypedBodies::specialized_expr`]). A literal and an operator have no
+/// ([`TypedBodies::scoped_expr`]). A literal and an operator have no
 /// row yet (the `views` column reads them by their shape).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExprTypes {
@@ -1550,12 +1604,26 @@ pub struct TypingRecord {
     /// ([`crate::receiver_calls::rewrite`]). Kept across discarded walks,
     /// as `ident_reads` is: a call resolves the same on every path.
     pub receiver_calls: BTreeMap<u32, Vec<String>>,
+    /// GH #2069 (F.58): each `.Variant` pattern's variant, by the body
+    /// declaring it and the pattern's span. Kept across discarded walks,
+    /// as `ident_reads` is: a pattern resolves the same on every path.
+    pub variant_patterns: BTreeMap<(u32, u32, u32), VariantPattern>,
+    /// GH #2069 (F.58): each call, by its node id, whose bare callee
+    /// names a fn value a `.Variant` arm binds where the shadowing desugar
+    /// could not see the variant's enum: the call is through the binding,
+    /// as `E::V(f)`'s is, and the snapshot writes it so
+    /// ([`crate::checked_rewrites`]). Kept across discarded walks.
+    pub binding_calls: std::collections::BTreeSet<u32>,
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,
     /// The injections the last closed walk recorded (GH #1530 step 1), for
     /// the walk's owner to keep ([`Self::take_walk_injections`]).
     walk_injections: Vec<(NodeId, ConversionSite, Injection)>,
+    /// GH #2111: the expression rows the last closed walk recorded on a
+    /// default's evaluation path, for the walk's owner to keep
+    /// ([`Self::take_walk_scoped_exprs`]).
+    walk_scoped_exprs: Vec<(NodeId, ExprScope, (u32, u32, u8, u64), Ty)>,
 }
 
 /// The record as an open walk found it, kept for what the walk writes
@@ -1600,6 +1668,21 @@ impl TypingRecord {
                     .map(move |(site, inj)| (NodeId(*decl), site.clone(), inj.clone()))
             })
             .collect();
+        // and the expression rows it recorded on a default's evaluation
+        // path, which lowering reads where it evaluates the default
+        self.walk_scoped_exprs = undo
+            .bodies
+            .iter()
+            .filter_map(|(decl, before)| Some((decl, before, self.bodies.get(decl)?)))
+            .flat_map(|(decl, before, now)| {
+                now.scoped_exprs.iter().filter(|(scope, _)| !scope.path.is_empty()).flat_map(move |(scope, rows)| {
+                    let held = before.as_ref().and_then(|b| b.scoped_exprs.iter().find(|(s, _)| s == scope)).map(|(_, r)| r);
+                    rows.iter()
+                        .filter(move |(key, _)| held.map_or(true, |h| !h.contains_key(*key)))
+                        .map(move |(key, ty)| (NodeId(*decl), scope.clone(), *key, ty.clone()))
+                })
+            })
+            .collect();
         let converted: Vec<_> = undo
             .conversion_sites
             .iter()
@@ -1624,6 +1707,12 @@ impl TypingRecord {
         put_back(&mut self.conversion_sites, undo.conversion_sites);
         self.monomorphs.truncate(undo.monomorphs);
         converted
+    }
+
+    /// The expression rows the last closed walk recorded on a default's
+    /// evaluation path, taken.
+    pub fn take_walk_scoped_exprs(&mut self) -> Vec<(NodeId, ExprScope, (u32, u32, u8, u64), Ty)> {
+        std::mem::take(&mut self.walk_scoped_exprs)
     }
 
     /// The injections the last closed walk recorded, taken.
@@ -1676,6 +1765,25 @@ impl TypingRecord {
             return;
         }
         self.receiver_calls.entry(call.0).or_insert(path);
+    }
+
+    /// GH #2069 (F.58): the `.Variant` pattern at `span` in the body `body`
+    /// names `pattern`. The first walk's answer stands (a generic body is
+    /// walked again per specialization).
+    pub fn variant_pattern(&mut self, body: NodeId, span: Span, pattern: VariantPattern) {
+        if body.is_none() {
+            return;
+        }
+        self.variant_patterns.entry((body.0, span.start.0, span.end.0)).or_insert(pattern);
+    }
+
+    /// GH #2069: the call `call` calls the fn value its callee's name binds
+    /// (`binding_calls`). A call the snapshot has not numbered is not
+    /// recorded.
+    pub fn binding_call(&mut self, call: NodeId) {
+        if !call.is_none() {
+            self.binding_calls.insert(call.0);
+        }
     }
 
     /// GH #1984: the call whose callee is at `callee` in the body `body` is
@@ -1843,20 +1951,20 @@ impl TypingRecord {
         rows[at].calls.insert(call.0, row);
     }
 
-    /// GH #2111: what a monomorph's walk (its type arguments `args`) typed
-    /// the expression `e` of `body`; two answers at one key are `Unknown`.
-    pub fn specialized_expr(&mut self, body: NodeId, args: &[Ty], e: &Expr, ty: Ty) {
+    /// GH #2111: what the walk on `scope` typed the expression `e` of
+    /// `body`; two answers at one key are `Unknown`.
+    pub fn scoped_expr(&mut self, body: NodeId, scope: &ExprScope, e: &Expr, ty: Ty) {
         let sp = e.span();
-        self.specialized_key(body, args, (sp.start.0, sp.end.0, expr_kind(e), expr_name(e)), ty);
+        self.scoped_key(body, scope, (sp.start.0, sp.end.0, expr_kind(e), expr_name(e)), ty);
     }
 
-    /// [`TypingRecord::specialized_expr`] by the row's key.
-    pub fn specialized_key(&mut self, body: NodeId, args: &[Ty], key: (u32, u32, u8, u64), ty: Ty) {
-        let rows = &mut self.body(body).specialized_exprs;
-        let at = match rows.iter().position(|(a, _)| a.as_slice() == args) {
+    /// [`TypingRecord::scoped_expr`] by the row's key.
+    pub fn scoped_key(&mut self, body: NodeId, scope: &ExprScope, key: (u32, u32, u8, u64), ty: Ty) {
+        let rows = &mut self.body(body).scoped_exprs;
+        let at = match rows.iter().position(|(s, _)| s == scope) {
             Some(i) => i,
             None => {
-                rows.push((args.to_vec(), Default::default()));
+                rows.push((scope.clone(), Default::default()));
                 rows.len() - 1
             }
         };
@@ -1922,6 +2030,8 @@ pub struct TypedBodies {
     ident_reads: BTreeMap<(u32, Vec<u32>), u8>,
     literal_paths: BTreeMap<u32, std::collections::BTreeSet<Vec<u32>>>,
     views: ProgramViews,
+    /// GH #2069 (F.58): the `variant_patterns` column, by (body, span).
+    variant_patterns: BTreeMap<(u32, u32, u32), VariantPattern>,
     /// Whether a row changes a denomination, prints a unit (U3) or types
     /// an operator's result (U4): a program with none has no value row
     /// for lowering to look up.
@@ -1946,6 +2056,19 @@ impl TypedBodies {
             return None;
         }
         self.bodies.get(&body.0)?.injections.get(site)
+    }
+
+    /// GH #2069 (F.58): the variant the `.Variant` pattern at `span` in the
+    /// body declared at `body` names, as the check resolved it; `None` for
+    /// a pattern the check did not resolve (it refused it).
+    pub fn variant_pattern_in(&self, body: NodeId, span: Span) -> Option<&VariantPattern> {
+        self.variant_patterns.get(&(body.0, span.start.0, span.end.0))
+    }
+
+    /// GH #2069: the `.Variant` pattern whose dot is at the merged offset
+    /// `dot`, in whichever body: what an editor's hover over it shows.
+    pub fn variant_pattern_from(&self, dot: usize) -> Option<&VariantPattern> {
+        self.variant_patterns.iter().find(|((_, start, _), _)| *start as usize == dot).map(|(_, row)| row)
     }
 
     /// The calls each body makes that only the check resolves
@@ -2057,20 +2180,21 @@ impl TypedBodies {
             .map_or(&[], |(_, rows)| rows.as_slice())
     }
 
-    /// The row of the generic call at `call`.
-    /// GH #2111: what the walk of the monomorph with type arguments `args`
-    /// typed the expression `e` of `body` ([`TypedBody::specialized_exprs`]).
-    pub fn specialized_expr(&self, body: NodeId, args: &[Ty], e: &Expr) -> Option<&Ty> {
+    /// GH #2111: what the walk on the scope of `args` and `path`
+    /// ([`ExprScope`]) typed the expression `e` of `body`
+    /// ([`TypedBody::scoped_exprs`]).
+    pub fn scoped_expr(&self, body: NodeId, args: Option<&[Ty]>, path: &[u32], e: &Expr) -> Option<&Ty> {
         let sp = e.span();
         self.body(body)?
-            .specialized_exprs
+            .scoped_exprs
             .iter()
-            .find(|(a, _)| a.as_slice() == args)?
+            .find(|(s, _)| s.args.as_deref() == args && s.path == path)?
             .1
             .get(&(sp.start.0, sp.end.0, expr_kind(e), expr_name(e)))
             .filter(|t| **t != Ty::Unknown)
     }
 
+    /// The row of the generic call at `call`.
     pub fn generic_call(&self, call: NodeId) -> Option<&Typed<GenericCall>> {
         let body = self.sites.get(&call.0)?;
         self.bodies.get(body)?.generic_calls.get(&call.0)
@@ -2238,6 +2362,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         ident_reads: record.ident_reads.clone(),
         literal_paths: record.literal_paths.clone(),
         views: record.views.clone(),
+        variant_patterns: record.variant_patterns.clone(),
         injected: record.bodies.values().any(|b| !b.injections.is_empty()),
         scaled: record.bodies.values().any(|b| {
             b.conversions.iter().any(|(site, r)| {

@@ -670,6 +670,12 @@ impl<'a> SpaceCx<'a> {
         if matches!(n, Colon) {
             return false;
         }
+        // GH #2069: a dot no operand precedes leads a variant pattern
+        // (`{ .Buy -> …`, `| .Sell`, `if let .Other(x) = …`), spaced from
+        // what is before it as a word is; the variant is tight after it.
+        if matches!(n, Dot) && !self.ends_operand_at(pi) {
+            return !matches!(p, LParen | LBracket | Dot | ColonColon | DotDot | DotDotEq | At | Hash | Dollar);
+        }
         // Never a space BEFORE these.
         if matches!(n, Comma | Semi | Dot | ColonColon | DotDot
             | DotDotEq | RParen | RBracket | Question | QuestionQuestion)
@@ -1135,7 +1141,11 @@ impl<'a> Emitter<'a> {
     fn continues(&self, last_tok: Option<usize>, first: &TokenKind) -> bool {
         match (last_tok, first) {
             (_, k) if is_binary_op(k) => true,
-            (_, TokenKind::Dot) => true,
+            // GH #2069: a line led by a dot continues an operand the line
+            // before ended (`.method()` of a chain); one after no operand
+            // (`,` or `{` before a `.Variant` arm) starts its own line.
+            (Some(lt), TokenKind::Dot) => ends_operand(&self.tokens[lt].kind),
+            (None, TokenKind::Dot) => true,
             (Some(lt), _) => {
                 let lk = &self.tokens[lt].kind;
                 is_binary_op(lk) && !matches!(lk, TokenKind::FatArrow)

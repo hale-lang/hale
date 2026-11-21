@@ -345,7 +345,7 @@ stdlib, which keep their own representation class (the table above).
 | Bounded collection | `bounded[T; N]` | Fixed-capacity counted list, INLINE in its containing type/params (`{ i64 len, [N x T] }`). See § "bounded[T; N]" below. |
 | Tuple | `(A, B, C)` | Fixed-size heterogeneous |
 | Struct | `type Foo { x: Int; y: Int = 0; }` | Named record, a **value**: `let b = a;` copies (see § "A struct binding is a copy").  Each field can declare a default value (`= expr`); literals omitting a defaulted field fill it from the default at instantiation time, the default evaluated where the literal that leaves it is written. A default reads only its constants and the module's items, never the literal's scope (§ Locus params). |
-| Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A path to a variant the enum does not declare is a type error at the path, wherever it is written (a value, an operand, a constructor call, a match pattern), naming the nearest variant ("enum \`Place\` has no variant \`Wrok\` — did you mean \`Work\`?") or listing them, and through an alias too (a concrete alias of a generic enum, \`type I = E<Int>;\`, is named as its instantiation, \`E<Int>\`); until 2026-11-17 the check passed it and the build refused it. A payload-free enum is stored as its tag. |
+| Enum | `type Foo = enum { A, B(int) };` | Tagged union (sum type). A constructor call carries the variant's declared values: `Foo::B(x)` is checked for the count and each value's type, a Decimal literal taking the field's scale ("\`Foo::B\` value 0: expected \`Int\`, got \`String\`"). A path to a variant the enum does not declare is a type error at the path, wherever it is written (a value, an operand, a constructor call, a match pattern), naming the nearest variant ("enum \`Place\` has no variant \`Wrok\` — did you mean \`Work\`?") or listing them, and through an alias too (a concrete alias of a generic enum, \`type I = E<Int>;\`, is named as its instantiation, \`E<Int>\`); until 2026-11-17 the check passed it and the build refused it. A pattern may name a variant with a leading dot against a value of the enum, `.B(x)` for `Foo::B(x)` (F.58, spec/semantics.md § \`.Variant\` patterns). A payload-free enum is stored as its tag. |
 | Set | `type Inbound = Book \| Trade;` | Untagged union: each member is a declared struct or enum and is its own discriminant. A member's value is the set's where a set is expected; `match` names a member by its type. See § "Set types". |
 | Alias | `type Thing = Int;` | A second SPELLING of a type, not a new type. See § "Type aliases". |
 | Function | `fn(A, B) -> C` | First-class function values |
@@ -798,7 +798,10 @@ a `_` arm. `Name(_)` matches a member without binding it; a bare `Name`
 is a binding, as everywhere.
 
 The bare name is a set's alone, against a value the check knows to be
-of the set. A pattern on an enum names its enum, `E::A(x)`; `A(x)`
+of the set. A pattern on an enum names its enum, `E::A(x)`, or the
+variant with a leading dot, `.A(x)`, which means the same against a
+value of `E` (F.58; a `.A(x)` against a set is refused, its members
+being named by their types alone); `A(x)`
 against anything but a set (an enum, a generic fn's type parameter, a
 value whose type the check cannot name, a type that is no enum) is
 refused at the pattern (until 2026-11-15 the check passed it and the
@@ -2549,7 +2552,16 @@ as a fn value when its declaration says so: a parameter or a `let`
 written with a `fn(..)` type, a `let` (or a tuple `let`'s part) of a
 fn's name or of another such binding, a `for` over an array literal of
 fns' names, a `match` pattern's binding of a variant's value whose
-declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`). So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
+declared type is a `fn(..)` type (`Op::Use(f)` with `Use(fn(Int) -> Int)`).
+A `.Use(f)` pattern (F.58) binds `f` as `E::Use(f)` does, `E` the
+matched value's enum, so a call of `f` calls the binding exactly where
+the spelled pattern's would: where `E`'s `Use` holds a `fn(..)`. Where the
+match shows its enum (an arm spelling it, the matched value's binding
+declared as it, or one enum alone declaring `Use`), the shadowing is
+decided with the rest of this rule; elsewhere (a field, a call, an
+element matched, and several enums declaring `Use`) the check, which
+resolves the pattern, decides it, and the program is read with the call
+through the binding written in. So `fn apply(f: fn(Int) -> Int, x: Int) -> Int { return f(x); }`
 beside a `fn f` calls the parameter, and `{ let helper = zero; helper() }`
 calls `zero`.
 

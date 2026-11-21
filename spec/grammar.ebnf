@@ -1450,6 +1450,7 @@ pattern           = literal_pattern
                   | wildcard_pattern
                   | binding_pattern
                   | constructor_pattern
+                  | dot_variant_pattern
                   | tuple_pattern
                   ;
 literal_pattern   = INT_LIT | FLOAT_LIT | STRING_LIT
@@ -1457,6 +1458,14 @@ literal_pattern   = INT_LIT | FLOAT_LIT | STRING_LIT
 wildcard_pattern  = "_" ;
 binding_pattern   = IDENTIFIER ;
 constructor_pattern = qualified_name , [ "(" , pattern_list , ")" ] ;
+(* GH #2069 (F.58): a variant named with a leading dot, against a value
+   whose type is an enum (through an alias or a generic enum's
+   instantiation too). `.V` and `.V(p, …)` mean exactly `E::V` and
+   `E::V(p, …)`, `E` the value's enum; the dot is written against the
+   name, with no space. Against any other value, or naming no variant of
+   the value's enum, it is a type error (semantics.md, "`.Variant`
+   patterns" under `match`). Patterns only: `.V` is not an expression. *)
+dot_variant_pattern = "." , IDENTIFIER , [ "(" , pattern_list , ")" ] ;
 tuple_pattern     = "(" , pattern , "," , pattern , { "," , pattern } , ")" ;
 pattern_list      = pattern , { "," , pattern } ;
 

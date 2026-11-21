@@ -426,7 +426,10 @@ macro_rules! walk {
             fn pattern(p: & $($m)? Pattern, f: &mut Visit<'_>) {
                 match p {
                     Pattern::Binding(i) => binder(i, f),
-                    Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+                    Pattern::Constructor { args, .. }
+                    | Pattern::DotVariant { args, .. }
+                    | Pattern::Tuple(args, _)
+                    | Pattern::Or(args, _) => {
                         for a in args {
                             pattern(a, f);
                         }

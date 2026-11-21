@@ -4357,6 +4357,66 @@ The pre-1.0 policy migrates the repository's own code in the change
 that breaks it. *Keeping `module` as a reserved word.* Nothing is
 planned for it, and a hard keyword costs every program the name.
 
+### F.58 — `.Variant` names a variant of the matched value's enum, in patterns
+
+**Status: accepted and implemented (2026-11-20; GH #2069, from RFC
+#1995 E4).**
+
+**Problem.** A pattern naming an enum's variant spells the enum every
+time: `Outcome::Result(r) -> r`, once per arm, in every `if let` and
+`let … else`. The corpus RFC #1995 counted has 443 enum-constructor
+arms, and enum names average 10.8 characters; the scrutinee's type
+already says which enum the arm is about. A bare `Result(r)` is not the
+answer: it is refused against an enum so that a set's member, which is
+matched by its type's name alone (GH #1530, #1971), never reads as a
+variant.
+
+**Decision.** Against a value whose type is an enum (directly, through
+an alias, or a generic enum's instantiation), a pattern may name a
+variant with a leading dot: `.Variant`, `.Variant(p, …)`. It means
+exactly `E::Variant` / `E::Variant(p, …)`, `E` the value's enum, in
+every position a constructor pattern is written: a match arm, an
+alternative of an or-pattern, `if let`, `let … else`, a pattern `let`;
+inside a tuple pattern or a variant's values it is the nested pattern
+`E::Variant` would be, refused the same way. The dot is written against
+the name (`. Buy` is a parse error). The two spellings mix freely in
+one match, and exhaustiveness, redundancy and the binding rules count a
+`.Variant` as the `E::Variant` it means.
+
+The checker resolves each `.Variant` against the type it typed the
+scrutinee with and records the variant per body and span
+(`typed_bodies`' `variant_patterns`); lowering reads that record and
+does not name the enum from the spelling. In a generic body whose
+scrutinee is of a type in its parameters, each specialization resolves
+it against its own instantiation.
+
+**What a program now gets.** `.Variant` against a value of no enum is a
+located type error saying so: an `Int`, a set (whose members are
+matched by their types' names, `Book(b)`), a generic body's type
+parameter once a call specializes the body. A name that is no variant
+of the value's enum is a located type error with the nearest variant,
+as GH #2023 gives `E::Wrok`:
+
+```text
+type error: `.Wrok(…)`: enum `Place` has no variant `Wrok` — did you mean `.Work`?
+```
+
+With the form, a variant's pattern that names the wrong number of
+values (`.Work(1, 2)` or `Job::Work(1, 2)` against `Work(Int)`) is
+refused by the check at the pattern; the build used to be the first to
+refuse it.
+
+**Not in this decision.** `.Variant` as an expression (`let s: Side =
+.Buy;`). It needs an expected type at every value position and can
+follow separately.
+
+**Considered and rejected.** *A bare `Variant(x)`.* It would undo the
+distinction that keeps a set's member apart from a variant (GH #1530's
+sets, GH #1971). *Importing an enum's variants into scope* (`use E::*`).
+It makes every variant name a top-level name in the file, where they
+collide with fns, types and other enums' variants; the dot is scoped to
+the one value being matched.
+
 ### F.59 — A `std::str` or `std::bytes` fn is called on the text value it takes first
 
 **Status: accepted and implemented (2026-11-20; GH #2068, from RFC

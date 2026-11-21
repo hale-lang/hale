@@ -8114,6 +8114,8 @@ impl Parser {
     fn let_is_pattern_led(&self) -> bool {
         match self.peek() {
             TokenKind::Ident(_) => matches!(self.peek_at(1), TokenKind::ColonColon | TokenKind::LParen),
+            // GH #2069: `let .Variant(x) = e else { … };`
+            TokenKind::Dot => true,
             TokenKind::IntLit(_)
             | TokenKind::FloatLit(_)
             | TokenKind::DecimalLit(_)
@@ -8456,6 +8458,48 @@ impl Parser {
                         span: path.span,
                     })
                 }
+            }
+            // GH #2069 (F.58): `.Variant`, `.Variant(p, …)`, a variant of
+            // the scrutinee's enum, which the checker names.
+            TokenKind::Dot => {
+                let dot = self.bump();
+                let variant = match self.peek().clone() {
+                    TokenKind::Ident(name) if name != "_" => {
+                        let t = self.bump();
+                        Ident::new(name, t.span)
+                    }
+                    other => {
+                        return Err(Diag::parse(
+                            self.peek_token().span,
+                            format!(
+                                "expected a variant's name after `.` in a pattern (`.Variant`, `.Variant(x)`), \
+                                 got {:?}",
+                                other
+                            ),
+                        ))
+                    }
+                };
+                if dot.span.end != variant.span.start {
+                    return Err(Diag::parse(
+                        dot.span.merge(variant.span),
+                        format!(
+                            "a variant pattern is written `.{}`, with no space after the dot",
+                            variant.name
+                        ),
+                    ));
+                }
+                let mut args = Vec::new();
+                let mut end = variant.span;
+                if self.eat(&TokenKind::LParen) {
+                    if !self.at(&TokenKind::RParen) {
+                        args.push(self.parse_inner_pattern()?);
+                        while self.eat(&TokenKind::Comma) {
+                            args.push(self.parse_inner_pattern()?);
+                        }
+                    }
+                    end = self.expect(TokenKind::RParen, ")")?.span;
+                }
+                Ok(Pattern::DotVariant { variant, args, span: dot.span.merge(end) })
             }
             TokenKind::LParen => {
                 let lp = self.bump();
@@ -9783,7 +9827,9 @@ fn pattern_binders(p: &Pattern) -> Vec<Ident> {
                     out.push(id.clone());
                 }
             }
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) => args.iter().for_each(|a| walk(a, out)),
+            Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } | Pattern::Tuple(args, _) => {
+                args.iter().for_each(|a| walk(a, out))
+            }
             Pattern::Or(alts, _) => {
                 if let Some(first) = alts.first() {
                     walk(first, out);

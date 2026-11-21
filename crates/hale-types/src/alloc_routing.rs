@@ -199,7 +199,7 @@ fn pattern_names_call_or_struct(p: &Pattern) -> bool {
     match p {
         Pattern::Literal(l, _) => literal_spells_call_or_struct(l),
         Pattern::Wildcard(_) | Pattern::Binding(_) => false,
-        Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+        Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
             args.iter().any(pattern_names_call_or_struct)
         }
     }

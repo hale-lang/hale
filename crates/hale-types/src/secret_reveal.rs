@@ -613,7 +613,7 @@ fn is_value_fn(segs: &[&str]) -> bool {
 fn pattern_bindings(p: &Pattern, out: &mut Vec<String>) {
     match p {
         Pattern::Binding(id) => out.push(id.name.clone()),
-        Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+        Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
             for a in args {
                 pattern_bindings(a, out);
             }

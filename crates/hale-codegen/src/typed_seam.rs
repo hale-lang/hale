@@ -6,7 +6,8 @@
 //! [`hale_types::resolved::LoweringView::expr_types`]). [`Cx::ty_at`] reads
 //! the row of an expression of the body being lowered (`current_body`,
 //! entered by `Cx::in_body`), in a monomorph the checker's walk of that
-//! monomorph (`TypedBodies::specialized_expr`), and lays the type out as a `CodegenTy`
+//! monomorph and inside a default the walk of the evaluation being lowered
+//! (`TypedBodies::scoped_expr`), and lays the type out as a `CodegenTy`
 //! ([`Cx::layout_of`]) through the one function that lays out a written
 //! type (`type_expr_to_codegen_ty`), so a value's layout and a declared
 //! one never differ. `CodegenTy` stays the layout type; what it is a
@@ -19,7 +20,7 @@
 use hale_syntax::ast::{Expr, Ident, QualifiedName, TypeExpr};
 use hale_types::ty::Ty;
 
-use crate::codegen::{CodegenTy, Cx};
+use crate::codegen::{CodegenError, CodegenTy, Cx};
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The checker's type of `e`, an expression of the body being lowered,
@@ -27,11 +28,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// no row (or two answers), or for a type with no layout.
     pub(crate) fn ty_at(&self, e: &Expr) -> Option<CodegenTy> {
         let body = self.current_body?;
-        let ty = match self.specialization_args() {
-            Some(args) => self.typed.specialized_expr(body, args, e).or_else(|| self.expr_types.at(body, e))?,
-            None => self.expr_types.at(body, e)?,
+        let args = self.specialization_args();
+        let path = self.default_evaluation.as_slice();
+        let ty = match (args, path.is_empty()) {
+            (None, true) => self.expr_types.at(body, e)?,
+            // a monomorph's body outside every default: its own walk's
+            // row, else the template's (a site whose type names no
+            // parameter)
+            (Some(_), true) => self.typed.scoped_expr(body, args, path, e).or_else(|| self.expr_types.at(body, e))?,
+            // a default evaluated here: the row of this evaluation
+            (_, false) => self.typed.scoped_expr(body, args, path, e)?,
         };
         self.layout_of(ty)
+    }
+
+    /// The checker's type of the call `call`, the value its lowering
+    /// hands back, where lowering has no signature of its own to read
+    /// (a bare builtin's result: `len`, `to_string`, `min` over its
+    /// operands). A call with no row is refused at its span, a compiler
+    /// defect rather than a guess (GH #2111).
+    pub(crate) fn call_result(&self, call: &Expr) -> Result<CodegenTy, CodegenError> {
+        self.ty_at(call).ok_or_else(|| {
+            CodegenError::missing_row("expression_typing", "the checker's type of this call", Some(call.span()))
+        })
     }
 
     /// The type arguments of the monomorph being lowered: a generic fn's

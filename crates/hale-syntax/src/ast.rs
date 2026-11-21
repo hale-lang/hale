@@ -3547,6 +3547,18 @@ pub enum Pattern {
         span: Span,
     },
     Tuple(Vec<Pattern>, Span),
+    /// GH #2069 (F.58): a variant named with a leading dot, `.Variant`
+    /// or `.Variant(p, …)`, against a value whose type is an enum. It
+    /// means exactly `E::Variant` with `E` the scrutinee's enum: the
+    /// checker resolves it against the scrutinee's type and records the
+    /// variant for lowering (`typed_bodies`' `variant_patterns`), so no
+    /// later pass names the enum from the spelling. `args` is empty for
+    /// `.Variant`, as a constructor's is for `E::Variant`.
+    DotVariant {
+        variant: Ident,
+        args: Vec<Pattern>,
+        span: Span,
+    },
     /// GH #1995 E2: an or-pattern, `A | B | C`: two or more
     /// alternatives, the arm matching when one of them does (tried left
     /// to right). Only ever a match arm's whole pattern: the parser
@@ -3612,6 +3624,13 @@ impl Pattern {
                     format!("{p}({})", list(args, ", "))
                 }
             }
+            Pattern::DotVariant { variant, args, .. } => {
+                if args.is_empty() {
+                    format!(".{}", variant.name)
+                } else {
+                    format!(".{}({})", variant.name, list(args, ", "))
+                }
+            }
             Pattern::Tuple(ps, _) => format!("({})", list(ps, ", ")),
             Pattern::Or(ps, _) => list(ps, " | "),
         }
@@ -3622,7 +3641,7 @@ impl Pattern {
         match self {
             Pattern::Literal(_, s) | Pattern::Wildcard(s) | Pattern::Tuple(_, s) | Pattern::Or(_, s) => *s,
             Pattern::Binding(id) => id.span,
-            Pattern::Constructor { span, .. } => *span,
+            Pattern::Constructor { span, .. } | Pattern::DotVariant { span, .. } => *span,
         }
     }
 }

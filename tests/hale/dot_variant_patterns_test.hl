@@ -1,0 +1,338 @@
+// `.Variant` in patterns (GH #2069, spec/decisions.md F.58): against a
+// value whose type is an enum, a pattern may name a variant with a
+// leading dot, and it means exactly `E::Variant`, `E` the value's enum.
+// Every pattern form takes it: a match arm, an or-pattern's alternative,
+// `if let`, `let … else`, a pattern `let`; through an alias, a generic
+// enum's instantiation, an imported enum, and a generic body.
+
+import "dot_variant_import_lib" as sig;
+
+type Side = enum { Buy, Sell, Other(String) };
+type Outcome = enum { Result(Int), Refused(String), Pending };
+type CtlError = enum { Invalid(String), NotFound(String), Conflict(String), NotReady(Int) };
+type Value<T> = enum { Some(T), None };
+type Meters = enum { M(Int) };
+type Verdict = Outcome;
+type IntValue = Value<Int>;
+
+// a match arm per variant, payloads bound and ignored
+fn side_name(s: Side) -> String {
+    return match s {
+        .Buy -> "buy",
+        .Sell -> "sell",
+        .Other(raw) -> "other:" + raw,
+    };
+}
+
+// or-pattern alternatives, mixed with the qualified spelling
+fn problem(e: CtlError) -> String {
+    return match e {
+        .Invalid(p) | .NotFound(p) | CtlError::Conflict(p) -> p,
+        .NotReady(h) -> f"not ready: {h}",
+    };
+}
+
+// a guard, a literal payload, and a catch-all
+fn score(o: Outcome) -> Int {
+    return match o {
+        .Result(0) -> -100,
+        .Result(n) if n > 10 -> 10,
+        .Result(n) -> n,
+        _ -> 0,
+    };
+}
+
+// a statement match, in a loop
+fn total(outs: [Outcome; 4]) -> Int {
+    let mut t = 0;
+    for o in outs {
+        match o {
+            .Result(n) -> {
+                t = t + n;
+            },
+            .Refused(why) -> {
+                t = t + len(why) * 100;
+            },
+            .Pending -> { },
+        }
+    }
+    return t;
+}
+
+// `if let`, as a statement and as a value, and a chain
+fn refusal(o: Outcome) -> String {
+    let mut out = "-";
+    if let .Refused(why) = o {
+        out = why;
+    }
+    return out;
+}
+
+fn index_or(o: Outcome, fallback: Int) -> Int {
+    let i = if let .Result(n) = o { n } else { fallback };
+    return i;
+}
+
+fn classify(o: Outcome) -> String {
+    if let .Result(n) = o {
+        return f"result {n}";
+    } else if let .Refused(_) | .Pending = o {
+        return "not a result";
+    }
+    return "unreached";
+}
+
+// `let … else`, binding after the statement
+fn head_index(o: Outcome) -> Int {
+    let .Result(index) = o else {
+        return -1;
+    };
+    return index * 2;
+}
+
+// a pattern `let` that always matches: a one-variant enum
+fn meters(m: Meters) -> Int {
+    let .M(n) = m;
+    return n;
+}
+
+// through an alias of the enum
+fn verdict(v: Verdict) -> Int {
+    return match v {
+        .Result(n) -> n,
+        .Refused(_) | .Pending -> 0,
+    };
+}
+
+// a generic enum's instantiation, and an alias of one
+fn unwrap_or(v: Value<Int>, d: Int) -> Int {
+    return match v {
+        .Some(x) -> x,
+        .None -> d,
+    };
+}
+
+fn aliased(v: IntValue) -> Int {
+    if let .Some(x) = v { x } else { -7 }
+}
+
+// a generic body: each specialization matches its own monomorph
+fn get<T>(v: Value<T>, d: T) -> T {
+    return match v {
+        .Some(x) -> x,
+        .None -> d,
+    };
+}
+
+// an imported enum
+fn signal(s: sig::Signal) -> String {
+    return match s {
+        .Go(n) -> f"go {n}",
+        .Hold -> "hold",
+        .Stop(why) -> "stop: " + why,
+    };
+}
+
+// a match nested in an arm, each naming its own scrutinee's enum
+fn nested(o: Outcome, s: Side) -> String {
+    return match o {
+        .Result(n) -> match s {
+            .Buy -> f"buy {n}",
+            .Sell | .Other(_) -> f"sell {n}",
+        },
+        .Refused(why) -> why,
+        .Pending -> "pending",
+    };
+}
+
+// a heap string bound through `.Variant` outlives the match
+fn shout(e: CtlError) -> String {
+    let .Invalid(p) | .NotFound(p) = e else {
+        return "none";
+    };
+    let loud = std::str::upper(p);
+    return loud + "!";
+}
+
+// a fn-valued payload whose variant name another enum shares: the
+// binding is the payload's fn value, called by its name over the
+// program's own fn of that name, as `Apply::Use(f)` would bind it
+type Apply = enum { Use(fn (Int) -> Int), Skip };
+type Count = enum { Use(Int), Skip };
+
+fn f(n: Int) -> Int {
+    return n + 1;
+}
+
+fn tenfold(n: Int) -> Int {
+    return n * 10;
+}
+
+fn applied(a: Apply) -> Int {
+    return match a {
+        .Use(f) -> f(2),
+        .Skip -> f(2),
+    };
+}
+
+fn counted(c: Count) -> Int {
+    return match c {
+        .Use(f) -> f + 100,
+        .Skip -> f(1),
+    };
+}
+
+fn applied_local() -> Int {
+    let a = Apply::Use(tenfold);
+    if let .Use(f) = a { f(4) } else { 0 }
+}
+
+// a scrutinee no binding declares: an arm that spells the enum names it
+fn make_apply() -> Apply {
+    return Apply::Use(tenfold);
+}
+
+fn mixed() -> Int {
+    return match make_apply() {
+        .Use(f) -> f(1),
+        Apply::Skip -> 0,
+    };
+}
+
+// scrutinees whose enum only the check knows (a field, a call, an
+// element), every arm dotted: the binding of a fn's name is the fn value
+type Holder { op: Apply; }
+
+fn from_field(h: Holder) -> Int {
+    return match h.op {
+        .Use(f) -> f(2),
+        .Skip -> 0,
+    };
+}
+
+fn from_call() -> Int {
+    return match make_apply() {
+        .Use(f) -> f(3),
+        .Skip -> 0,
+    };
+}
+
+fn from_element(ops: [Apply; 2], i: Int) -> Int {
+    return match ops[i] {
+        .Use(f) -> f(i + 1),
+        .Skip -> -1,
+    };
+}
+
+// spelled with the enum, so the parity gate's `dot_variant_spelling`
+// respells these shared-name patterns with a dot
+fn applied_spelled(a: Apply) -> Int {
+    return match a {
+        Apply::Use(f) -> f(5),
+        Apply::Skip -> 0,
+    };
+}
+
+fn counted_spelled(c: Count) -> Int {
+    return match c {
+        Count::Use(f) -> f,
+        Count::Skip -> f(0),
+    };
+}
+
+// a match on a record's field
+type Order { side: Side; qty: Int; }
+
+fn signed(o: Order) -> Int {
+    return match o.side {
+        .Buy -> o.qty,
+        .Sell -> -o.qty,
+        .Other(_) -> 0,
+    };
+}
+
+fn main() {
+    std::test::assert_eq_str(side_name(Side::Buy), "buy", "a payload-free variant");
+    std::test::assert_eq_str(side_name(Side::Sell), "sell", "another");
+    std::test::assert_eq_str(side_name(Side::Other("x")), "other:x", "a payload bound");
+
+    std::test::assert_eq_str(problem(CtlError::Invalid("bad")), "bad", "first alternative");
+    std::test::assert_eq_str(problem(CtlError::NotFound("gone")), "gone", "second alternative");
+    std::test::assert_eq_str(problem(CtlError::Conflict("dup")), "dup", "a qualified alternative");
+    std::test::assert_eq_str(problem(CtlError::NotReady(3)), "not ready: 3", "its own arm");
+
+    std::test::assert_eq_int(score(Outcome::Result(0)), -100, "a literal payload");
+    std::test::assert_eq_int(score(Outcome::Result(40)), 10, "a guard");
+    std::test::assert_eq_int(score(Outcome::Result(4)), 4, "past the guard");
+    std::test::assert_eq_int(score(Outcome::Pending), 0, "the catch-all");
+
+    let outs = [Outcome::Result(1), Outcome::Pending, Outcome::Refused("ab"), Outcome::Result(2)];
+    std::test::assert_eq_int(total(outs), 203, "a statement match in a loop");
+
+    std::test::assert_eq_str(refusal(Outcome::Refused("busy")), "busy", "if let binds");
+    std::test::assert_eq_str(refusal(Outcome::Pending), "-", "if let misses");
+    std::test::assert_eq_int(index_or(Outcome::Result(7), 0), 7, "if let as a value");
+    std::test::assert_eq_int(index_or(Outcome::Pending, 3), 3, "its else");
+    std::test::assert_eq_str(classify(Outcome::Result(4)), "result 4", "the first link");
+    std::test::assert_eq_str(classify(Outcome::Pending), "not a result", "else if let, or-pattern");
+
+    std::test::assert_eq_int(head_index(Outcome::Result(21)), 42, "let else binds");
+    std::test::assert_eq_int(head_index(Outcome::Pending), -1, "let else leaves");
+    std::test::assert_eq_int(meters(Meters::M(12)), 12, "a pattern let that always matches");
+
+    std::test::assert_eq_int(verdict(Outcome::Result(5)), 5, "through an alias");
+    std::test::assert_eq_int(verdict(Outcome::Pending), 0, "through an alias, or-pattern");
+
+    std::test::assert_eq_int(unwrap_or(Value_Int::Some(9), 0), 9, "a generic enum's instantiation");
+    std::test::assert_eq_int(unwrap_or(Value_Int::None, 5), 5, "its other variant");
+    std::test::assert_eq_int(aliased(Value_Int::Some(2)), 2, "an alias of an instantiation");
+    std::test::assert_eq_int(aliased(Value_Int::None), -7, "its else");
+
+    std::test::assert_eq_int(get(Value_Int::Some(11), 0), 11, "a generic body, Int");
+    let none: Value<String> = Value_String::None;
+    std::test::assert_eq_str(get(none, "d"), "d", "a generic body, String");
+
+    std::test::assert_eq_str(signal(sig::Signal::Go(2)), "go 2", "an imported enum");
+    std::test::assert_eq_str(signal(sig::Signal::Hold), "hold", "an imported enum, no payload");
+    std::test::assert_eq_str(signal(sig::Signal::Stop("red")), "stop: red", "an imported payload");
+    std::test::assert_eq_int(sig::weight(sig::Signal::Go(6)), 6, "the library's own match");
+
+    std::test::assert_eq_str(nested(Outcome::Result(1), Side::Buy), "buy 1", "a nested match");
+    std::test::assert_eq_str(
+        nested(Outcome::Result(2), Side::Other("q")),
+        "sell 2",
+        "nested, or-pattern",
+    );
+    std::test::assert_eq_str(nested(Outcome::Refused("no"), Side::Buy), "no", "the outer arm");
+
+    std::test::assert_eq_str(shout(CtlError::NotFound("gone")), "GONE!", "a heap string");
+    std::test::assert_eq_str(shout(CtlError::NotReady(1)), "none", "its else");
+
+    std::test::assert_eq_int(signed(Order { side: Side::Sell, qty: 4 }), -4, "a field scrutinee");
+
+    std::test::assert_eq_int(applied(Apply::Use(tenfold)), 20, "a fn-valued payload");
+    std::test::assert_eq_int(
+        applied(Apply::Skip),
+        3,
+        "the program's fn where nothing binds the name",
+    );
+    std::test::assert_eq_int(counted(Count::Use(5)), 105, "the other enum's Int payload");
+    std::test::assert_eq_int(counted(Count::Skip), 2, "the program's fn");
+    std::test::assert_eq_int(applied_local(), 40, "a local constructed as the enum");
+    std::test::assert_eq_int(mixed(), 10, "an arm spelling the enum names it");
+    std::test::assert_eq_int(
+        from_field(Holder { op: Apply::Use(tenfold) }),
+        20,
+        "a field scrutinee's fn payload",
+    );
+    std::test::assert_eq_int(from_call(), 30, "a call scrutinee's fn payload");
+    let ops = [Apply::Skip, Apply::Use(tenfold)];
+    std::test::assert_eq_int(from_element(ops, 1), 20, "an element scrutinee's fn payload");
+    std::test::assert_eq_int(from_element(ops, 0), -1, "an element scrutinee's other variant");
+    std::test::assert_eq_int(applied_spelled(Apply::Use(tenfold)), 50, "spelled with the enum");
+    std::test::assert_eq_int(
+        counted_spelled(Count::Use(7)) + counted_spelled(Count::Skip),
+        8,
+        "the other enum",
+    );
+}

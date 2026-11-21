@@ -650,3 +650,50 @@ fn main() { App { }; }
     assert_eq!(look.param_accesses[7].evaluation.len(), 1);
     assert!(look.param_accesses[..6].iter().all(|a| a.evaluation.is_empty()));
 }
+
+/// GH #2111: a default typed where it is evaluated keeps its expression
+/// rows in the evaluating body, by the evaluation path (the literal or
+/// call that leaves it), as its conversions are: a struct field's default
+/// (typed on a walk the checker otherwise discards) under each literal
+/// that leaves it, and a parameter's under each call that leaves it.
+/// Lowering reads them where it evaluates the default (`Cx::ty_at`).
+#[test]
+fn a_defaults_expression_rows_are_kept_per_evaluation() {
+    use hale_syntax::ast::{Expr, TypeDeclBody};
+    let src = r#"
+type Inner { s: String = std::str::upper("x"); n: Int = len("abcd"); }
+fn greet(n: String = to_string(len("hi"))) -> String { return n; }
+fn main() {
+    let a = Inner { };
+    let b = Inner { s: "y" };
+    let g = greet();
+    println(a.s, b.n, g);
+}
+"#;
+    let parsed = hale_syntax::parse_source(src).expect("parses");
+    let s = match Snapshot::from_program(parsed, Vec::new(), Config::harness(Target::host())) {
+        Ok(s) => s,
+        Err(_) => panic!("loads"),
+    };
+    let table = s.demand_typed_bodies().expect("the table");
+    let p = program(&s);
+    let TopDecl::Fn(main) = decl(p, "main") else { unreachable!() };
+    let lets: Vec<&Expr> = main.body.stmts.iter().filter_map(|st| match st { Stmt::Let { value, .. } => Some(value), _ => None }).collect();
+    let (Expr::Struct { id: a, .. }, Expr::Struct { id: b, .. }, Expr::Call { id: g, .. }) = (lets[0], lets[1], lets[2]) else {
+        panic!("two literals and a call")
+    };
+    let TopDecl::Type(inner) = decl(p, "Inner") else { unreachable!() };
+    let TypeDeclBody::Struct(fields) = &inner.body else { unreachable!() };
+    let (upper, len) = (fields[0].default.as_ref().unwrap(), fields[1].default.as_ref().unwrap());
+    let TopDecl::Fn(greet) = decl(p, "greet") else { unreachable!() };
+    let to_string = greet.params[0].default.as_ref().unwrap();
+    let at = |path: &[u32], e: &Expr| table.scoped_expr(main.id, None, path, e).cloned();
+    let string = Some(Ty::Prim(hale_syntax::ast::PrimType::String));
+    let int = Some(Ty::Prim(hale_syntax::ast::PrimType::Int));
+    assert_eq!(at(&[a.0], upper), string, "the first literal leaves `s`");
+    assert_eq!(at(&[a.0], len), int, "and `n`");
+    assert_eq!(at(&[b.0], upper), None, "the second literal supplies `s`: its default is not evaluated there");
+    assert_eq!(at(&[b.0], len), int, "and leaves `n`");
+    assert_eq!(at(&[g.0], to_string), string, "the call leaves `n`");
+    assert_eq!(at(&[], to_string), None, "a default has no row on no evaluation path");
+}

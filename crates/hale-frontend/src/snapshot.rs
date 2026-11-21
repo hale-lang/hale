@@ -554,16 +554,15 @@ pub struct Snapshot {
     dependency_index: OnceCell<Result<DependencyIndex, Blocked>>,
     builds: [Cell<u32>; FAMILIES.len()],
     stage_builds: [Cell<u32>; STAGES.len()],
-    /// GH #2068 (F.59): whether the receiver calls on text values the
-    /// check resolved have been written as their path calls
-    /// ([`Snapshot::settle_receiver_calls`]).
-    receivers_settled: bool,
-    /// GH #2068: set while the settling types the program in rounds, so
-    /// each round's walk leaves the previous snapshot to the next.
+    /// Whether what the check decides that a pass before it could not
+    /// has been written into the programs ([`Snapshot::settle`]).
+    settled: bool,
+    /// Set while the settling types the program in rounds, so each
+    /// round's walk leaves the previous snapshot to the next.
     keep_previous: Cell<bool>,
 }
 
-/// GH #2068: how many rounds [`Snapshot::settle_receiver_calls`] types a
+/// GH #2068: how many rounds [`Snapshot::settle`] types a
 /// program in at most: one, one more once receiver calls were written,
 /// and one more per nesting of a call typed only inside a loop or a chain
 /// the first round desugared.
@@ -746,7 +745,7 @@ impl Snapshot {
             dependency_index: OnceCell::new(),
             builds,
             stage_builds: Default::default(),
-            receivers_settled: false,
+            settled: false,
             keep_previous: Cell::new(false),
         };
         snap.count("seed_loading");
@@ -871,11 +870,12 @@ impl Snapshot {
                 entry.display()
             )));
         }
-        // GH #2068 (F.59): the editor's load settles once it is offered
-        // the seed's previous snapshot, or none (`reusing_typing`,
+        // What the check decides that a pass before it could not (GH
+        // #2069, #2068), written in. The editor's load settles once it is
+        // offered the seed's previous snapshot, or none (`reusing_typing`,
         // `settled`), so its walk reuses what it can.
         if mode != Some(LoadMode::Editor) {
-            snap.settle_receiver_calls();
+            snap.settle();
         }
         Ok(snap)
     }
@@ -1282,7 +1282,7 @@ impl Snapshot {
             },
         };
         // GH #2068: a walk the receiver calls' settling may follow with
-        // another (`settle_receiver_calls`) leaves the previous snapshot
+        // another (`settle`) leaves the previous snapshot
         // for that one to reuse as well.
         if self.keep_previous.get() {
             self.previous.set(offered);
@@ -1419,44 +1419,56 @@ impl Snapshot {
     pub fn reusing_typing(mut self, previous: Snapshot) -> Snapshot {
         drop(previous.previous.take());
         self.previous.set(Some(Box::new(previous)));
-        self.settle_receiver_calls();
+        self.settle();
         self
     }
 
-    /// GH #2068 (F.59): the editor's snapshot with no previous snapshot
-    /// to reuse, its receiver calls settled as every other load's are.
+    /// The editor's snapshot with no previous snapshot to reuse, settled
+    /// as every other load is ([`Snapshot::settle`]).
     pub fn settled(mut self) -> Snapshot {
-        self.settle_receiver_calls();
+        self.settle();
         self
     }
 
-    /// GH #2068 (F.59): write each receiver call on a text value the check
-    /// resolved (`x.trim()`, `TypingRecord::receiver_calls`) as the path
-    /// call it means (`std::str::trim(x)`), once, before any family past
-    /// the walk reads the program. A program with no method call that
-    /// could be one is not typed for it; one whose walk resolves none
-    /// keeps that walk. One that resolves some is rewritten and every
-    /// family derived so far forgotten, so the check, the analyses and
-    /// lowering all read the path calls.
-    fn settle_receiver_calls(&mut self) {
-        if std::mem::replace(&mut self.receivers_settled, true) || self.has_hole() {
+    /// Write into the programs, once, what the check decides that a pass
+    /// before it could not, before any family past the walk reads them:
+    ///
+    /// - GH #2069 (F.58): a call of a fn value a `.Variant` arm binds,
+    ///   whose enum the shadowing desugar did not see, is the call through
+    ///   the binding ([`hale_types::checked_rewrites`]);
+    /// - GH #2068 (F.59): a receiver call on a text value (`x.trim()`) is
+    ///   the path call it means (`std::str::trim(x)`,
+    ///   [`hale_types::receiver_calls`]), and a `for` or a chain over one
+    ///   that may be a text source, left as written by the desugars before
+    ///   the check, is desugared once it is a path call or known not to be.
+    ///
+    /// A program the check has nothing to decide for is not typed for it;
+    /// one whose walk decides nothing keeps that walk; one rewritten
+    /// forgets every family derived so far and is typed again.
+    fn settle(&mut self) {
+        if std::mem::replace(&mut self.settled, true) || self.has_hole() {
             return;
         }
-        {
+        let candidate = {
+            let programs: Vec<&Program> = self.programs.values().collect();
+            hale_types::checked_rewrites::any_dot_binding(&programs)
+        } || {
             let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
-            if !hale_types::receiver_calls::any_candidate(&mut refs) {
-                return;
-            }
+            hale_types::receiver_calls::any_candidate(&mut refs)
+        };
+        if !candidate {
+            return;
         }
-        // Each round types the program, writes the receiver calls its walk
-        // resolved as path calls and desugars the `for`s and chains over a
-        // receiver call that may be a text source, now over a path call
-        // where it was a string's. A call inside one (`part.trim()` in `for
-        // part in s.split(",")`, an inner `for b in a.words()`) is typed
-        // only once that loop is, so the rounds go on until a walk
-        // resolves none; the desugars run in every round that rewrote a
-        // call, and once more where a deferred loop over a value that is
-        // no string (a locus's `words()`) waits with nothing rewritten.
+        // Each round types the program, writes what its walk decided and
+        // desugars the `for`s and chains over a receiver call that may be
+        // a text source, now over a path call where it was a string's. A
+        // call inside one (`part.trim()` in `for part in s.split(",")`,
+        // an inner `for b in a.words()`) is typed only once that loop is,
+        // so the rounds go on until a walk decides nothing; the desugars
+        // run in every round that finds a deferred source, and once more
+        // where one over a value that is no string (a locus's `words()`)
+        // waits with nothing rewritten. Each round's walk reuses the
+        // previous snapshot the editor offered.
         self.keep_previous.set(true);
         let typed = self.settle_rounds();
         self.keep_previous.set(false);
@@ -1468,8 +1480,7 @@ impl Snapshot {
         }
     }
 
-    /// The rounds of [`Snapshot::settle_receiver_calls`]: whether the
-    /// last one's walk ran.
+    /// The rounds of [`Snapshot::settle`]: whether the last one's walk ran.
     fn settle_rounds(&mut self) -> bool {
         let mut desugared = false;
         for round in 0..SETTLE_ROUNDS {
@@ -1477,15 +1488,16 @@ impl Snapshot {
                 let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
                 hale_types::receiver_calls::any_deferred_source(&mut refs)
             };
-            let calls = match self.final_walk() {
-                Ok(w) => w.walk.record.receiver_calls.clone(),
+            let (receiver_calls, binding_calls) = match self.final_walk() {
+                Ok(w) => (w.walk.record.receiver_calls.clone(), w.walk.record.binding_calls.clone()),
                 Err(_) => return false,
             };
-            if calls.is_empty() && (desugared || !deferred) {
+            if receiver_calls.is_empty() && binding_calls.is_empty() && (desugared || !deferred) {
                 return true;
             }
             let mut refs: Vec<&mut Program> = self.programs.values_mut().collect();
-            hale_types::receiver_calls::rewrite(&mut refs, &calls);
+            hale_types::receiver_calls::rewrite(&mut refs, &receiver_calls);
+            hale_types::checked_rewrites::rewrite_binding_calls(&mut refs, &binding_calls);
             if deferred {
                 // A loop or chain over one waited for the check: over a
                 // string it is now over the path call, a text source's;
@@ -1505,8 +1517,8 @@ impl Snapshot {
 
     /// The identities of the programs' sites, minted with the source map
     /// (F.40 phase 1.1b-iii): every site with none gets one, and every
-    /// other keeps its own. The load mints once; the receiver calls'
-    /// settling mints the nodes its desugars wrote (GH #2068).
+    /// other keeps its own. The load mints once; the settling mints the
+    /// nodes its desugars wrote (GH #2068).
     fn mint_identities(&mut self) {
         let names: Vec<String> = self.programs.keys().map(|p| p.display().to_string()).collect();
         self.identities = hale_types::snapshot::mint(
@@ -1516,7 +1528,7 @@ impl Snapshot {
     }
 
     /// Every family derived from the programs, forgotten: what
-    /// [`Snapshot::settle_receiver_calls`] does once it has rewritten them.
+    /// [`Snapshot::settle`] does once it has rewritten them.
     fn forget_derived(&mut self) {
         self.demangler = OnceCell::new();
         self.entry = OnceCell::new();

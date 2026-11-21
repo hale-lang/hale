@@ -759,6 +759,7 @@ const PINNED: &[&str] = &[
     "tests/hale/crypto_sha256_stream_test.hl: 0 go, 0 appear; dump 0 tags, 0 reclaim, 5 verdicts",
     "tests/hale/decorator_stack_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/display_test.hl: 0 go, 0 appear; dump 5 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/dot_variant_patterns_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/ends_with_own_fn_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/factory_field_owner_test.hl: 2 go, 0 appear; dump 1 tags, 0 reclaim, 2 verdicts",
     "tests/hale/float_ieee_compare_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
