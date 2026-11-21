@@ -4814,3 +4814,48 @@ fn a_subscription_s_key_filter_is_checked() {
         "hale_cb_key_filter_built",
     );
 }
+
+/// GH #2111 (phase 1, family 6): an `if` expression whose `then` arm leaves
+/// (a block ending in a `match` whose every arm returns) is the `else`
+/// arm's value, as a match expression's join skips such an arm. The check
+/// typed the whole `if` `Unknown`, so nothing held its value to a type: an
+/// `Int` into a `String` local checked and built (and printed as the
+/// `Int`), and an `Int` returned from a `String` fn checked and the build
+/// refused it.
+#[test]
+fn an_if_whose_then_arm_leaves_is_its_else_arm_s_value() {
+    let leaving = "let v = if n > 5 {\n\
+                   match n {\n\
+                   6 -> { return \"six\"; },\n\
+                   _ -> { return \"seven\"; },\n\
+                   }\n\
+                   } else {\n";
+    assert_refused_by_the_check(
+        &[
+            (
+                &format!(
+                    "fn f(n: Int) -> String {{\n{leaving}8\n}};\nlet s: String = v;\nreturn s;\n}}\n\
+                     fn main() {{ println(f(1)); }}\n"
+                ),
+                "v",
+                "let `s`: expected `String`, got `Int`",
+            ),
+            (
+                &format!(
+                    "fn f(n: Int) -> String {{\n{leaving}8\n}};\nreturn v;\n}}\n\
+                     fn main() {{ println(f(1)); }}\n"
+                ),
+                "v",
+                "return: expected `String`, got `Int`",
+            ),
+        ],
+        "if_then_leaves",
+    );
+    assert_built(
+        &format!(
+            "fn f(n: Int) -> String {{\n{leaving}\"small\"\n}};\nreturn v + \"!\";\n}}\n\
+             fn main() {{ println(f(1)); println(f(6)); }}\n"
+        ),
+        "hale_cb_if_then_leaves_built",
+    );
+}
