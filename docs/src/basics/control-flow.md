@@ -123,6 +123,31 @@ fn describe(n: Int) -> String {
 - **Typed bindings:** a name a pattern binds is a local of the arm with the type of what it binds: the matched value's type for a bare binding, the variant's declared value type for `Shape::Line(l)`, the element's type for a tuple part. It is checked wherever it is used, like any other local.
 - **Flat patterns:** each part of a tuple pattern, like each value of a variant's pattern, is a binding, `_` or a literal (`(0, b) -> …`, `Shape::Line(l) -> …`). A nested pattern there (`((1, 2), 3)`, `(Light::Red, 3)`) is refused by `hale check`: bind the part and match the binding inside the arm.
 
+### Naming a variant with a leading dot
+
+The value being matched already says which enum an arm is about, so a pattern can name the variant alone with a leading dot: `.Result(n)` means `Outcome::Result(n)` when the value is an `Outcome`.
+
+```hale
+type Outcome = enum { Result(Int), Refused(String), Pending };
+
+fn index_or(o: Outcome, fallback: Int) -> Int {
+    return match o {
+        .Result(n) -> n,
+        .Refused(_) | .Pending -> fallback,
+    };
+}
+
+fn refusal(o: Outcome) -> String {
+    if let .Refused(why) = o { why } else { "" }
+}
+```
+
+- It works in every pattern position: arms, alternatives, `if let`, `let … else` and a pattern `let`, and through an alias or a generic enum's instantiation. The two spellings can be mixed in one `match`, and exhaustiveness counts `.Pending` as `Outcome::Pending`.
+- It is checked against the matched value's type. Against a value that is not an enum (an `Int`, a set, a generic body's type parameter), or with a name that is not one of the enum's variants, `hale check` refuses the pattern and suggests the nearest variant: "\`.Wrok(…)\`: enum \`Place\` has no variant \`Wrok\` — did you mean \`.Work\`?".
+- A set's member is still matched by its type's name alone (`Book(b)`), not with a dot.
+- It is a pattern only: a value is still built as `Outcome::Pending`.
+- A variant's pattern names all of its values or none: `Outcome::Result` (or `.Result`) matches whatever the variant carries, while `.Result(a, b)` against `Result(Int)` is refused.
+
 ### Matching strings, and or-patterns
 
 A `String` matches against string literals, and an arm may list several patterns separated by `|`; the arm runs when any one of them matches. This is the way to dispatch on a word: one decision, the subject named once, and a `_` arm that says what happens to everything else.

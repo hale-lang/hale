@@ -221,6 +221,53 @@ literal: a nested pattern there (`Op::Pair((a, b))`) is a type error at
 the nested pattern; bind the value and match or read the binding in the
 arm.
 
+**`.Variant` patterns** (GH #2069, F.58). Against a value whose type
+is an enum (directly, through an alias, or a generic enum's
+instantiation), a pattern may name a variant with a leading dot:
+
+```hale
+type Outcome = enum { Result(Int), Refused(String), Pending };
+
+fn index_or(o: Outcome, fallback: Int) -> Int {
+    return match o {
+        .Result(n) -> n,
+        .Refused(_) | .Pending -> fallback,
+    };
+}
+```
+
+- `.V` and `.V(p, …)` mean exactly `E::V` and `E::V(p, …)`, `E` the
+  enum of the value matched, in every position a constructor pattern is
+  written: a match arm, an or-pattern's alternative, `if let`, `let …
+  else` and a pattern `let`. Exhaustiveness, redundancy, the binding
+  rules and lowering read it as that pattern, and the two spellings mix
+  in one match. Inside a tuple pattern or a variant's values it is the
+  nested pattern `E::V` would be, refused the same way (below).
+- The dot is written against the name: `. V` is a parse error.
+- Against a value whose type is no enum (an `Int`, a set, a generic
+  body's type parameter once a call specializes the body) it is a type
+  error at the pattern ("\`.V(…)\` names a variant of the value's enum,
+  and the value matched is of type \`Int\`, which is no enum"); against
+  a set, whose members are matched by their types' names, the message
+  says to write `Member(…)`.
+- A name that is no variant of the value's enum is a type error at the
+  pattern with the nearest variant, or the list of them ("\`.Wrok(…)\`:
+  enum \`Place\` has no variant \`Wrok\` — did you mean \`.Work\`?").
+- `.V` is a pattern only, never an expression.
+
+The checker resolves each `.V` against the type it gave the scrutinee
+and records the variant; lowering reads that record rather than naming
+the enum again, and in a generic body each specialization resolves the
+pattern against its own instantiation.
+
+**A variant's pattern names all of its values or none**: `E::V` (and
+`.V`) with no parentheses matches the variant whatever it carries, and
+one with parentheses names each value the variant declares. A count that
+differs (`Job::Work(1, 2)` against `Work(Int)`, `.Rest(x)` against a
+variant that carries nothing) is a type error at the pattern ("the
+variant \`Work\` carries 1 value, and this pattern names 2"). Until GH
+#2069 the check passed it and the build refused it.
+
 **A pattern's bindings** are locals of their arm (its guard and its
 body), each of the type of what it binds: a bare binding is of the
 scrutinee's type, a variant's value of the variant's declared field

@@ -772,6 +772,22 @@ pub struct Injection {
     pub member: String,
 }
 
+/// GH #2069 (F.58): the variant a `.Variant` pattern names, as the check
+/// resolved it against the value matched. Lowering reads it
+/// (`variant_pattern_in`) and names no enum from the spelling.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariantPattern {
+    /// The enum, by the name the check typed the value with (its declared,
+    /// merged name, an alias followed; a generic enum's instantiation, its
+    /// monomorph's). `None` for a pattern in a generic body against a value
+    /// of a type in its parameters: each walk per monomorph resolved it
+    /// against that monomorph's value (or refused it), so each
+    /// specialization's own value is its enum.
+    pub enumeration: Option<String>,
+    /// The variant's declared name.
+    pub variant: String,
+}
+
 /// What a monomorph's template is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemplateKind {
@@ -1144,7 +1160,7 @@ pub fn view_nodes(item: &TopDecl, out: &mut Vec<usize>) {
         use hale_syntax::ast::Pattern;
         match p {
             Pattern::Binding(id) => out.push(node(id)),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+            Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
                 args.iter().for_each(|a| pattern(a, out))
             }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
@@ -1331,6 +1347,10 @@ pub struct TypingRecord {
     /// template is with its parameters bound ([`MonoShape`]): what the
     /// owned-view pass classifies `Box_Int` through.
     pub mono_shapes: std::sync::Arc<MonoShapes>,
+    /// GH #2069 (F.58): each `.Variant` pattern's variant, by the body
+    /// declaring it and the pattern's span. Kept across discarded walks,
+    /// as `ident_reads` is: a pattern resolves the same on every path.
+    pub variant_patterns: BTreeMap<(u32, u32, u32), VariantPattern>,
     /// What a discarded walk changed, while one is open
     /// ([`Self::open_walk`]).
     walk: Option<WalkUndo>,
@@ -1447,6 +1467,16 @@ impl TypingRecord {
     /// ([`CheckedCalls`]).
     pub fn checked_calls(&self) -> CheckedCalls {
         checked_calls_of(&self.bodies)
+    }
+
+    /// GH #2069 (F.58): the `.Variant` pattern at `span` in the body `body`
+    /// names `pattern`. The first walk's answer stands (a generic body is
+    /// walked again per specialization).
+    pub fn variant_pattern(&mut self, body: NodeId, span: Span, pattern: VariantPattern) {
+        if body.is_none() {
+            return;
+        }
+        self.variant_patterns.entry((body.0, span.start.0, span.end.0)).or_insert(pattern);
     }
 
     /// GH #1984: the call whose callee is at `callee` in the body `body` is
@@ -1667,6 +1697,8 @@ pub struct TypedBodies {
     ident_reads: BTreeMap<(u32, Vec<u32>), u8>,
     literal_paths: BTreeMap<u32, std::collections::BTreeSet<Vec<u32>>>,
     views: ProgramViews,
+    /// GH #2069 (F.58): the `variant_patterns` column, by (body, span).
+    variant_patterns: BTreeMap<(u32, u32, u32), VariantPattern>,
     /// Whether a row changes a denomination, prints a unit (U3) or types
     /// an operator's result (U4): a program with none has no value row
     /// for lowering to look up.
@@ -1691,6 +1723,19 @@ impl TypedBodies {
             return None;
         }
         self.bodies.get(&body.0)?.injections.get(site)
+    }
+
+    /// GH #2069 (F.58): the variant the `.Variant` pattern at `span` in the
+    /// body declared at `body` names, as the check resolved it; `None` for
+    /// a pattern the check did not resolve (it refused it).
+    pub fn variant_pattern_in(&self, body: NodeId, span: Span) -> Option<&VariantPattern> {
+        self.variant_patterns.get(&(body.0, span.start.0, span.end.0))
+    }
+
+    /// GH #2069: the `.Variant` pattern whose dot is at the merged offset
+    /// `dot`, in whichever body: what an editor's hover over it shows.
+    pub fn variant_pattern_from(&self, dot: usize) -> Option<&VariantPattern> {
+        self.variant_patterns.iter().find(|((_, start, _), _)| *start as usize == dot).map(|(_, row)| row)
     }
 
     /// The calls each body makes that only the check resolves
@@ -1970,6 +2015,7 @@ pub fn typed_bodies(bundle: &crate::Bundle<'_>, top: &crate::resolve::TopScope, 
         ident_reads: record.ident_reads.clone(),
         literal_paths: record.literal_paths.clone(),
         views: record.views.clone(),
+        variant_patterns: record.variant_patterns.clone(),
         injected: record.bodies.values().any(|b| !b.injections.is_empty()),
         scaled: record.bodies.values().any(|b| {
             b.conversions.iter().any(|(site, r)| {

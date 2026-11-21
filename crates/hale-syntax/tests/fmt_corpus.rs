@@ -201,6 +201,49 @@ fn a_call_through_a_tuple_part_is_tight() {
     assert!(once.contains("t.0(4), t.0(5)"), "{once}");
 }
 
+/// GH #2069 (F.58): a `.Variant` pattern is spaced as a word from what
+/// precedes it (`{ .Buy`, `| .Sell`, `let .Buy`, `if let .Other`) and
+/// tight after its dot; a line it leads after `,` or `{` is its own arm,
+/// while a line a `.` leads after an operand still continues the chain.
+#[test]
+fn dot_variant_patterns_round_trip() {
+    let src = r#"type Side = enum { Buy, Sell, Other(String) };
+
+fn f(s: Side, t: String) -> Int {
+    let n = match s { .Buy->1, .Sell|.Other(_) -> 2 };
+    if let .Other( x ) = s { return 3; }
+    let .Buy = s else { return 0; };
+    let k = std::str::words(t)
+        .filter(len(it) > 2)
+        .count();
+    let m = match s {
+        .Buy -> 1,
+        .Sell | Side::Other(_) -> 2,
+    };
+    return n + k + m;
+}
+"#;
+    let once = format_source(src).expect("gate");
+    assert_eq!(format_source(&once).expect("gate, 2nd pass"), once, "not a fixed point");
+    let expected = r#"type Side = enum { Buy, Sell, Other(String) };
+
+fn f(s: Side, t: String) -> Int {
+    let n = match s { .Buy -> 1, .Sell | .Other(_) -> 2 };
+    if let .Other(x) = s { return 3; }
+    let .Buy = s else { return 0; };
+    let k = std::str::words(t)
+        .filter(len(it) > 2)
+        .count();
+    let m = match s {
+        .Buy -> 1,
+        .Sell | Side::Other(_) -> 2,
+    };
+    return n + k + m;
+}
+"#;
+    assert_eq!(once, expected);
+}
+
 /// Every `.hl` file `hale fmt .` visits from the repository root:
 /// `vendor/`, dot-directories and build output skipped.
 fn tree_files() -> Vec<PathBuf> {

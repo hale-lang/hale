@@ -1,0 +1,13 @@
+// A seed whose enum is matched with `.Variant` patterns, imported by
+// tests/hale/dot_variant_patterns_test.hl: the library's own match, and
+// the importer's against the imported enum, name the variants alike.
+
+type Signal = enum { Go(Int), Hold, Stop(String) };
+
+fn weight(s: Signal) -> Int {
+    return match s {
+        .Go(n) -> n,
+        .Hold -> 0,
+        .Stop(_) -> -1,
+    };
+}

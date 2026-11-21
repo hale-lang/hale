@@ -417,6 +417,7 @@ pub const MUTATORS: &[Mutator] = &[
     Mutator { name: "match_to_if_let", apply: match_to_if_let },
     Mutator { name: "byte_literal_spelling", apply: byte_literal_spelling },
     Mutator { name: "entry_shape", apply: entry_shape },
+    Mutator { name: "dot_variant_spelling", apply: dot_variant_spelling },
 ];
 
 /// `return e;` ending a fn's body becomes the tail `e`.
@@ -1251,9 +1252,10 @@ fn bound_names(p: &Pattern) -> Vec<String> {
     fn walk(p: &Pattern, out: &mut Vec<String>) {
         match p {
             Pattern::Binding(id) => out.push(id.name.clone()),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
-                args.iter().for_each(|a| walk(a, out))
-            }
+            Pattern::Constructor { args, .. }
+            | Pattern::DotVariant { args, .. }
+            | Pattern::Tuple(args, _)
+            | Pattern::Or(args, _) => args.iter().for_each(|a| walk(a, out)),
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }
@@ -1339,9 +1341,10 @@ fn byte_literal_spelling(files: &Files, rng: &mut Rng) -> Option<(Files, String)
     fn pattern_sites(p: &Pattern, out: &mut Vec<(Span, i64)>) {
         match p {
             Pattern::Literal(Literal::Int(n), span) => out.push((*span, *n)),
-            Pattern::Constructor { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
-                args.iter().for_each(|a| pattern_sites(a, out))
-            }
+            Pattern::Constructor { args, .. }
+            | Pattern::DotVariant { args, .. }
+            | Pattern::Tuple(args, _)
+            | Pattern::Or(args, _) => args.iter().for_each(|a| pattern_sites(a, out)),
             _ => {}
         }
     }
@@ -1370,4 +1373,53 @@ fn byte_literal_spelling(files: &Files, rng: &mut Rng) -> Option<(Files, String)
     };
     let out = splice(&src, vec![(span.start.as_usize(), span.end.as_usize(), spelled.clone())])?;
     Some((with_main(files, out), format!("byte_literal_spelling({n} as {spelled})")))
+}
+
+/// GH #2069 (F.58): an enum constructor pattern written with its enum
+/// (`E::V`, `E::V(x)`, `alias::E::V(x)`) is spelled `.V` / `.V(x)`, the
+/// variant of the value's enum: one pattern, or every one of its match (an
+/// `if let`'s and a `let … else`'s included). The check resolves the dot
+/// against the scrutinee's type and records it; lowering reads that
+/// record, so what the check accepts must lower as the qualified spelling
+/// did.
+fn dot_variant_spelling(files: &Files, rng: &mut Rng) -> Option<(Files, String)> {
+    fn pattern_sites(p: &Pattern, out: &mut Vec<(Span, String)>) {
+        match p {
+            Pattern::Constructor { path, args, .. } => {
+                if let (true, Some(v)) = (path.segments.len() >= 2, path.segments.last()) {
+                    out.push((path.span, v.name.clone()));
+                }
+                args.iter().for_each(|a| pattern_sites(a, out))
+            }
+            Pattern::DotVariant { args, .. } | Pattern::Tuple(args, _) | Pattern::Or(args, _) => {
+                args.iter().for_each(|a| pattern_sites(a, out))
+            }
+            _ => {}
+        }
+    }
+    let (src, program) = parsed(files)?;
+    let mut per_match: Vec<Vec<(Span, String)>> = Vec::new();
+    for m in match_stmts(&program) {
+        let mut sites = Vec::new();
+        for arm in &m.arms {
+            pattern_sites(&arm.pattern, &mut sites);
+        }
+        if !sites.is_empty() {
+            per_match.push(sites);
+        }
+    }
+    let sites = rng.pick(&per_match)?.clone();
+    let chosen: Vec<(Span, String)> = if rng.below(2) == 0 {
+        vec![rng.pick(&sites)?.clone()]
+    } else {
+        sites
+    };
+    let what = chosen
+        .iter()
+        .map(|(sp, v)| Some(format!("{} as .{v}", text(&src, *sp)?)))
+        .collect::<Option<Vec<_>>>()?
+        .join(", ");
+    let edits = chosen.into_iter().map(|(sp, v)| (sp.start.as_usize(), sp.end.as_usize(), format!(".{v}"))).collect();
+    let out = splice(&src, edits)?;
+    Some((with_main(files, out), format!("dot_variant_spelling({what})")))
 }

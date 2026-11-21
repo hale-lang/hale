@@ -851,6 +851,7 @@ impl Shift for Pattern {
             Pattern::Wildcard(span) => sh!(d; span),
             Pattern::Binding(x) => x.shift(d),
             Pattern::Constructor { path, args, span } => sh!(d; path, args, span),
+            Pattern::DotVariant { variant, args, span } => sh!(d; variant, args, span),
             Pattern::Tuple(elems, span) | Pattern::Or(elems, span) => sh!(d; elems, span),
         }
     }

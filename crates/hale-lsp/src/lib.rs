@@ -2019,6 +2019,41 @@ fn hover_text(
         return Some(out);
     }
 
+    // GH #2069 (F.58): a `.Variant` pattern (a dot no operand precedes:
+    // `{ .V`, `, .V`, `| .V`, `let .V`) is the variant the check resolved
+    // it to, against the value matched. Only there is the seed typed.
+    if idx >= 2
+        && matches!(tokens[idx - 1].kind, TK::Dot)
+        && matches!(tokens[idx - 2].kind, TK::LBrace | TK::Comma | TK::Pipe | TK::Let)
+    {
+        let base = base_of(snap, path)?;
+        let dot = base as usize + tokens[idx - 1].span.start.as_usize();
+        let typed = snap.demand_typed_bodies().ok()?;
+        let row = typed.variant_pattern_from(dot)?;
+        return Some(match &row.enumeration {
+            Some(e) => {
+                let shown = e.as_str();
+                let fields = match scope.top.symbols.get(e) {
+                    Some(TopSymbol::Type(hale_types::symbol::TypeInfo { kind: TypeKind::Enum(vs), .. })) => vs
+                        .iter()
+                        .find(|v| v.name == row.variant)
+                        .filter(|v| !v.fields.is_empty())
+                        .map(|v| format!("({})", v.fields.iter().map(|t| t.display()).collect::<Vec<_>>().join(", "))),
+                    _ => None,
+                }
+                .unwrap_or_default();
+                format!(
+                    "```hale\n{shown}::{}{fields}\n```\n\n`.{}`: a variant of the matched value's enum `{shown}`",
+                    row.variant, row.variant
+                )
+            }
+            None => format!(
+                "`.{}`: a variant of the matched value's enum, resolved per specialization of this generic body",
+                row.variant
+            ),
+        });
+    }
+
     // Top-level symbol lookup.
     let sym = scope.top.lookup(word)?;
     use hale_types::symbol::{TopSymbol, TypeKind};
@@ -3713,6 +3748,37 @@ fn main() { App { }; }\n";
         check_open_seeds(&mut out, &[file.clone()], &mut state, &mut || true);
         assert!(out.is_empty());
         assert_eq!(state.pending, vec![file.clone()], "the superseded pass's files wait for the next");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// GH #2069 (F.58): a hover over a `.Variant` pattern shows the
+    /// variant the check resolved it to, of the matched value's enum,
+    /// with its values; a field read's `.` is no pattern and types nothing.
+    #[test]
+    fn a_hover_over_a_dot_variant_pattern_names_its_enum() {
+        let dir = std::env::temp_dir().join(format!("hale_lsp_dot_variant_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("main.hl");
+        let src = "type Outcome = enum { Result(Int), Pending };\ntype P { n: Int; }\n\nfn f(o: Outcome, p: P) -> Int {\n    return match o {\n        .Result(n) -> n + p.n,\n        .Pending -> 0,\n    };\n}\n\nfn main() { println(f(Outcome::Pending, P { n: 1 })); }\n";
+        std::fs::write(&file, src).unwrap();
+        let snap = load(&file);
+        let at = |needle: &str| -> (u32, u32) {
+            let line = src.lines().position(|l| l.contains(needle)).unwrap();
+            (line as u32, src.lines().nth(line).unwrap().find(needle).unwrap() as u32 + 1)
+        };
+        let (line, character) = at(".Result");
+        let h = hover_at(Some(&snap), &file, src, line, character).expect("a hover");
+        let text = h["contents"]["value"].as_str().unwrap_or("");
+        assert!(text.contains("Outcome::Result(Int)"), "{h}");
+        assert!(text.contains("enum `Outcome`"), "{h}");
+        let (line, character) = at(".Pending");
+        let h = hover_at(Some(&snap), &file, src, line, character).expect("a hover");
+        assert!(h["contents"]["value"].as_str().unwrap_or("").contains("Outcome::Pending\n"), "{h}");
+        let snap = load(&file);
+        let (line, character) = at(".n,");
+        let _ = hover_at(Some(&snap), &file, src, line, character);
+        assert_eq!(snap.builds()["expression_typing"], 0, "a field's hover types nothing: {:?}", snap.builds());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

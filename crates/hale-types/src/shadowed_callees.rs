@@ -551,6 +551,20 @@ impl Walk<'_> {
                     self.pattern_bindings(a, fields.and_then(|f| f.get(i)), out);
                 }
             }
+            // GH #2069: `.V(…)` names its enum through the scrutinee's
+            // type, which this pass, before the check, does not have: the
+            // one enum the program declares a variant `V` in, or none (the
+            // binding then says nothing of its type, as a tuple pattern's).
+            Pattern::DotVariant { variant, args, .. } => {
+                let mut of = self.variants.iter().filter(|((_, v), _)| *v == variant.name);
+                let fields = match (of.next(), of.next()) {
+                    (Some((_, fields)), None) => Some(fields),
+                    _ => None,
+                };
+                for (i, a) in args.iter().enumerate() {
+                    self.pattern_bindings(a, fields.and_then(|f| f.get(i)), out);
+                }
+            }
             Pattern::Tuple(args, _) => {
                 let parts = match declared {
                     Some(TypeExpr::Tuple(parts, _)) => Some(parts),

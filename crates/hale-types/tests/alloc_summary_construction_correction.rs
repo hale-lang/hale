@@ -727,8 +727,10 @@ fn own_entries_run_to_exit_programs() {
     // stores each summary as it is (GH #2067; until GH #2099 the whole
     // assignment kept the row's elements and the push copied the summary); 31:
     // `tests/hale/bounded_inline_enum_result_push_test.hl`, whose `s_of`
-    // builds the record `build` pushes as it is (GH #2088).
-    assert_eq!(moved, 31, "the run-to-exit programs among the targets that lose a site");
+    // builds the record `build` pushes as it is (GH #2088); 32:
+    // `tests/hale/dot_variant_patterns_test.hl`, whose `total` passes a
+    // String bound in each element's match to `len` (GH #2069).
+    assert_eq!(moved, 32, "the run-to-exit programs among the targets that lose a site");
     assert_eq!(more, [], "the copy's leak sites");
     // A codec's sites lie in the JSON codecs' parse space, from
     // `JSON_SYNTH_BASE` (0x6000_0000 = 1610612736), past every file.
@@ -1034,6 +1036,9 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/crypto_sha256_stream_test.hl: main BytesLit #5 InUnboundedLoop",
             "tests/hale/crypto_sha256_stream_test.hl: main StringConcat #7 InUnboundedLoop",
             "tests/hale/crypto_sha256_stream_test.hl: main StringConcat #8 InUnboundedLoop",
+            // `tests/hale/dot_variant_patterns_test.hl`: `total` passes the String
+            // a `.Refused(why)` arm binds from each element to `len` in its loop
+            "tests/hale/dot_variant_patterns_test.hl: total CellCopy(\"copy: a local bound from a place is passed to a call that may write through its parameter\") #1 InUnboundedLoop",
             // a record per element of the array the shelf's decoder reads
             "tests/hale/enum_return_copy_loops_test.hl: book StructLit(\"Book\") #1 InvokedUnboundedly",
             // `tests/hale/json_defaults_test.hl`: its JSON codec of a record with

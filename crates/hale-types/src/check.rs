@@ -107,6 +107,33 @@ fn reserved_member_diag(diags: &mut Vec<Diag>, kind: &str, id: &Ident) {
     ));
 }
 
+/// GH #2069: why a `.Variant` pattern names no enum
+/// (`Checker::dot_variant_enum`).
+enum DotRefusal {
+    /// The value's type is not known here.
+    Unknown,
+    /// A generic body's type parameter.
+    TypeParameter(String),
+    /// A set: its members are matched by their types' names.
+    Set(String),
+    /// Any other type, as shown.
+    NotEnum(String),
+}
+
+/// GH #2069: `p`, a pattern of a match whose `.Variant`s the check
+/// resolved, as `written` (the match as the source has it) spells it: a
+/// resolved `.Variant` shows as written, not as the `E::Variant` it means
+/// (whose `E` may be a generic enum's monomorph).
+fn written_text(written: &MatchStmt, p: &Pattern) -> String {
+    let span = p.span();
+    written
+        .arms
+        .iter()
+        .flat_map(|a| std::iter::once(&a.pattern).chain(a.pattern.alternatives()))
+        .find(|w| w.span() == span)
+        .map_or_else(|| p.text(), |w| w.text())
+}
+
 /// GH #1995 E3: the statement written at `span` in `b` or a block under
 /// it, if any: what a `let … else`'s completing path ends with.
 fn stmt_at(b: &Block, span: Span) -> Option<&Stmt> {
@@ -143,7 +170,7 @@ fn pattern_always_matches(p: &Pattern) -> bool {
         Pattern::Binding(_) | Pattern::Wildcard(_) => true,
         Pattern::Tuple(elems, _) => elems.iter().all(pattern_always_matches),
         Pattern::Or(alts, _) => alts.iter().any(pattern_always_matches),
-        Pattern::Literal(..) | Pattern::Constructor { .. } => false,
+        Pattern::Literal(..) | Pattern::Constructor { .. } | Pattern::DotVariant { .. } => false,
     }
 }
 
@@ -169,6 +196,12 @@ fn match_is_exhaustive(
     let alts = || arms.iter().filter(unguarded).flat_map(|a| a.pattern.alternatives());
     let has_catchall = alts().any(|p| matches!(p, Pattern::Wildcard(_) | Pattern::Binding(_)));
     if has_catchall {
+        return true;
+    }
+    // GH #2069: a `.Variant` the check left unresolved (the match is
+    // resolved before this is asked, `resolve_dot_variants`) was refused
+    // where it is written; the match is not refused again.
+    if alts().any(|p| matches!(p, Pattern::DotVariant { .. })) {
         return true;
     }
     if matches!(scrut_ty, Ty::Prim(PrimType::Bool)) {
@@ -7459,6 +7492,14 @@ fn pattern_covers(a: &Pattern, b: &Pattern) -> bool {
         (Pattern::Tuple(xs, _), Pattern::Tuple(ys, _)) => {
             xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| pattern_covers(x, y))
         }
+        (
+            Pattern::DotVariant { variant: va, args: aa, .. },
+            Pattern::DotVariant { variant: vb, args: ab, .. },
+        ) => {
+            va.name == vb.name
+                && (aa.iter().all(irrefutable)
+                    || (aa.len() == ab.len() && aa.iter().zip(ab).all(|(x, y)| pattern_covers(x, y))))
+        }
         _ => false,
     }
 }
@@ -7466,7 +7507,9 @@ fn pattern_covers(a: &Pattern, b: &Pattern) -> bool {
 fn pattern_binders<'p>(p: &'p Pattern, out: &mut Vec<&'p str>) {
     match p {
         Pattern::Binding(id) => out.push(id.name.as_str()),
-        Pattern::Constructor { args, .. } => args.iter().for_each(|a| pattern_binders(a, out)),
+        Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } => {
+            args.iter().for_each(|a| pattern_binders(a, out))
+        }
         Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => ps.iter().for_each(|a| pattern_binders(a, out)),
         Pattern::Literal(..) | Pattern::Wildcard(_) => {}
     }
@@ -17911,6 +17954,12 @@ impl<'a> Checker<'a> {
                     self.note_view_pattern(a, ty);
                 }
             }
+            // GH #2069: one the match's resolution left (refused there)
+            Pattern::DotVariant { args, .. } => {
+                for a in args {
+                    self.note_view_pattern(a, &Ty::Unknown);
+                }
+            }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }
@@ -17941,7 +17990,7 @@ impl<'a> Checker<'a> {
                 &id.name,
                 LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false, from_let: false },
             ),
-            Pattern::Constructor { args, .. } => {
+            Pattern::Constructor { args, .. } | Pattern::DotVariant { args, .. } => {
                 for a in args {
                     self.bind_pattern(a);
                 }
@@ -17967,6 +18016,11 @@ impl<'a> Checker<'a> {
     /// is a diverging arm and types as `Unknown` (GH #2016).
     fn check_match_core(&mut self, stmt: &MatchStmt, as_expr: bool) -> Ty {
         let scrut_ty = self.check_expr(&stmt.scrutinee);
+        // GH #2069 (F.58): a `.Variant` an arm writes is `E::Variant`, `E`
+        // the scrutinee's enum; every rule below reads the match as that.
+        let resolved = self.resolve_dot_variants(stmt, &scrut_ty);
+        let written = stmt;
+        let stmt = resolved.as_ref().unwrap_or(stmt);
         let mut joined: Option<Ty> = None;
         let mut arm_tys: Vec<Ty> = Vec::with_capacity(stmt.arms.len());
         // Arms that disagree make the match's type unknown, as an `if`
@@ -18074,9 +18128,9 @@ impl<'a> Checker<'a> {
         if as_expr && matches!(joined, Some(Ty::Prim(PrimType::Decimal(_)))) {
             joined = Some(self.join_decimal_arms(stmt, &arm_tys, joined.take().expect("a Decimal")));
         }
-        self.warn_redundant_alternatives(&stmt.arms);
+        self.warn_redundant_alternatives(&stmt.arms, written);
         if matches!(stmt.form, MatchForm::Let | MatchForm::LetElse) {
-            self.check_pattern_let(stmt, &scrut_ty);
+            self.check_pattern_let(stmt, &scrut_ty, written);
         } else if !match_is_exhaustive(&scrut_ty, &stmt.arms, self.top, self.known) {
             self.diags.push(Diag::ty(
                 stmt.span,
@@ -19921,6 +19975,12 @@ impl<'a> Checker<'a> {
                     self.pattern_binding_types(first, ty, out);
                 }
             }
+            // GH #2069: one the match's resolution left (refused there)
+            Pattern::DotVariant { args, .. } => {
+                for a in args {
+                    self.pattern_binding_types(a, &Ty::Unknown, out);
+                }
+            }
             Pattern::Literal(..) | Pattern::Wildcard(_) => {}
         }
     }
@@ -19992,7 +20052,7 @@ impl<'a> Checker<'a> {
     /// names are bound after the statement, and have no value when it does
     /// not match. A pattern that always matches makes the `else` dead,
     /// which is a warning.
-    fn check_pattern_let(&mut self, stmt: &MatchStmt, scrut_ty: &Ty) {
+    fn check_pattern_let(&mut self, stmt: &MatchStmt, scrut_ty: &Ty, written: &MatchStmt) {
         if self.specializing.is_some() {
             return;
         }
@@ -20000,9 +20060,9 @@ impl<'a> Checker<'a> {
         let pattern = &first.pattern;
         let always = pattern_always_matches(pattern)
             || match_is_exhaustive(scrut_ty, &stmt.arms[..1], self.top, self.known);
+        let shown = written_text(written, pattern);
         match stmt.form {
             MatchForm::Let if !always => {
-                let shown = pattern.text();
                 let of = if *scrut_ty == Ty::Unknown { String::new() } else { format!(" a `{}`", scrut_ty.display()) };
                 self.diags.push(Diag::ty(
                     pattern.span(),
@@ -20018,11 +20078,7 @@ impl<'a> Checker<'a> {
                 if always && *scrut_ty != Ty::Unknown {
                     self.diags.push(Diag::warn(
                         else_block.span,
-                        format!(
-                            "`{}` matches every `{}`, so this `else` never runs: remove it",
-                            pattern.text(),
-                            scrut_ty.display()
-                        ),
+                        format!("`{shown}` matches every `{}`, so this `else` never runs: remove it", scrut_ty.display()),
                     ));
                 }
                 if let Some(fall) = crate::definite_return::completes(else_block) {
@@ -20040,9 +20096,8 @@ impl<'a> Checker<'a> {
                             else_block.span,
                             format!(
                                 "the `else` of a `let … else` must leave (`return`, `fail`, `break`, `continue`, \
-                                 `terminate` or `violate`): what follows the statement runs only when `{}` matches; \
-                                 this `else` can complete: {why}{call_hint}",
-                                pattern.text()
+                                 `terminate` or `violate`): what follows the statement runs only when `{shown}` \
+                                 matches; this `else` can complete: {why}{call_hint}"
                             ),
                         )
                         .with_related(fall.span, "the path that completes"),
@@ -20059,7 +20114,7 @@ impl<'a> Checker<'a> {
     /// alternative of the same arm. In a guarded arm that binds names an
     /// earlier alternative does not make a later one redundant, since the
     /// guard is tried again with the later one's bindings.
-    fn warn_redundant_alternatives(&mut self, arms: &[MatchArm]) {
+    fn warn_redundant_alternatives(&mut self, arms: &[MatchArm], written: &MatchStmt) {
         let mut earlier: Vec<&Pattern> = Vec::new();
         for arm in arms {
             if let Pattern::Or(alts, _) = &arm.pattern {
@@ -20081,8 +20136,8 @@ impl<'a> Checker<'a> {
                             format!(
                                 "the alternative `{}` is never tried: `{}`, earlier in this match, already matches \
                                  every value it does; remove it",
-                                alt.text(),
-                                by.text()
+                                written_text(written, alt),
+                                written_text(written, by)
                             ),
                         ));
                     }
@@ -20136,6 +20191,153 @@ impl<'a> Checker<'a> {
             *span,
             format!("`{}` is not a member of the set `{set}`, whose members are {}", member.name, members.join(", ")),
         ));
+    }
+
+    /// GH #2069 (F.58): `stmt` with each `.Variant` an arm writes (its
+    /// whole pattern, or an alternative of an or-pattern) resolved against
+    /// the value matched, of type `scrut`: the pattern `E::Variant` it
+    /// means, `E` the enum the value's type names (through an alias, and a
+    /// generic enum's instantiation by its monomorph). Each one resolved is
+    /// recorded for lowering (`typed_bodies`' `variant_patterns`), which
+    /// reads it instead of naming the enum again; each one that names no
+    /// variant of the value's enum is refused where it is written, and left
+    /// as written. `None` when no arm writes one. A `.Variant` nested in a
+    /// tuple's parts or a variant's values is refused there as `E::Variant`
+    /// is (`check_pattern_literals`), so only an arm's own are resolved.
+    fn resolve_dot_variants(&mut self, stmt: &MatchStmt, scrut: &Ty) -> Option<MatchStmt> {
+        let dotted = |p: &Pattern| matches!(p, Pattern::DotVariant { .. });
+        if !stmt.arms.iter().any(|a| a.pattern.alternatives().iter().any(dotted)) {
+            return None;
+        }
+        let target = self.dot_variant_enum(scrut);
+        let mut out = stmt.clone();
+        for arm in &mut out.arms {
+            match &mut arm.pattern {
+                Pattern::Or(alts, _) => {
+                    for alt in alts {
+                        self.resolve_dot_variant(alt, &target);
+                    }
+                }
+                p => self.resolve_dot_variant(p, &target),
+            }
+        }
+        Some(out)
+    }
+
+    /// GH #2069: the enum a `.Variant` against a value of type `scrut`
+    /// names: its name as the check types the value (an alias followed to
+    /// its target), how a diagnostic shows it, and its variants; or why
+    /// there is none.
+    fn dot_variant_enum(&self, scrut: &Ty) -> Result<(String, String, Vec<String>), DotRefusal> {
+        let shown = |n: &str| match self.typed.monomorphs.named(n) {
+            Some(m) => match self.templates.get(m.template) {
+                Some(t) => format!("{}<{}>", t.name(), m.args.iter().map(Ty::display).collect::<Vec<_>>().join(", ")),
+                None => n.to_string(),
+            },
+            None => n.to_string(),
+        };
+        let Ty::Named(name) = scrut else {
+            return Err(match scrut {
+                Ty::Unknown => DotRefusal::Unknown,
+                other => DotRefusal::NotEnum(other.display()),
+            });
+        };
+        if self.generic_params.iter().any(|g| g == name) {
+            return Err(DotRefusal::TypeParameter(name.clone()));
+        }
+        let mut cur = name.clone();
+        for _ in 0..16 {
+            if let Some(td) = self.generic_types.get(cur.as_str()) {
+                let TypeDeclBody::Enum(vs) = &td.body else { return Err(DotRefusal::NotEnum(shown(name))) };
+                return Ok((cur.clone(), shown(&cur), vs.iter().map(|v| v.name.name.clone()).collect()));
+            }
+            match self.top.symbols.get(cur.as_str()) {
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
+                    if !vs.is_empty() && vs.iter().all(|v| v.member) {
+                        return Err(DotRefusal::Set(cur.clone()));
+                    }
+                    return Ok((cur.clone(), shown(&cur), vs.iter().map(|v| v.name.clone()).collect()));
+                }
+                Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Alias(Ty::Named(n)), .. })) => {
+                    cur = n.clone();
+                    continue;
+                }
+                Some(_) => return Err(DotRefusal::NotEnum(shown(name))),
+                None => {}
+            }
+            let Some((GenericTemplate::Type(td), _)) = self.resolve_generic_monomorph(&cur) else {
+                return Err(DotRefusal::NotEnum(shown(name)));
+            };
+            let TypeDeclBody::Enum(vs) = &td.body else { return Err(DotRefusal::NotEnum(shown(name))) };
+            return Ok((cur.clone(), shown(&cur), vs.iter().map(|v| v.name.name.clone()).collect()));
+        }
+        Err(DotRefusal::NotEnum(shown(name)))
+    }
+
+    /// GH #2069: `p`, if it is a `.Variant`, made the `E::Variant` it means
+    /// against the enum `target` names (and recorded), or refused.
+    fn resolve_dot_variant(&mut self, p: &mut Pattern, target: &Result<(String, String, Vec<String>), DotRefusal>) {
+        let Pattern::DotVariant { variant, args, span } = p else { return };
+        let v = variant.name.as_str();
+        let written = if args.is_empty() { format!(".{v}") } else { format!(".{v}(…)") };
+        let why = match target {
+            Ok((name, shown, variants)) => {
+                if variants.iter().any(|x| x == v) {
+                    // A generic body's pattern against a value of a type in its
+                    // parameters (which the template's walk types `Unknown`)
+                    // is resolved on each walk per monomorph, against that
+                    // monomorph's value, and its row names no enum: lowering
+                    // lowers each specialization against its own value.
+                    let enumeration = self.specializing.is_none().then(|| name.clone());
+                    let row = crate::typed_bodies::VariantPattern { enumeration, variant: v.to_string() };
+                    self.typed.variant_pattern(self.body, *span, row);
+                    let head = Ident::new(name.clone(), Span::new(span.start.as_usize(), span.start.as_usize() + 1));
+                    *p = Pattern::Constructor {
+                        path: QualifiedName { segments: vec![head, variant.clone()], span: *span },
+                        args: std::mem::take(args),
+                        span: *span,
+                    };
+                    return;
+                }
+                let names: Vec<&str> = variants.iter().map(String::as_str).collect();
+                let hint = match closest_bare_name(v, &names) {
+                    Some(h) => format!(" — did you mean `.{h}`?"),
+                    None if names.is_empty() => String::new(),
+                    None => format!("; its variants are {}", names.join(", ")),
+                };
+                format!("`{written}`: enum `{shown}` has no variant `{v}`{hint}")
+            }
+            Err(DotRefusal::Set(set)) => format!(
+                "`{written}` names a variant of an enum, and the value matched is of the set `{set}`: a set's member \
+                 is matched by its type's name alone, `{v}(…)`"
+            ),
+            Err(DotRefusal::TypeParameter(t)) => format!(
+                "`{written}` names a variant of the value's enum, and the value matched is of the type parameter \
+                 `{t}`, which names no enum: write the enum, `Enum::{v}`"
+            ),
+            Err(DotRefusal::NotEnum(t)) => format!(
+                "`{written}` names a variant of the value's enum, and the value matched is of type `{t}`, which \
+                 is no enum"
+            ),
+            // A generic body's template walk types a value of a type in its
+            // parameters `Unknown`: each walk per monomorph resolves the
+            // pattern against its own value, and keeps its refusal
+            // (`push_or_keep`), so one that names no variant there is
+            // refused once a call instantiates the body.
+            Err(DotRefusal::Unknown) if self.specializing.is_none() && !self.generic_params.is_empty() => return,
+            Err(DotRefusal::Unknown) => format!(
+                "`{written}` names a variant of the value's enum, and the type of the value matched is not known \
+                 here: write the enum, `Enum::{v}`"
+            ),
+        };
+        let why = match &self.specializing {
+            Some(args) => format!(
+                "{why} (in this generic body, specialized for {})",
+                args.iter().map(|t| format!("`{}`", t.display())).collect::<Vec<_>>().join(", ")
+            ),
+            None => why,
+        };
+        self.push_or_keep(Diag::ty(*span, why));
     }
 
     /// GH #1971: a constructor pattern on an enum names its enum
@@ -22198,7 +22400,7 @@ impl<'a> Checker<'a> {
                     self.check_pattern_variants(a);
                 }
             }
-            Pattern::Tuple(ps, _) | Pattern::Or(ps, _) => {
+            Pattern::Tuple(ps, _) | Pattern::Or(ps, _) | Pattern::DotVariant { args: ps, .. } => {
                 for p in ps {
                     self.check_pattern_variants(p);
                 }
@@ -27393,7 +27595,10 @@ impl<'a> Checker<'a> {
                 // a literal, as each value of a variant's is: lowering
                 // matched nothing nested there and refused the arm.
                 for p in subs {
-                    if let Pattern::Tuple(_, sp) | Pattern::Constructor { span: sp, .. } = p {
+                    if let Pattern::Tuple(_, sp)
+                    | Pattern::Constructor { span: sp, .. }
+                    | Pattern::DotVariant { span: sp, .. } = p
+                    {
                         self.diags.push(Diag::ty(
                             *sp,
                             "a tuple pattern takes a binding, `_` or a literal for each of its parts, and hale \
@@ -27416,7 +27621,10 @@ impl<'a> Checker<'a> {
                 // refused `Op::Pair((a, b))`, unlocated, where the check
                 // passed it).
                 for a in args {
-                    if let Pattern::Tuple(_, sp) | Pattern::Constructor { span: sp, .. } = a {
+                    if let Pattern::Tuple(_, sp)
+                    | Pattern::Constructor { span: sp, .. }
+                    | Pattern::DotVariant { span: sp, .. } = a
+                    {
                         self.diags.push(Diag::ty(
                             *sp,
                             "a variant's pattern takes a binding, `_` or a literal for each of its values, \
@@ -27433,6 +27641,26 @@ impl<'a> Checker<'a> {
                 };
                 let Some(v) = variants.iter().find(|v| v.name == variant_seg.name) else { return };
                 let fields = v.fields.clone();
+                // GH #2069: a pattern that names the variant's values names
+                // each of them, as lowering requires (it refused
+                // `Job::Work(1, 2)` against `Work(Int)`, which the check
+                // passed); `E::V` with no parentheses matches any.
+                if !args.is_empty() && args.len() != fields.len() {
+                    let n = fields.len();
+                    let carries = match n {
+                        0 => "carries no value, so its pattern takes no parentheses".to_string(),
+                        1 => "carries 1 value".to_string(),
+                        n => format!("carries {n} values"),
+                    };
+                    self.diags.push(Diag::ty(
+                        pat.span(),
+                        format!(
+                            "the variant `{}` {carries}, and this pattern names {}",
+                            variant_seg.name,
+                            args.len()
+                        ),
+                    ));
+                }
                 for (p, t) in args.iter().zip(fields) {
                     if self.ty_is_nameable(&t) {
                         self.check_pattern_literals(p, &t);
@@ -27442,6 +27670,23 @@ impl<'a> Checker<'a> {
             Pattern::Wildcard(_) | Pattern::Binding(_) => {}
             // the arm's alternatives are each checked by the caller
             Pattern::Or(..) => {}
+            // GH #2069: one the match's resolution left (refused there);
+            // its values are refused as a variant's are when nested
+            Pattern::DotVariant { args, .. } => {
+                for a in args {
+                    if let Pattern::Tuple(_, sp)
+                    | Pattern::Constructor { span: sp, .. }
+                    | Pattern::DotVariant { span: sp, .. } = a
+                    {
+                        self.diags.push(Diag::ty(
+                            *sp,
+                            "a variant's pattern takes a binding, `_` or a literal for each of its values, \
+                             not a nested pattern: bind the value, and match the binding in the arm"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
         }
     }
 

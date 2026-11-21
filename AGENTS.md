@@ -658,6 +658,20 @@ return match e {
 };
 ```
 
+Against a value whose type is an enum, a pattern may name the
+variant with a leading dot: `.Invalid(p)` is `CtlError::Invalid(p)`
+when `e` is a `CtlError`. It works in every pattern position (arms,
+alternatives, `if let`, `let … else`), never as an expression, and is
+refused against anything that is not an enum (a set's member is still
+`Book(b)`):
+
+```hale
+return match e {
+    .Invalid(p) | .NotFound(p) -> p,
+    .NotReady(h) -> f"not ready: {h}",
+};
+```
+
 Every alternative binds the same names at the same types; a guard
 (`p1 | p2 if cond -> …`) covers the whole arm; exhaustiveness counts
 each alternative. `|` is top level only: `E::A(1 | 2)` is refused,
