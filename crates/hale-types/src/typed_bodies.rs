@@ -1530,6 +1530,13 @@ impl ExprTypes {
         self.rows.get(&(body.0, sp.start.0, sp.end.0, expr_kind(e), expr_name(e))).filter(|t| **t != Ty::Unknown)
     }
 
+    /// The row of `e` in `body` as recorded, `Unknown` included: what
+    /// tells "typed `Unknown`" from "never typed" (GH #2111's strict mode).
+    pub fn recorded(&self, body: NodeId, e: &Expr) -> Option<&Ty> {
+        let sp = e.span();
+        self.rows.get(&(body.0, sp.start.0, sp.end.0, expr_kind(e), expr_name(e)))
+    }
+
     /// Add the rows of `program`, whose items the checker walked into
     /// `views` (one table per item, in item order), each body by the id
     /// `body` gives its id (the merged program's; `None` drops the body).

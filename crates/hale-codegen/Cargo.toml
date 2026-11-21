@@ -96,6 +96,10 @@ name = "corpus_oracle"
 path = "tests/corpus_oracle.rs"
 
 [[test]]
+name = "seam_strict_baseline"
+path = "tests/seam_strict_baseline.rs"
+
+[[test]]
 name = "cross_seed"
 path = "tests/cross_seed.rs"
 
