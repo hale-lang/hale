@@ -6,8 +6,10 @@
 //! narrowing its factor (or range), the policy that discharged it and
 //! where the policy came from. The text form is stable, so it is pinned
 //! whole here for the committed form's example (`units/committed_form.hl`);
-//! `--json` carries the same fields. A location's file is relative to the
-//! checked seed's directory, with `..` for a sibling seed's.
+//! `--json` carries the same fields, and a program over `U64` bases
+//! (`units/u64_base.hl`, GH #2131) is pinned too. A location's file is
+//! relative to the checked seed's directory, with `..` for a sibling
+//! seed's.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -145,6 +147,69 @@ fn the_committed_forms_report_is_pinned_whole() {
     let (ok, out, err) = check("committed_form.hl", &["--units"]);
     assert!(ok, "the committed form checks: {err}");
     assert_eq!(out, COMMITTED_FORM, "the whole report, as recorded; the report now reads:\n{out}");
+}
+
+/// GH #2131: the scalars of a program counting a `U64` (`units/u64_base.hl`).
+/// Each says the integer it counts; a quantity's headroom is the `U64`'s,
+/// from zero; and a range of one fits the narrowest unsigned width.
+const U64_BASE: &str = r#"units: 5 declarations, 3 narrowings
+
+u64_base.hl:9:1  type Wei = quantity U64 in wei
+    kind         : quantity
+    counts       : U64
+    denomination : wei, fixed by its own `in`
+    headroom     : 0 to 18446744073709551615 wei (18 eth)
+
+u64_base.hl:10:1  type Gwei = Wei in gwei { round: floor; }
+    kind         : quantity, a denomination of Wei
+    counts       : U64
+    denomination : gwei, fixed by its own `in`
+    policy       : floor, from its own `round:`
+    headroom     : 0 to 18446744073709551615 gwei (18446744073 eth)
+
+u64_base.hl:11:1  type Nonce = distinct U64
+    kind         : identity
+    counts       : U64
+
+u64_base.hl:12:1  type Port = U64 { range: 1..65536; }
+    kind         : range of U64
+    counts       : U64
+    range        : 1..65536
+    fits in      : u16
+
+u64_base.hl:13:1  type Ephemeral = Port { range: 49152..65536; }
+    kind         : range of Port
+    counts       : U64
+    range        : 49152..65536
+    fits in      : u16
+
+narrowings:
+
+u64_base.hl:16:12  Port(n)
+    U64 -> Port, range 1..65536
+    policy       : or clamp, at the site
+
+u64_base.hl:21:13  w.in(gwei)
+    Wei -> Wei in gwei, factor 1/1000000000
+    policy       : or floor, at the site
+
+u64_base.hl:22:22  w
+    Wei -> Gwei, factor 1/1000000000
+    policy       : floor, the `round:` of `type Gwei = Wei in gwei { round: floor; }` (u64_base.hl:10:1)
+"#;
+
+#[test]
+fn a_u64_bases_report_is_pinned_whole() {
+    let (ok, out, err) = check("u64_base.hl", &["--units"]);
+    assert!(ok, "the program checks: {err}");
+    assert_eq!(out, U64_BASE, "the whole report, as recorded; the report now reads:\n{out}");
+    let (ok, out, err) = check("u64_base.hl", &["--units", "--json"]);
+    assert!(ok, "{err}");
+    let v: serde_json::Value = serde_json::from_str(out.trim()).expect("JSON");
+    let wei = &v["declarations"][0];
+    assert_eq!((wei["name"].as_str(), wei["counts"].as_str()), (Some("Wei"), Some("U64")));
+    assert_eq!(wei["headroom"]["signed"], false);
+    assert_eq!(wei["headroom"]["count"], "18446744073709551615");
 }
 
 #[test]

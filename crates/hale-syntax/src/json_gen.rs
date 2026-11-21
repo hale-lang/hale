@@ -489,40 +489,73 @@ pub fn presence_clears<'a>(
     out
 }
 
-/// How a scalar of the unit dialect crosses the JSON wire as its `Int`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How a scalar of the unit dialect crosses the JSON wire as the integer
+/// it counts: an `Int`, or a `U64` (GH #2131), which the wire carries as
+/// it carries that integer (a `U64` a JSON string of its digits, a
+/// `uint64`). The last field of each is that integer.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Conv {
     /// `type OrderId = distinct Int;` — `OrderId(n)` and `Int(id)`.
-    Identity(String),
+    Identity(String, PrimType),
     /// `type Money = quantity Int in cent;` — `n * 1cent` and `q / 1cent`
     /// (the multiple and the unit).
-    Quantity(u64, String),
+    Quantity(u64, String, PrimType),
     /// A range (`Int { range: 0..10; }`, or an identity with one):
     /// narrowing from the wire's `Int` may leave the range, which is a
     /// wrong type — `Lvl(n) or fail …` and `Int(l)`. The `Int` is the
     /// range's zero, the value an absent optional field of it holds: `0`
-    /// where the range holds it, its least value where it does not.
-    Range(String, i64),
+    /// where the range holds it, its least value where it does not (a
+    /// `U64`'s may be past `Int`'s max).
+    Range(String, i128, PrimType),
 }
 
 impl Conv {
+    /// GH #2131: the integer the scalar counts, which the wire carries.
+    pub fn int(&self) -> PrimType {
+        match self {
+            Conv::Identity(_, p) | Conv::Quantity(_, _, p) | Conv::Range(_, _, p) => *p,
+        }
+    }
+
     /// The expression that reads the wire's `int` as the field's type.
     pub fn from_int(&self, int: &str, key: &str) -> String {
         match self {
-            Conv::Identity(n) => format!("{}({})", n, int),
-            Conv::Quantity(m, u) => format!("{} * {}{}", int, m, u),
-            Conv::Range(n, _) => format!(
+            Conv::Identity(n, _) => format!("{}({})", n, int),
+            Conv::Quantity(m, u, _) => format!("{} * {}{}", int, m, u),
+            Conv::Range(n, _, _) => format!(
                 "{}({}) or fail JsonError {{ kind: \"wrong_type\", field: \"{}\" }}",
                 n, int, key
             ),
         }
     }
-    /// The expression that writes the field's value `v` as the wire's `Int`.
+    /// The expression that writes the field's value `v` as the wire's
+    /// integer (`Int(v)`, `U64(v)`); an integer literal (a range's
+    /// default) is one already.
     pub fn to_int(&self, v: &str) -> String {
         match self {
-            Conv::Identity(_) | Conv::Range(..) => format!("Int({})", v),
-            Conv::Quantity(m, u) => format!("({} / {}{})", v, m, u),
+            Conv::Identity(_, p) | Conv::Range(_, _, p) => {
+                let literal = !v.is_empty() && v.trim_start_matches('-').chars().all(|c| c.is_ascii_digit() || c == '_');
+                if literal && *p != PrimType::Int {
+                    v.to_string()
+                } else {
+                    format!("{}({})", prim_type_name(*p), v)
+                }
+            }
+            Conv::Quantity(m, u, _) => format!("({} / {}{})", v, m, u),
         }
+    }
+
+    /// The wire's scalar: the integer the field counts.
+    fn wire(&self) -> ScalarTy {
+        scalar_of(&TypeExpr::Primitive(self.int(), Span::new(0, 0))).unwrap_or(ScalarTy::Int)
+    }
+}
+
+/// A machine integer's name as a program writes it (`Int`, `U64`).
+fn prim_type_name(p: PrimType) -> &'static str {
+    match p {
+        PrimType::U64 => "U64",
+        _ => "Int",
     }
 }
 
@@ -530,58 +563,84 @@ impl Conv {
 /// wire as their `Int`, by name (a point does not: its origin is not a
 /// count).
 pub fn scalar_convs(programs: &[&Program]) -> std::collections::BTreeMap<String, Conv> {
-    use crate::ast::{ScalarClause, ScalarKind};
-    fn walk(items: &[TopDecl], out: &mut std::collections::BTreeMap<String, Conv>) {
-        for item in items {
-            match item {
-                TopDecl::Type(td) => {
-                    let TypeDeclBody::Scalar(sd) = &td.body else { continue };
-                    let name = td.name.name.clone();
-                    let ranged = sd.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }));
-                    // the range's zero: 0 where it holds it, its least value otherwise
-                    let lit = |e: &Expr| match e {
-                        Expr::Literal(Literal::Int(n), _) => Some(*n),
-                        Expr::Unary { op: crate::ast::UnaryOp::Neg, operand, .. } => match operand.as_ref() {
-                            Expr::Literal(Literal::Int(n), _) => Some(-*n),
-                            _ => None,
-                        },
-                        _ => None,
-                    };
-                    let zero = sd
-                        .clauses
-                        .iter()
-                        .find_map(|c| match c {
-                            ScalarClause::Range { lo, hi, inclusive, .. } => {
-                                let (lo, hi) = (lit(lo)?, lit(hi)?);
-                                let holds = lo <= 0 && if *inclusive { 0 <= hi } else { 0 < hi };
-                                Some(if holds { 0 } else { lo })
-                            }
-                            _ => None,
-                        })
-                        .unwrap_or(0);
-                    let conv = match sd.kind {
-                        Some(ScalarKind::Point) => None,
-                        Some(ScalarKind::Quantity) => sd
-                            .denom
-                            .as_ref()
-                            .filter(|_| matches!(sd.base, TypeExpr::Primitive(PrimType::Int, _)))
-                            .map(|d| Conv::Quantity(d.multiple, d.unit.name.clone())),
-                        Some(ScalarKind::Distinct) => {
-                            Some(if ranged { Conv::Range(name.clone(), zero) } else { Conv::Identity(name.clone()) })
-                        }
-                        None => ranged.then(|| Conv::Range(name.clone(), zero)),
-                    };
-                    if let Some(c) = conv {
-                        out.insert(name, c);
-                    }
+    use crate::ast::{ScalarClause, ScalarDecl, ScalarKind};
+    let mut decls: std::collections::BTreeMap<&str, &ScalarDecl> = std::collections::BTreeMap::new();
+    let mut order: Vec<(&str, &ScalarDecl)> = Vec::new();
+    for p in programs {
+        for item in &p.items {
+            if let TopDecl::Type(td) = item {
+                if let TypeDeclBody::Scalar(sd) = &td.body {
+                    decls.insert(td.name.name.as_str(), sd);
+                    order.push((td.name.name.as_str(), sd));
                 }
-                _ => {}
             }
         }
     }
+    // GH #2131: the integer a scalar counts, `Int` or `U64`: the machine
+    // integer at the root of its chain, a refinement's its parent's (as
+    // the unit rows read it)
+    let counted = |sd: &ScalarDecl| -> PrimType {
+        let mut at = sd;
+        for _ in 0..=decls.len() {
+            match &at.base {
+                TypeExpr::Primitive(p, _) if p.machine_int().is_some() => return *p,
+                TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
+                    match decls.get(path.segments[0].name.as_str()) {
+                        Some(next) => at = next,
+                        None => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        PrimType::Int
+    };
+    // a range bound: an integer literal, a `U64`'s past `Int`'s max included
+    let lit = |e: &Expr| -> Option<i128> {
+        match e {
+            Expr::Literal(Literal::Int(n), _) => Some(i128::from(*n)),
+            Expr::Literal(Literal::U64(n), _) => Some(i128::from(*n)),
+            Expr::Unary { op: crate::ast::UnaryOp::Neg, operand, .. } => match operand.as_ref() {
+                Expr::Literal(Literal::Int(n), _) => Some(-i128::from(*n)),
+                Expr::Literal(Literal::U64(n), _) => Some(-i128::from(*n)),
+                _ => None,
+            },
+            _ => None,
+        }
+    };
     let mut out = std::collections::BTreeMap::new();
-    for p in programs {
-        walk(&p.items, &mut out);
+    for (name, sd) in order {
+        let name = name.to_string();
+        let ranged = sd.clauses.iter().any(|c| matches!(c, ScalarClause::Range { .. }));
+        // the range's zero: 0 where it holds it, its least value otherwise
+        let zero = sd
+            .clauses
+            .iter()
+            .find_map(|c| match c {
+                ScalarClause::Range { lo, hi, inclusive, .. } => {
+                    let (lo, hi) = (lit(lo)?, lit(hi)?);
+                    let holds = lo <= 0 && if *inclusive { 0 <= hi } else { 0 < hi };
+                    Some(if holds { 0 } else { lo })
+                }
+                _ => None,
+            })
+            .unwrap_or(0);
+        let int = counted(sd);
+        let conv = match sd.kind {
+            Some(ScalarKind::Point) => None,
+            Some(ScalarKind::Quantity) => sd
+                .denom
+                .as_ref()
+                .filter(|_| matches!(sd.base, TypeExpr::Primitive(p, _) if p.machine_int().is_some()))
+                .map(|d| Conv::Quantity(d.multiple, d.unit.name.clone(), int)),
+            Some(ScalarKind::Distinct) => {
+                Some(if ranged { Conv::Range(name.clone(), zero, int) } else { Conv::Identity(name.clone(), int) })
+            }
+            None => ranged.then(|| Conv::Range(name.clone(), zero, int)),
+        };
+        if let Some(c) = conv {
+            out.insert(name, c);
+        }
     }
     out
 }
@@ -1491,7 +1550,7 @@ const ZERO: &str = "__api_zero_";
 fn wire_zero(s: ScalarTy, conv: &Option<Conv>, default: &Option<String>) -> String {
     match (default, conv) {
         (Some(d), _) => d.clone(),
-        (None, Some(Conv::Range(_, z))) => z.to_string(),
+        (None, Some(Conv::Range(_, z, _))) => z.to_string(),
         (None, _) => s.zero().to_string(),
     }
 }
@@ -1739,9 +1798,14 @@ fn json_elem_read(elem: &Elem, src: &str, key: &str, prefix: &str, ind: &str, ro
         Elem::Scalar(ScalarTy::Str, _) => {
             b.push_str(&format!("{ind}let __ev = std::json::unescape_string({src}[(__es + 1)..(__ee - 1)]);\n"));
         }
-        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), _) => {
+        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), conv) => {
             let ns = w.wide_ns().expect("a 256-bit integer");
-            b.push_str(&wide_read(ns, src, "__es", "__ee", key, &format!("let __ev: {} =", w.type_name()), ind));
+            // GH #2131: a scalar counting a `U64`, through its conversion
+            let into = if conv.is_some() { "__eu" } else { "__ev" };
+            b.push_str(&wide_read(ns, src, "__es", "__ee", key, &format!("let {into}: {} =", w.type_name()), ind));
+            if let Some(c) = conv {
+                b.push_str(&format!("{ind}let __ev = {};\n", c.from_int("__eu", key)));
+            }
         }
         Elem::Scalar(ScalarTy::Int, conv) => {
             if hex {
@@ -2063,7 +2127,10 @@ fn generate_emit_src_mode(t: &JsonType, fn_prefix: &str) -> String {
             // GH #1934: a 256-bit integer is a JSON string, its decimal
             // digits or (`json:",hex"`) its `0x` hex; an `Int` under
             // `json:",hex"` its `0x` hex (a negative one a JSON number)
-            FieldKind::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256)) => wide_text(*w, &format!("__v.{}", f.name), f.hex),
+            FieldKind::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256)) => {
+                let v = format!("__v.{}", f.name);
+                wide_text(*w, &f.conv.as_ref().map_or(v.clone(), |c| c.to_int(&v)), f.hex)
+            }
             FieldKind::Scalar(ScalarTy::Int) if f.hex => match &f.conv {
                 Some(c) => format!("__json_int_hex_text({})", c.to_int(&format!("__v.{}", f.name))),
                 None => format!("__json_int_hex_text(__v.{})", f.name),
@@ -2186,7 +2253,9 @@ fn wide_text(w: ScalarTy, v: &str, hex: bool) -> String {
 fn json_elem_write_q(elem: &Elem, v: &str, fn_prefix: &str, quoted: bool, hex: bool) -> String {
     match elem {
         Elem::Scalar(ScalarTy::Decimal(_), None) if quoted => quoted_text(&format!("to_string({v})")),
-        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), _) => wide_text(*w, v, hex),
+        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), c) => {
+            wide_text(*w, &c.as_ref().map_or(v.to_string(), |c| c.to_int(v)), hex)
+        }
         Elem::Scalar(ScalarTy::Int, Some(c)) if hex => format!("__json_int_hex_text({})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Int, None) if hex => format!("__json_int_hex_text({v})"),
         _ => json_elem_write(elem, v, fn_prefix),
@@ -2196,7 +2265,9 @@ fn json_elem_write_q(elem: &Elem, v: &str, fn_prefix: &str, quoted: bool, hex: b
 fn json_elem_write(elem: &Elem, v: &str, fn_prefix: &str) -> String {
     match elem {
         Elem::Scalar(ScalarTy::Str, _) => format!("\"\\\"\" + std::json::escape_string({v}) + \"\\\"\""),
-        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), _) => wide_text(*w, v, false),
+        Elem::Scalar(w @ (ScalarTy::U64 | ScalarTy::U256 | ScalarTy::I256), c) => {
+            wide_text(*w, &c.as_ref().map_or(v.to_string(), |c| c.to_int(v)), false)
+        }
         Elem::Scalar(_, Some(c)) => format!("to_string({})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Float, None) => format!("{FLOAT_TEXT}({v})"),
         Elem::Scalar(_, None) => format!("to_string({v})"),
@@ -2522,7 +2593,12 @@ fn pb_elem_read(elem: &Elem, key: &str, end: &str, bad: &str, ind: &str) -> Stri
             b.push_str(&format!("{ind}__p = __ee;\n"));
             match (s, conv) {
                 (ScalarTy::Bool, _) => b.push_str(&format!("{ind}let __ev = __ei != 0;\n")),
-                (ScalarTy::U64, _) => b.push_str(&format!("{ind}let __ev = std::u64::from_bits(__ei);\n")),
+                (ScalarTy::U64, None) => b.push_str(&format!("{ind}let __ev = std::u64::from_bits(__ei);\n")),
+                // GH #2131: a scalar counting a `U64`, through its conversion
+                (ScalarTy::U64, Some(c)) => b.push_str(&format!(
+                    "{ind}let __ev = {};\n",
+                    c.from_int("std::u64::from_bits(__ei)", key)
+                )),
                 (_, Some(c)) => b.push_str(&format!("{ind}let __ev = {};\n", c.from_int("__ei", key))),
                 (_, None) => b.push_str(&format!("{ind}let __ev = __ei;\n")),
             }
@@ -2593,7 +2669,10 @@ fn generate_pb_emit_src(t: &JsonType) -> String {
                 format!("__api_pb_put_str({}, {})", f.pb_no, wide_pb_text(*w, &v, f.hex))
             }
             // GH #2121: a `uint64` varint of its 64 bits
-            FieldKind::Scalar(ScalarTy::U64) => format!("__api_pb_put_int({}, std::u64::to_bits({v}))", f.pb_no),
+            FieldKind::Scalar(ScalarTy::U64) => match &f.conv {
+                Some(c) => format!("__api_pb_put_int({}, std::u64::to_bits({}))", f.pb_no, c.to_int(&v)),
+                None => format!("__api_pb_put_int({}, std::u64::to_bits({v}))", f.pb_no),
+            },
             FieldKind::Scalar(ScalarTy::Int) => match &f.conv {
                 Some(c) => format!("__api_pb_put_int({}, {})", f.pb_no, c.to_int(&v)),
                 None => format!("__api_pb_put_int({}, {v})", f.pb_no),
@@ -2664,7 +2743,8 @@ fn pb_elem_put(elem: &Elem, no: u32, v: &str) -> String {
         Elem::Scalar(ScalarTy::Bool, _) => format!("__api_pb_put_bool({no}, {v})"),
         Elem::Scalar(ScalarTy::Int, Some(c)) => format!("__api_pb_put_int({no}, {})", c.to_int(v)),
         Elem::Scalar(ScalarTy::Int, None) => format!("__api_pb_put_int({no}, {v})"),
-        Elem::Scalar(ScalarTy::U64, _) => format!("__api_pb_put_int({no}, std::u64::to_bits({v}))"),
+        Elem::Scalar(ScalarTy::U64, Some(c)) => format!("__api_pb_put_int({no}, std::u64::to_bits({}))", c.to_int(v)),
+        Elem::Scalar(ScalarTy::U64, None) => format!("__api_pb_put_int({no}, std::u64::to_bits({v}))"),
         Elem::Scalar(ScalarTy::Decimal(_), _) => format!("__api_pb_put_str({no}, to_string({v}))"),
         Elem::Scalar(w @ (ScalarTy::U256 | ScalarTy::I256), _) => format!("__api_pb_put_str({no}, {})", wide_pb_text(*w, v, false)),
         Elem::Time => format!("__api_pb_put_int({no}, std::time::nanos({v}))"),
@@ -4069,12 +4149,13 @@ fn elem_of(
         Some((Elem::Time, "Time".to_string()))
     } else if let TypeExpr::Primitive(PrimType::Duration, _) = ty {
         // the stdlib's `quantity Int in ns`: its count of nanoseconds
-        Some((Elem::Scalar(ScalarTy::Int, Some(Conv::Quantity(1, "ns".to_string()))), "Duration".to_string()))
+        Some((Elem::Scalar(ScalarTy::Int, Some(Conv::Quantity(1, "ns".to_string(), PrimType::Int))), "Duration".to_string()))
     } else if let Some(s) = scalar_of(&ty) {
         Some((Elem::Scalar(s, None), s.type_name().to_string()))
     } else if let Some((tn, c)) = named_single(&ty).and_then(|tn| scalars.get(tn).map(|c| (tn, c))) {
-        // a scalar of the unit dialect: its `Int` on the wire
-        Some((Elem::Scalar(ScalarTy::Int, Some(c.clone())), tn.to_string()))
+        // a scalar of the unit dialect: the integer it counts on the wire
+        // (GH #2131: a `U64`'s as a `U64` is)
+        Some((Elem::Scalar(c.wire(), Some(c.clone())), tn.to_string()))
     } else if let Some((tn, unit_only)) = named_single(&ty).and_then(|tn| enums.get(tn).map(|u| (tn, *u))) {
         Some((Elem::Enum { name: tn.to_string(), unit_only }, tn.to_string()))
     } else {

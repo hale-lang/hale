@@ -266,12 +266,13 @@ pub enum ShapeForm {
 
 /// The renderer of both shape forms over one program's declarations:
 /// every `type` by its (post-merge) name, the identities and ranges (each
-/// the `Int` it is) and the quantities and points (each its `q(…)` tag).
+/// the integer it counts, GH #2131) and the quantities and points (each
+/// its `q(…)` tag).
 pub struct Shapes<'a> {
     types: BTreeMap<&'a str, &'a TypeDecl>,
     /// The name a document gives each imported type ([`Shapes::display_name`]).
     imported_names: BTreeMap<&'a str, String>,
-    ints: std::collections::BTreeSet<&'a str>,
+    ints: BTreeMap<&'a str, PrimType>,
     quantities: BTreeMap<&'a str, String>,
 }
 
@@ -507,10 +508,13 @@ impl<'a> Shapes<'a> {
                 TypeDeclBody::Enum(variants) => return TypeClass::Enum { name: td.name.name.as_str(), variants },
                 TypeDeclBody::Scalar(_) | TypeDeclBody::Alias(_) => {
                     let unit = self.quantities.get(name).cloned();
-                    // An identity, a range, a quantity or a point over
-                    // `Int` is the `Int` it is; anything else is what its
-                    // chain of bases ends at.
-                    let base = if self.ints.contains(name) { Some(PrimType::Int) } else { self.base_prim(te, 0) };
+                    // An identity, a range, a quantity or a point is the
+                    // integer it counts (`Int`, `U64`: GH #2131); anything
+                    // else is what its chain of bases ends at.
+                    let base = match self.ints.get(name) {
+                        Some(p) => Some(*p),
+                        None => self.base_prim(te, 0),
+                    };
                     return match base {
                         Some(base) => TypeClass::Named { name: td.name.name.as_str(), base, unit },
                         None => TypeClass::Other,
@@ -610,37 +614,14 @@ impl<'a> Shapes<'a> {
             if let Some(q) = self.quantities.get(name) {
                 return Some(q.clone());
             }
-            if self.ints.contains(name) {
-                return Some("i".to_string());
+            // GH #2131: an identity or a range is tagged as the integer it
+            // counts (`i` for an `Int`'s, `u64` for a `U64`'s).
+            if let Some(base) = self.ints.get(name) {
+                return Some(prim_tag(*base));
             }
         }
         match ty {
-            TypeExpr::Primitive(p, _) => Some(
-                match p {
-                    PrimType::Int => "i",
-                    // GH #2121: a `U64` is its own contract, never an
-                    // `Int`'s `i` (the same 8 bytes, read another way).
-                    PrimType::U64 => "u64",
-                    PrimType::Float => "f",
-                    PrimType::Bool => "b",
-                    // A scale other than the default is part of the
-                    // contract (`d18`): a `Decimal<18>` field and a
-                    // `Decimal` field are different payloads.
-                    PrimType::Decimal(s) if *s != hale_syntax::decimal_literal::DEFAULT_SCALE => {
-                        return Some(format!("d{s}"));
-                    }
-                    PrimType::Decimal(_) => "d",
-                    // GH #1934: a 256-bit integer is its own contract,
-                    // never an `Int`'s `i`.
-                    PrimType::U256 => "u256",
-                    PrimType::I256 => "i256",
-                    PrimType::Time => "t",
-                    PrimType::Duration => "u",
-                    PrimType::String | PrimType::StringView => "s",
-                    PrimType::Bytes | PrimType::BytesView | PrimType::BytesMut => "y",
-                }
-                .to_string(),
-            ),
+            TypeExpr::Primitive(p, _) => Some(prim_tag(*p)),
             _ => None,
         }
     }
@@ -736,7 +717,7 @@ impl<'a> Shapes<'a> {
     /// a quantity nor a point (`distinct Float`), stands for.
     fn alias_target(&self, te: &TypeExpr) -> Option<&'a TypeExpr> {
         let name = Self::bare_name(te)?;
-        if self.ints.contains(name) || self.quantities.contains_key(name) {
+        if self.ints.contains_key(name) || self.quantities.contains_key(name) {
             return None;
         }
         match &self.types.get(name)?.body {
@@ -1027,6 +1008,23 @@ mod tests {
         assert_eq!(forms(src, "OrderId").0, None, "only a bare struct has an observation shape");
     }
 
+    /// GH #2131: a scalar counting a `U64` is tagged as that integer: an
+    /// identity or a range `u64`, a quantity `q(u64 <denomination>)` and a
+    /// point over one `q(u64 <denomination> point)`, so an `Int` count and
+    /// a `U64` count disagree; the `Int`'s tags are as they were.
+    #[test]
+    fn a_scalar_counting_a_u64_is_tagged_by_it() {
+        let src = "unit wei; unit slot; type Wei = quantity U64 in wei; type Nonce = distinct U64; \
+                   type Port = U64 { range: 1..65536; } type Slots = quantity U64 in slot; \
+                   type At = point Slots; type Transfer { nonce: Nonce; value: Wei; port: Port; at: At; }";
+        let (obs, contract, _) = forms(src, "Transfer");
+        let shape = "nonce:u64;value:q(u64 wei);port:u64;at:q(u64 slot point)";
+        assert_eq!(contract, shape);
+        assert_eq!(obs.as_deref(), Some(shape), "a flat struct has one shape");
+        assert_eq!(forms(src, "Nonce").1, "=u64");
+        assert_eq!(forms(src, "Wei").1, "=q(u64 wei)");
+    }
+
     /// A nested struct is its own contract hash in the field's slot,
     /// `#<hash>`; the observation form keeps the name-free `struct`.
     #[test]
@@ -1146,4 +1144,34 @@ mod tests {
             "id:i;body:struct"
         );
     }
+}
+
+/// A primitive's flat tag (spec/model.md § The shape of a type): the
+/// letter or word a field of it is tagged with, and what a quantity's
+/// `q(…)` names its integer by when that is not an `Int` (GH #2131).
+pub(crate) fn prim_tag(p: PrimType) -> String {
+    match p {
+        PrimType::Int => "i",
+        // GH #2121: a `U64` is its own contract, never an
+        // `Int`'s `i` (the same 8 bytes, read another way).
+        PrimType::U64 => "u64",
+        PrimType::Float => "f",
+        PrimType::Bool => "b",
+        // A scale other than the default is part of the
+        // contract (`d18`): a `Decimal<18>` field and a
+        // `Decimal` field are different payloads.
+        PrimType::Decimal(s) if s != hale_syntax::decimal_literal::DEFAULT_SCALE => {
+            return format!("d{s}");
+        }
+        PrimType::Decimal(_) => "d",
+        // GH #1934: a 256-bit integer is its own contract,
+        // never an `Int`'s `i`.
+        PrimType::U256 => "u256",
+        PrimType::I256 => "i256",
+        PrimType::Time => "t",
+        PrimType::Duration => "u",
+        PrimType::String | PrimType::StringView => "s",
+        PrimType::Bytes | PrimType::BytesView | PrimType::BytesMut => "y",
+    }
+    .to_string()
 }

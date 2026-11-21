@@ -434,11 +434,13 @@ pub struct ConversionRow {
     pub scale: Option<Scale>,
     /// A quantity literal's count in the denomination it flows into,
     /// converted (and, under the target's `round:`, rounded) by the
-    /// checker: lowering emits it as a constant.
-    pub count: Option<i64>,
+    /// checker: lowering emits it as a constant. A value of the integer
+    /// the target counts (GH #2131: a `U64`'s may be past `Int`'s max).
+    pub count: Option<i128>,
     /// `.split(u)`: the count of `u` in the widened denomination, the
     /// divisor of the whole part.
-    pub split: Option<i64>,
+    /// A value of the integer the value counts (GH #2131).
+    pub split: Option<i128>,
     /// A printed quantity's or point's unit, written after its count
     /// (`ms`, ` Money in 1/10000 cent`).
     pub printed: Option<String>,
