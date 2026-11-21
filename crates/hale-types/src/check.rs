@@ -17946,6 +17946,17 @@ impl<'a> Checker<'a> {
             ));
             return Ty::Unknown;
         }
+        // An arm that supplies no type (one that leaves: a block ending in
+        // a `match` whose every arm returns, fails, breaks …) is no part of
+        // the join; the other arm's value is the `if`'s, as a match
+        // expression's join skips such an arm. Until GH #2111 (phase 1,
+        // family 6) a leaving `then` arm made the whole `if` `Unknown`, so
+        // its value was checked against nothing: `let s: String = v` of
+        // an `Int` checked and built, and `return v` of one from a
+        // `String` fn checked and the build refused it.
+        if then_ty == Ty::Unknown {
+            return else_ty;
+        }
         then_ty
     }
 
