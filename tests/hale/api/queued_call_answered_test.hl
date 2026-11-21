@@ -259,6 +259,13 @@ main locus App {
         self.all_unavailable(20, "Held (absorbed)");
         self.all_unavailable(30, "Back (restarted)");
         self.all_unavailable(40, "Gone (quarantined)");
+        // A receiver that fails in `run()` stops, and announces the stop, as
+        // it fails: its queued calls can be answered `unavailable` before
+        // its failure has reached the owner's thread (spec/api.md § Receiver
+        // failure and generations), so wait for the owner to hear each one,
+        // with a deadline, rather than reading the count once (GH #2116).
+        i = 0;
+        while i < 5000 && self.failures < 4 { std::time::sleep(1ms); i = i + 1; }
         std::test::assert_eq_int(self.failures, 4, "the owner heard each failure");
 
         // Back is alive again, and the calls of the failed incarnation still
