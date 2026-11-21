@@ -46,7 +46,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// that grammar, which grew a shape at a time as programs reached the
     /// build untyped (downstream handoffs, 2026-11-06 and 2026-11-14).
     pub(crate) fn bounded_recv_spec(&self, args: &[Expr]) -> Option<(CodegenTy, u64)> {
-        match self.ty_at(args.first()?)? {
+        match self.ty_or_fallback(args.first()?)? {
             CodegenTy::Bounded(elem, cap) => Some((*elem, cap)),
             _ => None,
         }
@@ -391,7 +391,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if method_name != "get" || args.len() != 1 {
             return Ok(None);
         }
-        let recv_ty = match self.ty_at(receiver) {
+        let recv_ty = match self.ty_or_fallback(receiver) {
             Some(t) => t,
             None => return Ok(None),
         };
