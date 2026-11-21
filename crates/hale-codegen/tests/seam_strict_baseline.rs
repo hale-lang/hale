@@ -214,8 +214,9 @@ fn codegen_sources() -> BTreeMap<PathBuf, String> {
 ///   `Cx::ty_or_fallback`), reached by a test or not;
 ///
 /// all of which may only go down; and `seam reads`, the reads of the
-/// checker's type that refuse a missing row (`Cx::ty_at`,
-/// `Cx::call_result`) outside the seam itself, which may only go up.
+/// checker's type outside the seam itself (`Cx::ty_at`, and the ones that
+/// refuse a missing row: `Cx::call_result`, `Cx::ty_required`,
+/// `Cx::place_ty`), which may only go up.
 fn static_measures() -> Vec<(&'static str, usize, bool)> {
     let sources = codegen_sources();
     let (mut typers, mut lowerings, mut built, mut fallbacks, mut reads) = (0, 0, 0, 0, 0);
@@ -286,7 +287,7 @@ fn static_measures() -> Vec<(&'static str, usize, bool)> {
             }
             if !seam {
                 fallbacks += code.matches(".seam_fallback(").count() + code.matches(".ty_or_fallback(").count();
-                reads += code.matches(".ty_at(").count() + code.matches(".call_result(").count();
+                reads += [".ty_at(", ".call_result(", ".ty_required(", ".place_ty("].iter().map(|r| code.matches(r).count()).sum::<usize>();
             }
         }
     }

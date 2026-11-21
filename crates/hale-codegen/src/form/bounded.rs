@@ -37,21 +37,6 @@ enum StoreCopy<'ctx> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
-    /// Elem + cap when `args[0]` is a `bounded[T; N]`, by the checker's
-    /// type of it (`Cx::ty_at`). The intrinsics dispatch on their first
-    /// argument's type (`spec/types.md` § bounded[T; N]), and the checker
-    /// types that argument as any expression: a field chain, a call's
-    /// result, an `or`, an array element, a record literal. Until GH #2111
-    /// lowering typed it again with a walk of its own over a subset of
-    /// that grammar, which grew a shape at a time as programs reached the
-    /// build untyped (downstream handoffs, 2026-11-06 and 2026-11-14).
-    pub(crate) fn bounded_recv_spec(&self, args: &[Expr]) -> Option<(CodegenTy, u64)> {
-        match self.ty_or_fallback(args.first()?)? {
-            CodegenTy::Bounded(elem, cap) => Some((*elem, cap)),
-            _ => None,
-        }
-    }
-
     /// GH #892: does the program's OWN `fn NAME` answer this call,
     /// ahead of the bounded intrinsic of the same name?
     ///
@@ -391,7 +376,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if method_name != "get" || args.len() != 1 {
             return Ok(None);
         }
-        let recv_ty = match self.ty_or_fallback(receiver) {
+        let recv_ty = match self.ty_required(receiver, "the checker's type of this `get`'s receiver") {
             Some(t) => t,
             None => return Ok(None),
         };
