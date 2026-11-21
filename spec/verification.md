@@ -155,8 +155,8 @@ main locus Org {
   name-suffix matching.
 - **`forbid reaches(SRC, DST)`** — absence under closure: no path
   from any element of SRC to any element of DST. Evaluation is
-  fn-grained: a locus member projects to all of its methods,
-  lifecycle hooks, and modes, which only ever *adds* sources and
+  fn-grained: a locus member projects to all of its methods and
+  lifecycle hooks, which only ever *adds* sources and
   sinks (the conservative direction). Edges are the resolved call
   graph (stdlib bodies merged, handle-method calls resolved) and the
   declared bus graph (a publish site composes with every subscriber
@@ -484,8 +484,7 @@ The remaining verbs (#382 phases 2–5):
   phase of each source locus (`during birth` is the quiet-boot
   claim), evaluated against the model's **phase relation** (#392):
   lifecycle hooks (`birth`, `accept`, `release`, `run`, `drain`,
-  `dissolve`) and modes (`bulk`, `harmonic`, `resolution`) are
-  hook-phases the runtime drives; an ordinary method is its own
+  `dissolve`) are hook-phases the runtime drives; an ordinary method is its own
   source-slice phase. The relation is exported in the topology
   artifact, which is what makes a `during` row independently
   re-derivable. A phase naming nothing in the group is an error,
@@ -738,7 +737,7 @@ summarized set; an unanalyzed body RETAINS its `UnanalyzedBody`
 residue and an analyzed body carries none; and (rounds 14–15)
 `LocusDecl::analyzable` DERIVES from the CLOSED ownership
 account: every function carries its canonical `owner`
-(`Some` for methods, hooks, modes, and failure handlers; `None`
+(`Some` for methods, hooks and failure handlers; `None`
 for free functions), `member_of` must be a total, exclusive
 partition agreeing with it exactly (a free fn appears in no row;
 every other kind in exactly one, at its owner), and a locus is
@@ -2246,7 +2245,7 @@ assume the others in a build:
     silence nothing in any program that reaches them.
   `--dump-alloc-summary` prints the raw per-fn summary of the program's
   own fns and loci, judged the same way: one row per declaration (a fn,
-  a method, an authored hook, a mode), keyed by its site and printed
+  a method, an authored hook), keyed by its site and printed
   under its name, so two declarations sharing a name (a program the
   check refuses as a duplicate top-level name) are two rows. A per-method allocation summary + call-graph
   escape/loop dataflow — with **escape-awareness** (a non-escaping local in
@@ -3357,10 +3356,7 @@ A **lifecycle hook** is the exception: `@unbounded run { … }` or
 `@bounded_by(<name>) run { … }`, once, and nothing else (a repeat or
 the pair is a parse error there, since a hook keeps no decorator list). A hook is one-shot, so a per-call ceiling has no calls to
 divide by, and it is not a fn a caller asserts over. Put the other
-contracts on a `fn` the hook calls. A **mode** takes the same one
-decorator, `@unbounded mode bulk() { … }` or `@bounded_by(<name>)
-mode bulk() { … }` (friction sweep 2026-10-12): the
-unbounded-allocation warning in a mode body asks for it.
+contracts on a `fn` the hook calls.
 
 What a stack cannot do is contradict itself. These shapes are **errors at
 check time, reported at the decorator** (not parse errors — the

@@ -1,0 +1,14 @@
+// refused at line 6: method `Box.bulk` can reach the end of its body without returning a value
+// A String-returning method's backstop, placed at the method.
+locus Box {
+    params { k: Int; }
+
+    fn bulk() -> String {
+        print("bulk");
+    }
+}
+
+fn main() {
+    let b = Box { k: 1 };
+    print(b.bulk());
+}

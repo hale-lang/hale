@@ -2533,13 +2533,13 @@ fn the_friction_sweep_shapes_agree() {
         ("const LIMIT = 100;\nfn add(a: Int, b: Int) -> Int { return a + b; }\n\
           fn main() { println(add(LIMIT, 2,)); }\n",
          "hale_cb_fs_const"),
-        // `@unbounded` before a mode.
+        // `@unbounded` before a locus fn.
         ("@form(vec)\nlocus V { capacity { heap items of String; } }\n\
           locus L { params { v: V = V { }; n: Int = 3; }\n\
-          @unbounded\n mode bulk() { let mut i = 0; while i < self.n { self.v.push(\"x\"); i = i + 1; } }\n\
+          @unbounded\n fn bulk() { let mut i = 0; while i < self.n { self.v.push(\"x\"); i = i + 1; } }\n\
           run() { self.bulk(); } }\n\
           fn main() { let l = L { }; }\n",
-         "hale_cb_fs_mode"),
+         "hale_cb_fs_unbounded_method"),
         // An interface parameter's methods are callable.
         ("interface T { fn x() -> Int; }\n\
           locus A { params { v: Int = 1; } fn x() -> Int { return self.v; } }\n\

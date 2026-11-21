@@ -80,7 +80,6 @@ pub(crate) fn param_place_write_diags(bundle: &Bundle<'_>, top: &TopScope) -> Ve
                         let (body, ps) = match m {
                             LocusMember::Fn(f) => (&f.body, params(&f.params)),
                             LocusMember::Lifecycle(lc) => (&lc.body, params(&lc.params)),
-                            LocusMember::Mode(md) => (&md.body, params(&md.params)),
                             LocusMember::Failure(fd) => (&fd.body, params(&fd.params)),
                             _ => continue,
                         };

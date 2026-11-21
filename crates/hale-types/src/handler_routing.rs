@@ -760,10 +760,6 @@ impl OpWalk {
                 self.params(&ld.params);
                 self.block(&ld.body);
             }
-            LocusMember::Mode(md) => {
-                self.params(&md.params);
-                self.block(&md.body);
-            }
             LocusMember::Failure(fd) => {
                 self.params(&fd.params);
                 self.block(&fd.body);

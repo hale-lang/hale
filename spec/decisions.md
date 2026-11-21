@@ -219,6 +219,9 @@ position because post-`.` is unambiguous.
 like the rest of the framework vocabulary, are contextual keywords
 now and name anything but a locus method.)
 
+Superseded by F.61: modes were removed, and `bulk`, `harmonic` and
+`resolution` are ordinary identifiers, a locus method's name included.
+
 The keywords `bulk`, `harmonic`, `resolution` are reserved at
 the lexer level (per `tokens.md`). They appear at top-level in
 the grammar as part of `mode_decl`. They also need to appear
@@ -444,6 +447,11 @@ for each contract field (read the field directly). User-defined
 fns can add additional implementations as long as they return
 the contract's typed surface.
 
+Superseded in part by F.61: modes were removed, and with them the
+exposed-mode pull rule (`expose bulk: T;` bound to `mode bulk`). An
+exposed name binds a params field or a `fn` member, a `fn bulk`
+included.
+
 ### F.15 Predefined type names are PascalCase, not keywords
 
 (Added in v0.1.8 — restructured to remove the lexical
@@ -509,6 +517,12 @@ a compiler warning. The compiler does not block shadowing
 wrapper) but flags it for readers.
 
 ### F.5 Mode-projections share the locus's arena
+
+**Withdrawn by F.61 (2026-11-21).** Locus modes were removed. The
+compile-time check this entry promised between the modes' writes was
+never built, and it had nothing to find: a mode call is synchronous on
+one locus, so two modes never interleave. The entry is kept as
+history.
 
 A locus may declare any subset of `mode bulk`, `mode harmonic`,
 `mode resolution`. All declared modes operate on the same
@@ -3776,6 +3790,10 @@ at statement head is the recovery).
 Superseded in part by F.55: perspectives were removed, and the
 perspective words (`stable_when`, `serialize_as`) with them.
 
+Superseded in part by F.61: modes were removed, and the mode words
+(`mode`, `bulk`, `harmonic`, `resolution`) with them, so a locus
+method may take one of the three former mode names.
+
 The declaration and statement words (`locus`, `type`, `fn`, `let`,
 `if`, `match`, `return`, `self`, ...) stay hard: they begin items,
 statements or expressions anywhere, so no position frees them. `trait`,
@@ -4701,3 +4719,62 @@ Shipped as the fourth form in v1 via v1.x-FORM-6.
 4. **Bench protocol.** A `micro/form_lru_cache_*` family in
    `hale-lang/bench`, parallel to the other forms'. Ships after a
    consumer workload surfaces.
+
+### F.61 — Locus modes are removed
+
+**Status: accepted and implemented (2026-11-21, GH #2133).**
+
+**Problem.** A locus could declare `mode bulk`, `mode harmonic` and
+`mode resolution`, each with optional params and a return type, called
+as `self.bulk()` or, through the contract, `child.bulk()`. The spec
+promised more than a method: one implementation per declared mode
+(grammar.ebnf § 7, semantics.md § Mode invocation), optimized per mode,
+and F.5's compile-time check that two modes' writes do not race. None
+of that was built. A mode lowered as an ordinary locus method named
+after its kind, so the spec described behaviour the compiler did not
+have. Completing it had no target either: `resolution` as a latency
+contract is what effect assertions already express, `harmonic` has no
+checkable definition, and F.5's race check is moot because mode calls
+are synchronous on one locus and never interleave. The one real idea
+is `bulk`'s, that a kernel must vectorize, and it is a property any
+function can state (GH #2134), not a member kind. In the repository
+and the known packages, modes were written only in test and example
+fixtures (19 declarations); none in dna, iris or the stdlib.
+
+**Decision.** Modes are removed from the grammar (`mode_decl`), the
+AST, the parser, name resolution and the site walks,
+the checker, the analyses (mangling, ownership, the allocation
+summary and routing, the model's function sort, which loses
+`FunctionKind::Mode`) and lowering. `mode`, `bulk`, `harmonic` and
+`resolution` stop being keywords (`spec/keywords.txt`,
+`crates/hale-syntax/src/keywords.rs`, the highlighters): they are
+ordinary identifiers in every position, and a locus method may now be
+named `bulk`, `harmonic` or `resolution`, which F.43 refused while the
+name was a mode's. The exposed-mode pull rule goes with them (F.14's
+mode clause): an `expose bulk: T;` entry binds a params field or a
+`fn bulk` like any other name. F.5 is withdrawn. The removal follows
+the pre-1.0 policy (STABILITY.md): the repository's own code migrates
+in the same change, with no deprecation step.
+
+**What a program now gets.** `mode NAME` followed by `(`, `->` or `{`
+at locus-member position (decorated or not) is refused with one
+located parse error at the word `mode`; the member then parses on as
+the `fn` it names, so nothing in it or after it reports again:
+
+```text
+parse error: locus modes were removed in 0.38: write `fn bulk(...)` (a mode compiled as an ordinary method; spec/decisions.md F.61)
+```
+
+**Migration.** `mode X(params) -> T { body }` becomes
+`fn X(params) -> T { body }`, with the same decorators (`@unbounded`,
+`@bounded_by(<name>)`) and the same calls (`self.X()`,
+`child.X()`). One shape differs: a mode was the one locus member that
+could return a locus value, and a locus method may not (semantics.md §
+Locus method dispatch), so a mode returning a locus becomes a free fn
+over the locus, `fn X(l: L, params) -> M { … }`, called `X(l)`.
+
+**Considered and rejected.** *Completing modes.* Each part either
+duplicates an existing feature, has no checkable meaning, or checks
+something that cannot happen (above). *Keeping the three words
+reserved for a later meaning.* Nothing is planned for them, and a
+reserved word costs every program the name.

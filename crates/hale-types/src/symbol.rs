@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use hale_syntax::ast::{ModeKind, ProjectionClass, ScheduleClass};
+use hale_syntax::ast::{ProjectionClass, ScheduleClass};
 use hale_syntax::Span;
 
 use crate::ty::Ty;
@@ -201,7 +201,6 @@ pub struct LocusInfo {
     /// resolved `accept_param` type is then `Unknown`, as every
     /// interface-typed slot's is).
     pub accept_written: Option<String>,
-    pub mode_returns: BTreeMap<ModeKind, Ty>,
     pub annotations: Annotations,
     /// Fields the locus exposes upward to its coordinator
     /// (the F.8 typed surface).
@@ -210,9 +209,8 @@ pub struct LocusInfo {
     /// coordinatees. Each entry must match an `expose` on
     /// the accept-param child type.
     pub contract_consume: Vec<ContractEntry>,
-    /// Methods callable as `handle.name(...)`: free `fn`
-    /// members + the three mode declarations (bulk /
-    /// harmonic / resolution).
+    /// Methods callable as `handle.name(...)`: the locus's `fn`
+    /// members.
     pub methods: Vec<MethodInfo>,
     /// F.22 capacity-tuple slot names declared on this locus
     /// (`pool X of T;` / `heap Y of T;`). Just the names —

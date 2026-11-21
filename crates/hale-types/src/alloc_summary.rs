@@ -38,7 +38,7 @@ use hale_syntax::{Diag, Span};
 use crate::placement::SiteUniverse;
 
 /// A fn-like declaration's identity (F.40 phase 3, C3): the site the mint
-/// gave the declaration (a fn, a method, a lifecycle hook, a mode, a
+/// gave the declaration (a fn, a method, a lifecycle hook, a
 /// failure handler), as the universe that minted it
 /// and its index there. One counter numbers every seed of a universe, so
 /// the index names the site in it, and a reader holding a declaration's
@@ -1105,10 +1105,8 @@ pub struct FnSummary {
     /// the syscall. Knowing which unresolved names are parameters is
     /// what lets the walk treat them as indirect rather than absent.
     pub fn_params: Vec<String>,
-    /// The fn carries `@hot` (a lifecycle hook or a mode cannot).
+    /// The fn carries `@hot` (a lifecycle hook cannot).
     pub hot: bool,
-    /// The row is a `mode` body.
-    pub mode: bool,
     /// The declaration's position in the order the summary walks the
     /// programs' declarations: program by program, a locus's members in
     /// order.
@@ -1148,7 +1146,7 @@ pub struct FnSummary {
     /// GH #1490 (step 4): what each publish of the body carries.
     pub(crate) sends: Vec<Taint>,
     /// What a free fn's body allocates into, as lowering routes it
-    /// ([`Frame`]); `None` for a method, a lifecycle hook, a mode and
+    /// ([`Frame`]); `None` for a method, a lifecycle hook and
     /// `main` (lowered as the program's entry), and for a row the summary
     /// did not classify.
     pub frame: Option<Frame>,
@@ -2782,10 +2780,10 @@ pub fn summarize_within(
     // method referenced by `subscribe ... -> handler` is tagged BusHandler.
     // The trailing `Vec<(String, String)>` seeds each body's var→type map
     // from its params (D2); then the identities of the program the body
-    // is in, whether it is an `@hot` fn and a mode, and the declaration
+    // is in, whether it is an `@hot` fn, and the declaration
     // it is a member of, and every param's name (the outermost of its
     // bindings). A body's place in the list is its `decl_index`.
-    type BodyEntry<'i> = (FnKey, &'i Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, (bool, bool), NodeId, Vec<String>, Vec<(String, StrTy)>);
+    type BodyEntry<'i> = (FnKey, &'i Block, Option<EntryKind>, Option<String>, Vec<(String, String)>, Vec<String>, Vec<(String, String)>, &'i crate::snapshot::Snapshot, bool, NodeId, Vec<String>, Vec<(String, StrTy)>);
     let mut bodies: Vec<BodyEntry> = Vec::new();
     // What a call spelling (locus, name) resolves to: the row of the last
     // declaration of the name.
@@ -3115,7 +3113,7 @@ pub fn summarize_within(
                         string_rets.insert(key.clone());
                     }
                     note_params(&key, &decl.params, &mut param_info);
-                    bodies.push((key, &decl.body, entry, None, unless_beyond(beyond, || param_var_types(&decl.params)), unless_beyond(beyond, || fn_typed_params(&decl.params)), unless_beyond(beyond, || param_var_elem_types(&decl.params)), ids, (decl.hot, false), decl.id, param_names(&decl.params), unless_beyond(beyond, || param_str_types(&decl.params))));
+                    bodies.push((key, &decl.body, entry, None, unless_beyond(beyond, || param_var_types(&decl.params)), unless_beyond(beyond, || fn_typed_params(&decl.params)), unless_beyond(beyond, || param_var_elem_types(&decl.params)), ids, decl.hot, decl.id, param_names(&decl.params), unless_beyond(beyond, || param_str_types(&decl.params))));
                 }
                 TopDecl::Type(td) => {
                     if let TypeDeclBody::Struct(fields) = &td.body {
@@ -3188,40 +3186,6 @@ pub fn summarize_within(
                     subscriptions.insert(locus.clone(), handlers.clone());
                     for member in &l.members {
                         match member {
-                            // A `mode` body was never collected, so
-                            // its callees were invisible to the
-                            // callgraph and `@no_syscall` certified a
-                            // path straight through one. Modes are
-                            // called like methods (`self.bulk()`), so
-                            // they key the same way.
-                            LocusMember::Mode(md) => {
-                                let name = match md.kind {
-                                    ModeKind::Bulk => "bulk",
-                                    ModeKind::Harmonic => "harmonic",
-                                    ModeKind::Resolution => "resolution",
-                                };
-                                let key = FnKey::method(
-                                    DeclId::of(universe, md.id),
-                                    locus.clone(),
-                                    name.to_string(),
-                                );
-                                silence(&key, md.unbounded, &md.bounded_by);
-                                known.insert((key.locus.clone(), key.fn_name.clone()), key.clone());
-                                bodies.push((
-                                    key,
-                                    &md.body,
-                                    None,
-                                    Some(locus.clone()),
-                                    unless_beyond(beyond, || param_var_types(&md.params)),
-                                    unless_beyond(beyond, || fn_typed_params(&md.params)),
-                                    unless_beyond(beyond, || param_var_elem_types(&md.params)),
-                                    ids,
-                                    (false, true),
-                                    l.id,
-                                    param_names(&md.params),
-                                    unless_beyond(beyond, || param_str_types(&md.params)),
-                                ));
-                            }
                             LocusMember::Fn(decl) => {
                                 let key =
                                     FnKey::method(DeclId::of(universe, decl.id), locus.clone(), decl.name.name.clone());
@@ -3252,7 +3216,7 @@ pub fn summarize_within(
                                     unless_beyond(beyond, || fn_typed_params(&decl.params)),
                                     unless_beyond(beyond, || param_var_elem_types(&decl.params)),
                                     ids,
-                                    (decl.hot, false),
+                                    decl.hot,
                                     l.id,
                                     param_names(&decl.params),
                                     unless_beyond(beyond, || param_str_types(&decl.params)),
@@ -3276,7 +3240,7 @@ pub fn summarize_within(
                                     unless_beyond(beyond, || fn_typed_params(&lc.params)),
                                     unless_beyond(beyond, || param_var_elem_types(&lc.params)),
                                     ids,
-                                    (false, false),
+                                    false,
                                     l.id,
                                     param_names(&lc.params),
                                     unless_beyond(beyond, || param_str_types(&lc.params)),
@@ -3523,7 +3487,7 @@ pub fn summarize_within(
     // What each body starts, and whose it is, for `reached`.
     let mut starts_of: BTreeMap<FnKey, BTreeSet<String>> = BTreeMap::new();
     let mut own: BTreeSet<FnKey> = BTreeSet::new();
-    // A body's walk; `(hot, mode, decl_index)` are a row's columns, and a
+    // A body's walk; `(hot, decl_index)` are a row's columns, and a
     // declaration body, which is no row, has none of them.
     let walk = |key: &FnKey,
                 body: &Block,
@@ -3535,7 +3499,7 @@ pub fn summarize_within(
                 params: &[String],
                 str_params: &[(String, StrTy)],
                 ids: &crate::snapshot::Snapshot,
-                (hot, mode, decl_index): (bool, bool, usize)|
+                (hot, decl_index): (bool, usize)|
      -> (FnSummary, BTreeSet<String>, Vec<Expr>) {
         let column = if is_stdlib_copy(ids) { &views.stdlib } else { &views.program };
         let escaping = Escaping { ids, map: collect_escaping_decls(body, ids, column) };
@@ -3629,7 +3593,6 @@ pub fn summarize_within(
                 violates: w.violates,
                 fn_params: fn_params.to_vec(),
                 hot,
-                mode,
                 decl_index,
                 in_place_sites: w.in_place_sites,
                 call_results: w.call_results,
@@ -3655,7 +3618,7 @@ pub fn summarize_within(
         stmts: es.into_iter().map(Stmt::Expr).collect(),
         tail: None,
     };
-    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, (hot, mode), decl, params, str_params)) in
+    for (decl_index, (key, body, entry, enclosing_locus, param_types, fn_params, param_elems, ids, hot, decl, params, str_params)) in
         bodies.iter().enumerate()
     {
         if let Some(top) = beyond_body(ids, *decl) {
@@ -3664,7 +3627,7 @@ pub fn summarize_within(
             continue;
         }
         let (row, starts, skipped) =
-            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, *mode, decl_index));
+            walk(key, body, *entry, enclosing_locus, param_types, fn_params, param_elems, params, str_params, ids, (*hot, decl_index));
         starts_of.insert(key.clone(), starts.clone());
         if !starts.is_empty() {
             summary.starts.insert(key.clone(), starts);
@@ -3712,7 +3675,7 @@ pub fn summarize_within(
         let (site, position, key, body, param_types, fn_params, param_elems, ids, params, str_params) = pending[next].clone();
         next += 1;
         let (body_summary, _, skipped) =
-            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, &params, &str_params, ids, (false, false, usize::MAX));
+            walk(&key, &body, None, &key.locus, &param_types, &fn_params, &param_elems, &params, &str_params, ids, (false, usize::MAX));
         summary.declaration_bodies.push(DeclarationBody { declaration: site, position, summary: body_summary });
         if !skipped.is_empty() {
             pending.push((site, "subexpression", key, skipped_block(skipped), param_types, fn_params, param_elems, ids, params, str_params));
@@ -3749,7 +3712,7 @@ pub fn summarize_within(
                 &param_names(params),
                 &param_str_types(params),
                 ids,
-                (false, false, usize::MAX),
+                (false, usize::MAX),
             );
             if !skipped.is_empty() {
                 defaults.push((key, skipped_block(skipped), params, ids));
@@ -4709,7 +4672,6 @@ fn default_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(FnKey, Block, &'p [Pa
                     LocusMember::Lifecycle(lc) => {
                         push(method(lc.id, &lifecycle_key(lc.kind).0), param_defaults(&lc.params), &lc.params)
                     }
-                    LocusMember::Mode(md) => push(method(md.id, "mode"), param_defaults(&md.params), &md.params),
                     LocusMember::Failure(fd) => push(method(fd.id, "on_failure"), param_defaults(&fd.params), &fd.params),
                     LocusMember::Closure(c) => push(
                         method(c.id, &c.name.name),
@@ -4727,7 +4689,7 @@ fn default_bodies_of<'p>(item: &'p TopDecl, out: &mut Vec<(FnKey, Block, &'p [Pa
 
 /// The bodies of `item` the reveal rule walks that are no row (a
 /// [`DeclarationBody`] each), with the declaration each is a member of.
-/// The rows are a fn's body and a locus's methods, modes and authored
+/// The rows are a fn's body and a locus's methods and authored
 /// hooks; the caller hands in those too. `item` is the checked programs'; each key
 /// names the member's own declaration (a handler's, a synthesized
 /// hook's, a constant's), or the locus's for its params and
@@ -5166,15 +5128,6 @@ pub fn unbounded_uses(
                                 let key = FnKey::method(decl(lc.id), l.name.name.clone(), lifecycle_key(lc.kind).0);
                                 push(key, lc.span, &lc.bounded_by, copy);
                             }
-                            LocusMember::Mode(md) if md.unbounded || md.bounded_by.is_some() => {
-                                let name = match md.kind {
-                                    ModeKind::Bulk => "bulk",
-                                    ModeKind::Harmonic => "harmonic",
-                                    ModeKind::Resolution => "resolution",
-                                };
-                                let key = FnKey::method(decl(md.id), l.name.name.clone(), name.to_string());
-                                push(key, md.span, &md.bounded_by, copy);
-                            }
                             _ => {}
                         }
                     }
@@ -5273,7 +5226,7 @@ pub fn unbounded_alloc_diags(
                      until the locus dissolves — it is never reclaimed per iteration, \
                      so it grows without bound (or acknowledge an \
                      intentionally-/domain-bounded shape with `@unbounded` \
-                     on the enclosing fn, lifecycle hook or mode). Keep it in its \
+                     on the enclosing fn or lifecycle hook). Keep it in its \
                      iteration: a method's loop body that assigns no binding declared \
                      before the loop with a value that is not a scalar or a locus frees \
                      what each iteration makes when the iteration ends. Bound the loop; \

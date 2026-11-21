@@ -102,12 +102,12 @@ const XPOOL_SRC: &str = r#"
         }
         contract { consume hull: Int; }
         accept(s: Ship) { }
-        mode harmonic() -> Int {
+        fn harmonic() -> Int {
             let mut n: Int = 0;
             for child in self.children { n = n + 1; }
             return n;
         }
-        mode bulk() -> Int {
+        fn bulk() -> Int {
             let mut t: Int = 0;
             for child in self.children { t = t + child.hull; }
             return t;
@@ -360,12 +360,12 @@ const NESTED_UNDER_PINNED_SRC: &str = r#"
         placement { o: pinned; }
         contract { consume hull: Int; }
         accept(s: Ship) { }
-        mode harmonic() -> Int {
+        fn harmonic() -> Int {
             let mut n: Int = 0;
             for child in self.children { n = n + 1; }
             return n;
         }
-        mode bulk() -> Int {
+        fn bulk() -> Int {
             let mut t: Int = 0;
             for child in self.children { t = t + child.hull; }
             return t;

@@ -51,7 +51,6 @@ pub(crate) fn string_if_chain_diags(bundle: &Bundle<'_>) -> Vec<Diag> {
                         match m {
                             LocusMember::Fn(f) => body(&f.body, &mut out),
                             LocusMember::Lifecycle(lc) => body(&lc.body, &mut out),
-                            LocusMember::Mode(md) => body(&md.body, &mut out),
                             LocusMember::Failure(fd) => body(&fd.body, &mut out),
                             _ => {}
                         }

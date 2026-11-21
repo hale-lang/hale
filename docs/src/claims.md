@@ -186,7 +186,7 @@ A `group` names a set of declared program elements (loci, free functions, and im
 
 ### Function-Grained Projection and Compile-Time Guards
 
-Claims evaluate at function granularity. Including a locus in a group projects to **all** of its member `fn`s, lifecycle hooks (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`), and modes (`bulk`, `harmonic`, `resolution`). A free function projects to itself.
+Claims evaluate at function granularity. Including a locus in a group projects to **all** of its member `fn`s and lifecycle hooks (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`). A free function projects to itself.
 
 To prevent claims from passing vacuously due to typos or empty sets, `hale check` rejects:
 
@@ -195,7 +195,7 @@ To prevent claims from passing vacuously due to typos or empty sets, `hale check
 - A `role R` member that no `api` surface row requires, unless the group is marked `may_be_empty`.
 - Duplicate group declarations.
 - Any group that resolves to **zero declarations**, unless explicitly suffixed with `may_be_empty`.
-- **Projection vacuity**: A non-empty group whose members contain zero executable methods/hooks/modes (e.g., pure-data loci) when used as a `forbid` or `only edges` endpoint or a `bound` source.
+- **Projection vacuity**: A non-empty group whose members contain zero executable methods/hooks (e.g., pure-data loci) when used as a `forbid` or `only edges` endpoint or a `bound` source.
 
 ### Role groups
 
@@ -297,7 +297,7 @@ logs_only:  forbid reaches(program, effects(stdio)) avoiding std::log::*;
 - **`via { calls, bus }`**: Selects which edges the reachability walk traverses (omitting `via` traverses both):
   - `calls`: Direct calls, `self` methods, handle calls on typed receivers, interface slot defaults, calls into imported seeds, and calls through Hale-source stdlib bodies.
   - `bus`: Connects each statically-known publish site in a visited function to every subscribing handler for that topic or matching `**` wildcard subject (including stdlib loggers like `std::log::Logger` reaching `StdoutSink` -> `println` when `StdoutSink` is instantiated in the program). Note that `via { bus }` alone only follows publish statements directly inside `SRC` functions; omit `via` (or write `via { calls, bus }`) to follow calls that lead to a publish.
-- **`during <phase>`**: Filters `SRC`'s projection to a specific lifecycle hook (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`), mode (`bulk`, `harmonic`, `resolution`), or method/handler name. Free functions drop out; if the filter leaves zero functions in `SRC`, compilation fails with an error.
+- **`during <phase>`**: Filters `SRC`'s projection to a specific lifecycle hook (`birth`, `accept`, `release`, `run`, `drain`, `dissolve`) or method/handler name. Free functions drop out; if the filter leaves zero functions in `SRC`, compilation fails with an error.
 - **`avoiding <gate>`**: Removes all vertices in `<gate>` (a declared group or `std::<mod>::*` such as `std::log::*`) from the graph walk. This expresses **mandatory interposition**: proving that `A` cannot reach `B` when `G` is removed proves that every path from `A` to `B` passes through `G`. `<gate>` must be disjoint from both `SRC` and `DST`.
 
 ### 2. Direct Boundary Allowlists (`only edges A -> B`)
@@ -589,7 +589,7 @@ Both `violated`, `uncertified`, and `invalid` fail `hale check`.
 | Unresolved `alias::Name` or `alias::*` | `invalid`: `"does not resolve — no imported declaration matches"` / `"names no import alias"` |
 | Duplicate group or duplicate claim name | `invalid`: `"declared more than once"` |
 | Empty group without `may_be_empty` | `invalid`: `"holds vacuously — say may_be_empty"` |
-| Projection vacuity (group has no executable methods/hooks/modes) | `invalid`: `"projects to no executable … vertices"` |
+| Projection vacuity (group has no executable methods/hooks) | `invalid`: `"projects to no executable … vertices"` |
 | Unknown group or undeclared effect class in a claim | `invalid`: `"never declared"` + did-you-mean |
 | `effects(...)` used in `SRC` position of `forbid reaches` | `invalid`: `"sources must be declared groups"` |
 | Built-in effect class used in `bound` (other than `secret_use`) | `invalid`: points to `@budget` dimension spellings |

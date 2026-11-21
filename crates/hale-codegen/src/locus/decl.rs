@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use hale_syntax::ast::{
     BusMember, CapacitySlotKind, ClosureAssertion,
     ClosureClause, EpochSpec, Expr, KeyFilter, LifecycleKind, Literal,
-    LocusAnnotation, LocusDecl, LocusMember, ModeKind,
+    LocusAnnotation, LocusDecl, LocusMember,
     ParamInit, ProjectionClass, RecoveryEvent, ScheduleClass,
     TypeExpr,
 };
@@ -1988,128 +1988,6 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
                     // The child type, and which handler it selects, are
                     // the routing rows' (below, after every member).
                     failure_decls += 1;
-                }
-                LocusMember::Mode(md) => {
-                    // Modes lower as locus methods named after
-                    // the mode kind (bulk / harmonic /
-                    // resolution). They share the locus's struct
-                    // (per F.5: mode projections share the
-                    // locus's arena). Callable via self.bulk()
-                    // through the existing self.method() path.
-                    let mode_name = match md.kind {
-                        ModeKind::Bulk => "bulk",
-                        ModeKind::Harmonic => "harmonic",
-                        ModeKind::Resolution => "resolution",
-                    };
-                    let mut llvm_param_tys: Vec<inkwell::types::BasicMetadataTypeEnum> =
-                        Vec::with_capacity(md.params.len() + 1);
-                    llvm_param_tys.push(ptr_t.into());
-                    // m54: mode params accept defaults under the
-                    // same suffix-only rule as locus fn methods.
-                    // lower_self_method_call already handles the
-                    // call-site fill-in (it dispatches uniformly
-                    // on Fn / Mode via the program-walk that
-                    // returns a MethodSig), so the only thing
-                    // this declare-side block needs is the
-                    // ordering check.
-                    let mut seen_default = false;
-                    for p in &md.params {
-                        if p.default.is_some() {
-                            seen_default = true;
-                        } else if seen_default {
-                            return Err(CodegenError::Unsupported(format!(
-                                "locus `{}` mode `{}`: required param \
-                                 `{}` follows a defaulted param; defaults \
-                                 must form a suffix",
-                                l.name.name, mode_name, p.name.name
-                            )));
-                        }
-                        let lt = self.type_expr_to_codegen_ty(&p.ty)?;
-                        llvm_param_tys.push(self.llvm_basic_type(&lt).into());
-                    }
-                    let fn_ty = match &md.ret {
-                        None => void_t.fn_type(&llvm_param_tys, false),
-                        Some(t) => {
-                            let rt = self.type_expr_to_codegen_ty(t)?;
-                            match rt {
-                                // GH #1951: a pointer to the list's storage
-                                // in the caller's arena, as a record.
-                                CodegenTy::Bounded(_, _) => self
-                                    .context
-                                    .ptr_type(AddressSpace::default())
-                                    .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration | CodegenTy::Time => self
-                                    .context
-                                    .i64_type()
-                                    .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Float => self
-                                    .context
-                                    .f64_type()
-                                    .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Decimal(_) => self
-                                    .context
-                                    .i128_type()
-                                    .fn_type(&llvm_param_tys, false),
-                                CodegenTy::U256 | CodegenTy::I256 => self
-                                    .context
-                                    .custom_width_int_type(256)
-                                    .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Bool => self
-                                    .context
-                                    .bool_type()
-                                    .fn_type(&llvm_param_tys, false),
-                                CodegenTy::Enum(name) => {
-                                    if self
-                                        .user_enums
-                                        .get(name.as_str())
-                                        .map(|i| i.has_payload)
-                                        .unwrap_or(false)
-                                    {
-                                        self.context
-                                            .ptr_type(AddressSpace::default())
-                                            .fn_type(&llvm_param_tys, false)
-                                    } else {
-                                        self.context
-                                            .i32_type()
-                                            .fn_type(&llvm_param_tys, false)
-                                    }
-                                }
-                                CodegenTy::BytesView
-                                | CodegenTy::StringView
-                                | CodegenTy::BytesMut => self
-                                    .view_struct_ty()
-                                    .fn_type(&llvm_param_tys, false),
-                                CodegenTy::String
-                                | CodegenTy::Bytes
-                                | CodegenTy::LocusRef(_)
-                                | CodegenTy::TypeRef(_)
-                                | CodegenTy::Array(_, _)
-                                | CodegenTy::Tuple(_)
-                                | CodegenTy::FnPtr { .. }
-                                | CodegenTy::Interface(_)
-                                | CodegenTy::Cell(_, _)
-                                | CodegenTy::Drain(_) => self
-                                    .context
-                                    .ptr_type(AddressSpace::default())
-                                    .fn_type(&llvm_param_tys, false),
-                            }
-                        }
-                    };
-                    let func = self.module.add_function(
-                        &format!("{}.{}", l.name.name, mode_name),
-                        fn_ty,
-                        None,
-                    );
-                    // Aliasing stage 2: modes are in the elidable
-                    // fixpoint under their synthetic names.
-                    apply_noalias_self_if_provable(
-                        self,
-                        func,
-                        &l.name.name,
-                        mode_name,
-                        &md.params,
-                    );
-                    user_methods.insert(mode_name.to_string(), func);
                 }
                 LocusMember::Const(_)
                 | LocusMember::Type(_) => {

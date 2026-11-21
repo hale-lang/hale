@@ -1348,7 +1348,7 @@ pub fn stack_array_names(params: &[Param], body: &Block) -> BTreeSet<String> {
 }
 
 /// Which of the three walks a body gets. The returned-bindings walk
-/// reads free fns and modes; the `=` walk adds locus fns; the
+/// reads free fns; the `=` walk adds locus fns; the
 /// stack-array walk adds the lifecycles too.
 #[derive(Clone, Copy)]
 struct Walks {
@@ -1360,7 +1360,7 @@ struct Walks {
 /// Every body a binding-fact walk reads, in declaration order, with the
 /// walks it gets and its params.
 fn binding_bodies(program: &Program) -> Vec<(Walks, &[Param], &Block)> {
-    const FREE_OR_MODE: Walks =
+    const FREE: Walks =
         Walks { returned: true, assign_moved: true, stack_array: true };
     const LOCUS_FN: Walks =
         Walks { returned: false, assign_moved: true, stack_array: true };
@@ -1369,22 +1369,12 @@ fn binding_bodies(program: &Program) -> Vec<(Walks, &[Param], &Block)> {
     let mut out: Vec<(Walks, &[Param], &Block)> = Vec::new();
     for item in program.items.iter() {
         match item {
-            TopDecl::Fn(f) => out.push((FREE_OR_MODE, &f.params, &f.body)),
+            TopDecl::Fn(f) => out.push((FREE, &f.params, &f.body)),
             TopDecl::Locus(l) => {
                 for member in &l.members {
                     match member {
                         LocusMember::Fn(f) => {
                             out.push((LOCUS_FN, &f.params, &f.body))
-                        }
-                        // A `mode` is the third shape that legitimately
-                        // returns a locus (alongside a free fn) — it IS
-                        // the locus-valued projection surface. A mode
-                        // returning a factory-built locus with no
-                        // returned-bindings answer fired the GH #383
-                        // dissolve on the binding the caller now owns,
-                        // handing back a reclaimed locus.
-                        LocusMember::Mode(md) => {
-                            out.push((FREE_OR_MODE, &[], &md.body))
                         }
                         LocusMember::Lifecycle(lc) => {
                             out.push((LIFECYCLE, &lc.params, &lc.body))
@@ -4554,7 +4544,7 @@ impl Resolver<'_> {
     fn walk_locus(&mut self, l: &LocusDecl) {
         use hale_syntax::ast::{
             BusMember, ClosureClause, EpochSpec, KeyFilter, LifecycleKind,
-            ModeKind, TypeDeclBody,
+            TypeDeclBody,
         };
         let lname = l.name.name.clone();
         let qualified = lname.clone();
@@ -4605,22 +4595,6 @@ impl Resolver<'_> {
                     }
                     self.walk_block(
                         &lc.body,
-                        Some((Decision::Caller, "body tail")),
-                    );
-                    self.close_frame(saved);
-                }
-                LocusMember::Mode(md) => {
-                    let kind = match md.kind {
-                        ModeKind::Bulk => "bulk",
-                        ModeKind::Harmonic => "harmonic",
-                        ModeKind::Resolution => "resolution",
-                    };
-                    let saved = self.open_body_frame(
-                        &format!("{}.{}", qualified, kind),
-                        &md.body,
-                    );
-                    self.walk_block(
-                        &md.body,
                         Some((Decision::Caller, "body tail")),
                     );
                     self.close_frame(saved);

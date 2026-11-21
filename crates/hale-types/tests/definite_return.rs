@@ -131,7 +131,7 @@ fn main() {
 }
 
 #[test]
-fn a_method_and_a_mode_are_refused_by_their_names() {
+fn two_methods_are_refused_by_their_names() {
     let src = r#"
 locus Gauge {
     params { level: Int; }
@@ -140,7 +140,7 @@ locus Gauge {
         if self.level > 0 { return self.level; }
     }
 
-    mode bulk() -> String {
+    fn bulk() -> String {
         print("bulk");
     }
 }
@@ -156,7 +156,7 @@ fn main() {
         .map(|d| d.message)
         .collect();
     assert!(msgs.iter().any(|m| m.contains("method `Gauge.reading` returns `Int`")), "{msgs:#?}");
-    assert!(msgs.iter().any(|m| m.contains("mode `bulk` of `Gauge` returns `String`")), "{msgs:#?}");
+    assert!(msgs.iter().any(|m| m.contains("method `Gauge.bulk` returns `String`")), "{msgs:#?}");
 }
 
 #[test]

@@ -27,7 +27,7 @@ Hale provides no `panic` statement or uncaught exceptions (`assert` exists only 
 
 | Channel | Mechanism | Direction | Allowed Surfaces & Purpose |
 |---|---|---|---|
-| **Value channel** | [`fallible(E)`](../basics/fallible.md) + `or` | Up the **call stack** | Free functions and user-declared locus `fn` methods. Rejected on runtime-driven hooks (`birth`, `run`, `dissolve`, mode bodies, closure assertions, bus handlers) because they have no caller frame. |
+| **Value channel** | [`fallible(E)`](../basics/fallible.md) + `or` | Up the **call stack** | Free functions and user-declared locus `fn` methods. Rejected on runtime-driven hooks (`birth`, `run`, `dissolve`, closure assertions, bus handlers) because they have no caller frame. |
 | **Structural channel (`↑`)** | `closure` / `violate` → `on_failure` | Up the **locus ownership tower** | Every locus. Triggered by broken invariant closures or explicit `violate` statements; handled by the parent supervisor's `on_failure` hook. |
 
 If a structural failure bubbles past the root `main locus` without being absorbed by an `on_failure` handler, the process exits non-zero and prints a structured violation report.
