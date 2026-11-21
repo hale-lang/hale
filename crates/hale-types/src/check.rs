@@ -18607,10 +18607,16 @@ impl<'a> Checker<'a> {
     }
 
     fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
+        // F.22: a cell has no value-level type (`Unknown`), but a field
+        // written through it is a field of the record it holds, its
+        // slot's element, and is typed as one (GH #2111: the place's row,
+        // which lowering reads).
+        let mut cell_elem = None;
         let mut ty = if lv.head.name == "self" {
             self.note_self(lv.head.span);
             self.self_ty()
         } else if let Some(s) = self.binding_of(&lv.head.name) {
+            cell_elem = s.cell.map(|c| c.elem);
             s.ty
         } else {
             // no module item is assigned: a name no binding answers is
@@ -18621,6 +18627,9 @@ impl<'a> Checker<'a> {
         let records = self.records_views();
         if records {
             self.views.note_place(&lv.head, ty.clone());
+        }
+        if let (Ty::Unknown, Some(elem), false) = (&ty, cell_elem, lv.tail.is_empty()) {
+            ty = elem;
         }
         // The place as written up to the segment at hand, for a hint.
         let mut spelled = lv.head.name.clone();
@@ -22516,6 +22525,21 @@ impl<'a> Checker<'a> {
         Some((mangled.to_string(), written.join("::"), template))
     }
 
+    /// The declared type of the const an imported seed's `alias::C`
+    /// names, resolved through the import table as [`Self::imported_fn`]
+    /// resolves a fn.
+    fn imported_const(&self, path: &QualifiedName) -> Option<Ty> {
+        if path.segments.len() < 2 {
+            return None;
+        }
+        let key: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let mangled = self.known.import_target(&key.join("::"))?;
+        match self.top.lookup(mangled) {
+            Some(TopSymbol::Const(c)) => Some(c.ty.clone()),
+            _ => None,
+        }
+    }
+
     fn imported_fn(&self, path: &QualifiedName) -> Option<(String, FnSig)> {
         if path.segments.len() < 2 {
             return None;
@@ -24537,6 +24561,14 @@ impl<'a> Checker<'a> {
                         params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
                         ret: Box::new(sig.ret.clone()),
                     };
+                }
+                // GH #2111 (phase 1): an imported seed's const, `alias::C`,
+                // is its declared type, as a bare const's read is. It fell
+                // through to `Unknown` below, so its value was held to no
+                // type: `let s: String = lib::MAX` of an `Int` const
+                // checked, built and held the `Int`.
+                if let Some(ty) = self.imported_const(qn) {
+                    return ty;
                 }
                 // GH #803: nothing above answered the path, and in a
                 // whole program nothing else will. This is the CALL

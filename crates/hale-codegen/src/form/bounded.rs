@@ -520,7 +520,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // after the receiver's copy-on-write.
         if r.is_some() && matches!(name, "push" | "set") {
             if let Some(place) = Self::expr_place_lvalue(&args[0]) {
-                self.mark_optional_written(&place, scope)?;
+                self.mark_optional_written(&place, Some(&args[0]), scope)?;
             }
         }
         Ok(r)
