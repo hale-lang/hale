@@ -1,7 +1,8 @@
 # Mirror the container images CI starts to the repository's own package
 # registry, so CI never pulls anonymously from Docker Hub (its pull rate
 # limit is shared by every GitHub-hosted runner's address and failed whole
-# runs). tests.yml pulls these as ghcr.io/hale-lang/ci-<name>:<tag>.
+# runs). tests.yml pulls these as ghcr.io/hale-lang/ci-<name>:<tag>, and the
+# DNA fixtures name the ones they start by that name.
 # Refreshed weekly; run by hand after changing an image or its tag.
 #
 # It also mirrors the habitat's Forgejo (GH #2064): the image
@@ -51,6 +52,10 @@ jobs:
           copy docker.io/pgvector/pgvector:pg16 ci-pgvector:pg16
           copy docker.io/library/nats:2 ci-nats:2
           copy docker.io/prom/prometheus:v3.5.0 ci-prometheus:v3.5.0
+          # the DNA fixtures name these by their mirror (dna::TEST_BUSYBOX,
+          # dna::TEST_ALPINE in dna/core/workspace.hl, GH #2141)
+          copy docker.io/library/busybox:1.36 ci-busybox:1.36
+          copy docker.io/library/alpine:3.20 ci-alpine:3.20
 
           # The habitat's Forgejo, by the digest FORGEJO_IMAGE pins. skopeo
           # takes a tag or a digest in a source, not both, so the source is

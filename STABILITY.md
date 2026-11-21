@@ -22,6 +22,20 @@ Hale's version is `0.MINOR.PATCH`.
   at the replacement. A change may still warn first when that is the
   easier migration, but it owes no window.
 
+## Releases and nightlies
+
+A release is a deliberate milestone: its changes are folded into
+`CHANGELOG.md` under its version, with its `### Breaking` heading (below).
+Between releases, a nightly build of `main` is published each day `main`
+has changed, as a `nightly-YYYY-MM-DD` pre-release and the
+`ghcr.io/hale-lang/hale:nightly` image. A nightly is versioned ahead of
+the release it follows (`0.37.1-nightly.20261121+<commit>`) and carries
+whatever `main` holds, breaking changes included; its release notes list
+the pull requests it adds and the CHANGELOG fragments still to be
+released. The install script and the image's `latest` tag stay on the
+newest release unless a nightly is asked for. The newest 14 nightlies are
+kept.
+
 ## Every release names its breaking changes
 
 Every release's CHANGELOG section opens with a `### Breaking` heading.

@@ -79,7 +79,8 @@ fn grafted_home(there: String, name: String) -> String {
 fn sshd_files(dir: String) {
     std::io::fs::write_file(
         dir + "/Dockerfile",
-        "FROM alpine:3.20\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
+        "FROM " + dna::TEST_ALPINE
+            + "\nRUN apk add --no-cache openssh-server docker-cli docker-cli-compose && ssh-keygen -A\nCOPY docker.sh /usr/local/bin/docker\nCOPY entry.sh /entry.sh\nRUN chmod +x /usr/local/bin/docker /entry.sh\nENTRYPOINT [\"/bin/sh\", \"/entry.sh\"]\n",
     ) or discard;
     std::io::fs::write_file(
         dir + "/docker.sh",
