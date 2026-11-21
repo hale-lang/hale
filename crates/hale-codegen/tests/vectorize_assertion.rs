@@ -202,3 +202,24 @@ fn a_dev_build_does_not_check() {
     options.dev_profile = true;
     build(UNTIL, "vec_dev", false, options).expect("not checked at O1");
 }
+
+/// `fn main` is lowered apart from every other fn; its loops are held to
+/// its `@vectorize` all the same (review of #2144).
+#[test]
+fn fn_mains_own_loops_are_held() {
+    let src = "@vectorize(min_width: 64)
+fn main() {
+    let xs: [Int; 1024] = [std::process::pid(); 1024];
+    let mut s = 0;
+    for i in 0..1024 {
+        s = s + xs[i] * i;
+    }
+    println(s);
+}
+";
+    for r in both(src, "vec_main") {
+        let (msg, at) = refused(r, src);
+        assert!(msg.starts_with("`@vectorize` on `main`: "), "{msg}");
+        assert_eq!(at, (5, 5), "at main's loop: {msg}");
+    }
+}

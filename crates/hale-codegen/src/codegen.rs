@@ -11409,8 +11409,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
             self.backedge_stop_fn = Some(main_fn);
         }
+        // GH #2134: `fn main`'s own loops are held to its `@vectorize` as
+        // any fn's are (lowered here, not through `lower_user_fn_body`).
         let end = self
-            .in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope))
+            .with_vec_fn(&main_decl, "main".to_string(), false, |cx| {
+                cx.in_body(main_decl.id, |cx| cx.lower_block(&main_decl.body, &mut scope))
+            })
             .map_err(|e| e.located_at(main_decl.name.span));
         self.backedge_stop_fn = None;
         let end = end?;
