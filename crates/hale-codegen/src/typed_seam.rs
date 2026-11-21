@@ -114,16 +114,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// GH #2111: the checker's type of the assignment target `target`, a
     /// place of the body being lowered: its head's place, or its last
-    /// segment's (a field by its name, an element by its index). `None`
-    /// where the checker recorded none, or for a type with no layout.
-    pub(crate) fn place_ty(&self, target: &hale_syntax::ast::LValue) -> Option<CodegenTy> {
-        let body = self.current_body?;
+    /// segment's (a field by its name, an element by its index). The
+    /// checker types every assignment's target, so a target with no row,
+    /// or with a type that has no layout, is refused at its span, a
+    /// compiler defect rather than a guess.
+    pub(crate) fn place_ty(&self, target: &hale_syntax::ast::LValue) -> Result<CodegenTy, CodegenError> {
         let key = match target.tail.last() {
             None => hale_types::typed_bodies::place_name_key(&target.head),
             Some(hale_syntax::ast::LValueSeg::Field(f)) => hale_types::typed_bodies::place_name_key(f),
             Some(hale_syntax::ast::LValueSeg::Index(ix)) => hale_types::typed_bodies::place_index_key(ix),
         };
-        self.layout_of(self.expr_types.place_at(body, key)?)
+        self.current_body
+            .and_then(|body| self.expr_types.place_at(body, key))
+            .and_then(|t| self.layout_of(t))
+            .ok_or_else(|| {
+                CodegenError::missing_row("expression_typing", "the checker's type of this assignment's target", Some(target.span))
+            })
     }
 
     /// The checker's type of the call `call`, the value its lowering
