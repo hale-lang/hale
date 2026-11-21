@@ -1111,6 +1111,12 @@ impl ViewTypes {
         note(&mut self.exprs, node(e), ty, || Ty::Unknown);
     }
 
+    /// GH #2111: the expression `e` is `ty`, whatever its row said: the
+    /// place it flows into decided it (`Checker::meet_row`).
+    pub fn meet_expr(&mut self, e: &Expr, ty: Ty) {
+        self.exprs.insert(node(e), ty);
+    }
+
     pub fn note_binding(&mut self, name: &Ident, ty: Ty) {
         note(&mut self.bindings, node(name), ty, || Ty::Unknown);
     }
@@ -1980,6 +1986,20 @@ impl TypingRecord {
     pub fn scoped_expr(&mut self, body: NodeId, scope: &ExprScope, e: &Expr, ty: Ty) {
         let sp = e.span();
         self.scoped_key(body, scope, (sp.start.0, sp.end.0, expr_kind(e), expr_name(e)), ty);
+    }
+
+    /// GH #2111: the row at `key` is `ty`, whatever it said
+    /// ([`ViewTypes::meet_expr`] on a scoped walk).
+    pub fn scoped_meet(&mut self, body: NodeId, scope: &ExprScope, key: (u32, u32, u8, u64), ty: Ty) {
+        let rows = &mut self.body(body).scoped_exprs;
+        let at = match rows.iter().position(|(s, _)| s == scope) {
+            Some(i) => i,
+            None => {
+                rows.push((scope.clone(), Default::default()));
+                rows.len() - 1
+            }
+        };
+        rows[at].1.insert(key, ty);
     }
 
     /// [`TypingRecord::scoped_expr`] by the row's key.

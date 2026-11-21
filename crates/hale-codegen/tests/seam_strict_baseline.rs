@@ -16,7 +16,9 @@
 //! `fixtures/seam_strict_baseline.txt`:
 //!
 //! - a count above its baseline fails: a change made lowering type
-//!   something itself that the checker did not record;
+//!   something itself that the checker did not record. A count is held by
+//!   family, kind and place; the reason a site lacks its row (none, or
+//!   `Unknown`, or no layout) is the file's information, and moves freely;
 //! - a count below its baseline fails too, until the baseline is
 //!   regenerated in the same change, so the file always says where the
 //!   burn-down stands:
@@ -354,7 +356,22 @@ fn the_burn_down_only_moves_forward() {
         return;
     }
     let held = std::fs::read_to_string(&path).unwrap_or_default();
-    let (was, is) = (parse(&held), parse(&now));
+    // a row's reason is what the site still lacks; a site moving from one
+    // reason to another (no row to `unknown`, once the checker records
+    // one) is held to the same count, so the ratchet reads the rows by
+    // family, kind and place, reasons summed
+    let by_place = |m: BTreeMap<String, usize>| -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        for (k, n) in m {
+            let k = match k.rfind(", ") {
+                Some(at) if k.starts_with("family ") => format!("{})", &k[..at]),
+                _ => k,
+            };
+            *out.entry(k).or_insert(0) += n;
+        }
+        out
+    };
+    let (was, is) = (by_place(parse(&held)), by_place(parse(&now)));
     let goes_up: BTreeSet<&str> = measures.iter().filter(|m| m.2).map(|m| m.0).collect();
     let keys: BTreeSet<_> = was.keys().chain(is.keys()).cloned().collect();
     let mut worse = Vec::new();
@@ -380,36 +397,32 @@ fn the_burn_down_only_moves_forward() {
         worse.join("\n")
     );
     assert!(
-        better.is_empty(),
+        better.is_empty() && held == now,
         "the burn-down moved: regenerate the baseline in this change \
          (HALE_SEAM_BASELINE_REGEN=1, see the file's head):\n{}",
-        better.join("\n")
+        if better.is_empty() { "(the reasons the sites lack a row moved)".to_string() } else { better.join("\n") }
     );
 }
 
 
-/// The knob itself: off, a program builds as it always has; on, an
-/// expression lowered without the checker's row refuses the build, and the
-/// refusal names the site, its kind, its family and why. A literal has no
-/// row of its own today (the checker records none, by design until family
-/// 7 is burned down), so `1` is one.
+/// The knob itself. On, a program that reaches a value lowering types
+/// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
+/// family and why. A chain (`xs.filter(...).count()`) is desugared after
+/// the check, so its accumulator has no row of its own today: when the
+/// desugar moves before the check (GH #2111's rewrites), this test takes
+/// another site that has none, until there is none and the knob goes.
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
-    let src = "fn main() { let x = 41; println(x + 1); }\n";
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "fn main() { let xs = [1, 2, 3]; println(xs.filter(it > 1).count()); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
     let out = harness::unique_bin("seam_strict_on");
     let err = build_opts::build_source(src, &out, &strict).expect_err("on, it is refused");
     assert!(!out.exists(), "nothing is emitted");
     let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
-    let lit = rows
-        .iter()
-        .find(|r| r.kind == "literal" && !r.stdlib && r.span.end.0 - r.span.start.0 == 2)
-        .unwrap_or_else(|| panic!("the literal `41` is named: {err}"));
-    assert_eq!((lit.family, lit.reason, lit.in_fn.as_str()), (7, "no row", "main"), "{err}");
-    assert!(err.to_string().contains("program `literal` (family 7)"), "{err}");
-    // the read of `x` has the checker's row: not named
-    assert!(!rows.iter().any(|r| !r.stdlib && r.kind == "ident"), "{err}");
+    let at = rows.iter().find(|r| !r.stdlib).unwrap_or_else(|| panic!("a site of the program is named: {err}"));
+    assert_eq!(at.in_fn, "main", "{err}");
+    assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
 }
