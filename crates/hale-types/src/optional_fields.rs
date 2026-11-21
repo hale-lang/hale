@@ -169,11 +169,11 @@ impl Zeros<'_, '_> {
         match self.shapes.classify(&d) {
             TypeClass::Prim(p) => prim_zero(p),
             TypeClass::Named { name, .. } => match self.convs.get(name)? {
-                Conv::Identity(n) => Some(format!("{n}(0)")),
-                Conv::Quantity(m, u) => Some(format!("0 * {m}{u}")),
+                Conv::Identity(n, _) => Some(format!("{n}(0)")),
+                Conv::Quantity(m, u, _) => Some(format!("0 * {m}{u}")),
                 // a range's zero is `0` where it holds it, its least value
                 // where it does not; a literal is a range's value in a default
-                Conv::Range(_, z) => Some(z.to_string()),
+                Conv::Range(_, z, _) => Some(z.to_string()),
             },
             // a record's zero is built of its fields' defaults and zeros
             TypeClass::Struct { name, fields } => {

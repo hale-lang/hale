@@ -1,0 +1,24 @@
+// GH #2131: a scalar counting a `U64` crosses `@ffi("c")` as its `U64`
+// does, a C `uint64_t` (spec/ffi.md): an identity, a range and a quantity
+// each take the register an `i64` takes, all 64 bits. libc's `strtoull`
+// hands one back, and `labs` takes one in: 2^64 - 5 arrives as the `long`
+// -5, so its absolute value says the bits crossed whole.
+
+unit wei;
+
+type Wei = quantity U64 in wei;
+type Nonce = distinct U64;
+type Port = U64 { range: 1..65536; }
+
+@ffi("c") fn strtoull(s: String, end: Int, base: Int) -> Nonce;
+@ffi("c") fn labs(x: Wei) -> Wei;
+@ffi("c") fn llabs(p: Port) -> Port;
+
+fn main() {
+    let n = strtoull("18446744073709551615", 0, 10);
+    std::test::assert(U64(n) == U64::max(), "an identity returned past Int's max");
+    std::test::assert(labs(18446744073709551611wei) == 5wei, "a quantity argument's 64 bits");
+    std::test::assert(labs(12345wei) == 12345wei, "and a small one");
+    let p: Port = 443;
+    std::test::assert(llabs(p) == 443, "a range, both ways");
+}

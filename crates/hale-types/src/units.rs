@@ -237,7 +237,7 @@ impl UnitRows {
     /// `1` of a unit `h30m`): a declared unit, then digits. The refusal,
     /// saying the sum to write instead (`1h + 30min`), a retired name in
     /// it written as it is now; `None` when the unit is of another shape.
-    pub fn compound_literal(&self, value: i64, unit: &str) -> Option<String> {
+    pub fn compound_literal(&self, value: u64, unit: &str) -> Option<String> {
         let first = unit.find(|c: char| c.is_ascii_digit())?;
         self.unit_named(&unit[..first])?;
         let mut sum = vec![format!("{value}{}", &unit[..first])];
@@ -267,8 +267,9 @@ impl UnitRows {
     /// literal is a whole count of that denomination, whatever the unit's
     /// factor (`5mg` is not one); `None` otherwise, when the literal is
     /// counted in its own unit. The count is `Err` when it is whole and
-    /// no `Int` holds it, which is refused, never wrapped.
-    pub fn literal_at_quantity(&self, value: i64, unit: usize) -> Option<(usize, Result<i64, ()>)> {
+    /// the quantity's integer (`Int`, a `U64`: GH #2131) does not hold it,
+    /// which is refused, never wrapped.
+    pub fn literal_at_quantity(&self, value: u64, unit: usize) -> Option<(usize, Result<i128, ()>)> {
         let p = self.principal(self.units[unit].component)?;
         let to = self.scalars[p].denomination.as_ref()?;
         let one = Denom { unit: self.units[unit].site, multiple: Ratio::one() };
@@ -277,7 +278,9 @@ impl UnitRows {
         if !count.is_integer() {
             return None;
         }
-        Some((p, i64::try_from(count.to_integer()).map_err(|_| ())))
+        let count = count.to_integer();
+        let held = int_holds(self.scalars[p].int, &count).then(|| i128::try_from(&count).ok()).flatten();
+        Some((p, held.ok_or(())))
     }
 }
 
@@ -297,10 +300,10 @@ pub fn stdlib_rows() -> &'static UnitRows {
 /// literal's own row in any program, which no program's declarations
 /// change (a program's unit is never the stdlib's: law 1). `None` for a
 /// unit the stdlib does not declare, or a count no `Int` holds.
-pub fn stdlib_literal(value: i64, unit: &str) -> Option<(i64, crate::ty::Ty)> {
+pub fn stdlib_literal(value: u64, unit: &str) -> Option<(i64, crate::ty::Ty)> {
     let rows = stdlib_rows();
     let (p, count) = rows.literal_at_quantity(value, rows.unit_named(unit)?)?;
-    Some((count.ok()?, rows.scalars[p].ty()))
+    Some((i64::try_from(count.ok()?).ok()?, rows.scalars[p].ty()))
 }
 
 impl ScalarRow {
@@ -352,6 +355,14 @@ pub struct ScalarRow {
     pub policy: Option<RoundPolicy>,
     /// Half-open, as written (an inclusive bound is stored plus one).
     pub range: Option<(i128, i128)>,
+    /// GH #2131: the integer it counts, its **base**: the machine integer
+    /// its chain is written over (`quantity U64 in wei`, `distinct U64`,
+    /// `U64 { range: … }`), a refinement's and a point's its parent's.
+    /// Every value of the type is one of these, in its width and its
+    /// signedness, and its arithmetic, range checks and conversions are
+    /// that integer's. `Int` for a chain that reaches no integer, which
+    /// the laws refuse.
+    pub int: PrimType,
     /// The declaration as written: what the laws judge and point at.
     pub written: Written,
 }
@@ -396,7 +407,9 @@ pub struct WrittenOrigin {
 /// What a scalar declaration is written over.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Base {
-    Int,
+    /// A machine integer (GH #2131): `Int`, `U64`
+    /// ([`PrimType::machine_int`]).
+    Integer(PrimType),
     /// Another primitive (`Float`, `String`).
     Primitive(PrimType),
     /// A scalar row.
@@ -414,8 +427,7 @@ impl Base {
     /// The base as a message names it.
     fn spelled(&self, rows: &UnitRows) -> String {
         match self {
-            Base::Int => "`Int`".to_string(),
-            Base::Primitive(p) => format!("`{}`", crate::ty::prim_name(*p)),
+            Base::Integer(p) | Base::Primitive(p) => format!("`{}`", crate::ty::prim_name(*p)),
             Base::Scalar(i) => format!("`{}`", rows.scalars[*i].display),
             Base::Other { name, .. } | Base::Unknown(name) => format!("`{name}`"),
             Base::Cycle(names) => format!("`{}`", names[0]),
@@ -425,7 +437,7 @@ impl Base {
     /// What the base is, for a message: `a point`, `a struct`.
     fn what(&self, rows: &UnitRows) -> String {
         match self {
-            Base::Int | Base::Primitive(_) => "a primitive".to_string(),
+            Base::Integer(_) | Base::Primitive(_) => "a primitive".to_string(),
             Base::Scalar(i) => rows.scalars[*i].kind.article().to_string(),
             Base::Other { what, .. } => what.clone(),
             Base::Unknown(_) | Base::Cycle(_) => "not a declared type".to_string(),
@@ -588,6 +600,7 @@ pub fn derive_unit_rows(bundle: &Bundle<'_>) -> UnitRows {
             origin: None,
             policy: round.as_ref().and_then(|(p, _)| RoundPolicy::of(p)),
             range: range.and_then(|r| r.bounds.ok()),
+            int: PrimType::Int,
             written: Written {
                 kind: s.kind,
                 base: base(&s.base, &names, 0),
@@ -611,16 +624,56 @@ pub fn derive_unit_rows(bundle: &Bundle<'_>) -> UnitRows {
         settle(&mut rows, &mut state, i);
     }
     principals(&mut rows);
+    for i in 0..rows.scalars.len() {
+        rows.scalars[i].int = counted_int(&rows, i);
+    }
     rows
 }
 
-/// A range bound: an integer literal, with a leading minus allowed; the
-/// bound's span when it is anything else.
+/// GH #2131: the integer the scalar `i` counts: the machine integer the
+/// nearest declaration on its chain is written over (a refinement's and a
+/// point's chain goes through its parent). `Int` for a chain that reaches
+/// none (a base the laws refuse, a refinement cycle).
+fn counted_int(rows: &UnitRows, i: usize) -> PrimType {
+    let mut at = i;
+    for _ in 0..=rows.scalars.len() {
+        match rows.scalars[at].written.base {
+            Base::Integer(p) => return p,
+            Base::Scalar(p) => at = p,
+            _ => break,
+        }
+    }
+    PrimType::Int
+}
+
+/// GH #2131: the values a machine integer holds, `min` and `max`
+/// inclusive: `Int`'s `-2^63` through `2^63 - 1`, `U64`'s `0` through
+/// `2^64 - 1`, from its width and signedness.
+pub fn int_bounds(p: PrimType) -> (i128, i128) {
+    let (bits, signed) = p.machine_int().unwrap_or((64, true));
+    if signed {
+        (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+    } else {
+        (0, (1i128 << bits) - 1)
+    }
+}
+
+/// GH #2131: whether `n` is a value of the machine integer `p`.
+pub fn int_holds(p: PrimType, n: &BigInt) -> bool {
+    let (lo, hi) = int_bounds(p);
+    *n >= BigInt::from(lo) && *n <= BigInt::from(hi)
+}
+
+/// A range bound: an integer literal (one past `Int`'s max a `U64`'s,
+/// GH #2131), with a leading minus allowed; the bound's span when it is
+/// anything else.
 fn bound(e: &Expr) -> Result<i128, Span> {
     match e {
         Expr::Literal(Literal::Int(n), _) => Ok(i128::from(*n)),
+        Expr::Literal(Literal::U64(n), _) => Ok(i128::from(*n)),
         Expr::Unary { op: UnaryOp::Neg, operand, span } => match operand.as_ref() {
             Expr::Literal(Literal::Int(n), _) => Ok(-i128::from(*n)),
+            Expr::Literal(Literal::U64(n), _) => Ok(-i128::from(*n)),
             _ => Err(*span),
         },
         other => Err(other.span()),
@@ -631,7 +684,8 @@ fn bound(e: &Expr) -> Result<i128, Span> {
 /// (a cycle of aliases is the resolver's error).
 fn base(te: &TypeExpr, names: &Names<'_>, depth: usize) -> Base {
     match te {
-        TypeExpr::Primitive(PrimType::Int, _) => Base::Int,
+        // GH #2131: a machine integer is a base a scalar counts.
+        TypeExpr::Primitive(p, _) if p.machine_int().is_some() => Base::Integer(*p),
         // `Duration` and `Time` are the stdlib's declarations (U4): a
         // type position spells them as primitives.
         TypeExpr::Primitive(p, _) => match names.scalars.get(crate::ty::prim_name(*p)) {
@@ -705,7 +759,7 @@ fn kind(rows: &UnitRows, i: usize) -> ScalarKindRow {
         }
         match w.base {
             Base::Scalar(p) => at = p,
-            Base::Int if w.denomination.is_some() => return ScalarKindRow::Quantity,
+            Base::Integer(_) if w.denomination.is_some() => return ScalarKindRow::Quantity,
             _ => return ScalarKindRow::Range,
         }
     }
@@ -871,22 +925,23 @@ pub fn unit_laws(rows: &UnitRows) -> Vec<Diag> {
 
 /// The scalar declarations whose values are typed, by name, from the
 /// declarations as written (the resolver's input; the rows' [`kind`]
-/// reads the same words and bases): an identity or a range counted in
-/// `Int` (U2), a quantity counting an `Int` in a denomination and a point
-/// over one, and a refinement of any of these (U3). Each is represented
-/// as an `Int`. A declaration over neither `Int` nor one of these and a
-/// refinement cycle are not: the resolver registers their names as
+/// reads the same words and bases), each with the integer it counts
+/// (GH #2131): an identity or a range counted in an integer (U2), a
+/// quantity counting an integer in a denomination and a point over one,
+/// and a refinement of any of these (U3). Each is represented as its
+/// integer (`Int`, `U64`). A declaration over no integer nor one of these
+/// and a refinement cycle are not: the resolver registers their names as
 /// `Unknown`, so a use of one is no second error beside the laws'.
 ///
 /// The stdlib's `Duration` and `Time` (U4) are not among them: a type
 /// position reads those names as the primitives, which keep their own
 /// representation. A refinement of one (`Duration in ms { round: floor;
 /// }`) is, its chain read through the stdlib's declaration.
-pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std::collections::BTreeSet<&'a str> {
-    let typed = |name: &'a str| -> bool {
+pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> BTreeMap<&'a str, PrimType> {
+    let typed = |name: &'a str| -> Option<PrimType> {
         let mut at = name;
         for _ in 0..=decls.len() + 2 {
-            let Some(s) = scalar_decl(decls, at) else { return false };
+            let s = scalar_decl(decls, at)?;
             let named = |te: &'a TypeExpr| match te {
                 TypeExpr::Named { path, generic_args, .. } if path.segments.len() == 1 && generic_args.is_empty() => {
                     Some(path.segments[0].name.as_str())
@@ -894,21 +949,28 @@ pub fn typed_scalar_names<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> std:
                 TypeExpr::Primitive(p, _) => Some(crate::ty::prim_name(*p)),
                 _ => None,
             };
-            match (s.kind, &s.base, &s.denom) {
-                (Some(ScalarKind::Quantity), TypeExpr::Primitive(PrimType::Int, _), Some(_)) => return true,
-                (Some(ScalarKind::Quantity), _, _) => return false,
-                (Some(ScalarKind::Distinct), TypeExpr::Primitive(PrimType::Int, _), None) => return true,
-                (Some(ScalarKind::Distinct), _, _) => return false,
-                (None, TypeExpr::Primitive(PrimType::Int, _), None) => return true,
-                (Some(ScalarKind::Point), base, _) | (None, base, _) => match named(base) {
-                    Some(next) => at = next,
-                    None => return false,
-                },
+            let int = |te: &TypeExpr| match te {
+                TypeExpr::Primitive(p, _) if p.machine_int().is_some() => Some(*p),
+                _ => None,
+            };
+            match (s.kind, int(&s.base), &s.denom) {
+                (Some(ScalarKind::Quantity), Some(p), Some(_)) => return Some(p),
+                (Some(ScalarKind::Quantity), _, _) => return None,
+                (Some(ScalarKind::Distinct), Some(p), None) => return Some(p),
+                (Some(ScalarKind::Distinct), _, _) => return None,
+                (None, Some(p), None) => return Some(p),
+                (None, Some(_), Some(_)) => return None,
+                (Some(ScalarKind::Point), _, _) | (None, None, _) => at = named(&s.base)?,
             }
         }
-        false
+        None
     };
-    decls.keys().copied().filter(|n| hale_syntax::parser::primitive_from_name(n).is_none() && typed(n)).collect()
+    decls
+        .keys()
+        .copied()
+        .filter(|n| hale_syntax::parser::primitive_from_name(n).is_none())
+        .filter_map(|n| Some((n, typed(n)?)))
+        .collect()
 }
 
 /// The scalar declaration `name` names among `decls`, or else the
@@ -930,10 +992,12 @@ fn scalar_decl<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>, name: &str) -> Opt
 /// declarations as written: `q(` its denomination `)`, as the nearest
 /// declaration on its chain writes it (`q(cent)`, `q(100 msec)`); a
 /// point's adds `point` and its origin when one is written (`q(mK point
-/// 273150 mK)`). Two processes whose fields count in different
-/// denominations disagree in the tag, so in the shape hash. A name that
-/// is no quantity or point, or whose chain names no denomination, has
-/// none.
+/// 273150 mK)`). A quantity counting an integer other than `Int` names
+/// it first, by its own tag (GH #2131: `q(u64 wei)`), so an `Int` count
+/// and a `U64` count disagree too; an `Int`'s tag is as it was. Two
+/// processes whose fields count in different denominations disagree in
+/// the tag, so in the shape hash. A name that is no quantity or point, or
+/// whose chain names no denomination, has none.
 ///
 /// The stdlib's `Duration` and `Time` have none (U4): a field of either
 /// keeps its primitive's tag (`u`, `t`), so no existing topic's shape
@@ -958,8 +1022,13 @@ pub fn quantity_tags<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> BTreeMap<
                 }
             }
             match (s.kind, &s.base) {
-                (Some(ScalarKind::Quantity), _) => {
-                    let denom = denom?;
+                (Some(ScalarKind::Quantity), base) => {
+                    let mut denom = denom?;
+                    if let TypeExpr::Primitive(p, _) = base {
+                        if *p != PrimType::Int && p.machine_int().is_some() {
+                            denom = format!("{} {denom}", crate::topic_identity::prim_tag(*p));
+                        }
+                    }
                     return Some(match (point, origin) {
                         (false, _) => format!("q({denom})"),
                         (true, None) => format!("q({denom} point)"),
@@ -971,7 +1040,7 @@ pub fn quantity_tags<'a>(decls: &BTreeMap<&'a str, &'a ScalarDecl>) -> BTreeMap<
                     point |= kind == Some(ScalarKind::Point);
                     at = path.segments[0].name.as_str();
                 }
-                (kind, TypeExpr::Primitive(p, _)) if *p != PrimType::Int => {
+                (kind, TypeExpr::Primitive(p, _)) if p.machine_int().is_none() => {
                     point |= kind == Some(ScalarKind::Point);
                     at = crate::ty::prim_name(*p);
                 }
@@ -1189,25 +1258,46 @@ fn second_quantity(rows: &UnitRows, out: &mut Vec<Violation>) {
     }
 }
 
-/// Law 5: a quantity counts an `Int` and names its denomination.
+/// The conversion between two machine integers' counts a message names
+/// (GH #2131), unquoted: `U64::from_int(n)` from an `Int`, `U64::to_int(x)
+/// or ...` back, as the primitives' own functions convert them.
+pub fn int_conversion(from: PrimType, to: PrimType) -> String {
+    let (f, t) = (crate::ty::prim_name(from), crate::ty::prim_name(to));
+    match (from.machine_int(), to.machine_int()) {
+        // From a narrower or same-signed integer into a wider one, the
+        // target's `from_` names it; into one that may not hold it, the
+        // source's `to_`, which can fail.
+        (Some((fb, fs)), Some((tb, ts))) if (fs == ts && fb <= tb) || (!fs && ts && fb < tb) => {
+            format!("{t}::from_{}(n)", f.to_lowercase())
+        }
+        (_, _) if from == PrimType::Int => format!("{t}::from_int(n)"),
+        _ => format!("{f}::to_{}(x) or ...", t.to_lowercase()),
+    }
+}
+
+/// Law 5: a quantity counts an integer and names its denomination; every
+/// quantity of a component counts the component's quantity's integer
+/// (GH #2131: an `Int` count and a `U64` count of one denomination never
+/// mix).
 fn quantity_shape(rows: &UnitRows, out: &mut Vec<Violation>) {
     for s in &rows.scalars {
         let w = &s.written;
         let in_text = w.denomination.map(|d| denom_text(rows, &d)).unwrap_or_else(|| "<unit>".to_string());
         match w.kind {
             Some(ScalarKind::Quantity) => {
-                if w.base != Base::Int && !w.base.unresolved() {
+                if !matches!(w.base, Base::Integer(_)) && !w.base.unresolved() {
                     out.push(Violation::error(
                         COUNTS_AN_INT,
                         w.base_span,
                         format!(
-                            "type `{}`: a quantity counts an `Int`, and {} is not one: write `quantity Int in \
-                             {in_text}`",
+                            "type `{}`: a quantity counts an integer (`Int`, `U64`), and {} is not one: write \
+                             `quantity Int in {in_text}`",
                             s.display,
                             w.base.spelled(rows)
                         ),
                     ));
                 }
+                mixed_integers(rows, s, &in_text, out);
                 if w.denomination.is_none() {
                     out.push(Violation::error(
                         COUNTS_AN_INT,
@@ -1220,17 +1310,66 @@ fn quantity_shape(rows: &UnitRows, out: &mut Vec<Violation>) {
                     ));
                 }
             }
-            None if w.base == Base::Int && w.denomination.is_some() => out.push(Violation::error(
-                COUNTS_AN_INT,
-                w.base_span,
-                format!(
-                    "type `{}`: `Int in {in_text}` is a quantity without its word: write `quantity Int in {in_text}`",
-                    s.display
-                ),
-            )),
+            None if matches!(w.base, Base::Integer(_)) && w.denomination.is_some() => {
+                let base = w.base.spelled(rows);
+                let base = base.trim_matches('`');
+                out.push(Violation::error(
+                    COUNTS_AN_INT,
+                    w.base_span,
+                    format!(
+                        "type `{}`: `{base} in {in_text}` is a quantity without its word: write `quantity {base} in \
+                         {in_text}`",
+                        s.display
+                    ),
+                ))
+            }
             _ => {}
         }
     }
+}
+
+/// GH #2131: a quantity written over an integer other than the one its
+/// component's quantity counts. One denomination is counted in one
+/// integer, so an `Int` count and a `U64` count of it never meet in an
+/// operator, an `or` or a conversion; the error names the conversion
+/// through the count, into a quantity of units of its own.
+fn mixed_integers(rows: &UnitRows, s: &ScalarRow, in_text: &str, out: &mut Vec<Violation>) {
+    let Base::Integer(written) = s.written.base else { return };
+    let Some(c) = s.component else { return };
+    let Some(p) = rows.scalars.iter().find(|p| p.principal && p.component == Some(c)) else { return };
+    if p.int == written || std::ptr::eq(p, s) {
+        return;
+    }
+    let Some(d) = s.written.denomination else { return };
+    let unit = &rows.refs[d.unit].name;
+    let (pi, wi) = (crate::ty::prim_name(p.int), crate::ty::prim_name(written));
+    let stdlib = p.site.universe == SiteUniverse::StdlibAnalysis;
+    let v = Violation::error(
+        COUNTS_AN_INT,
+        s.written.base_span,
+        format!(
+            "type `{}`: the units of `{unit}` count {}, as their quantity `{}`{} does, and every quantity of them \
+             counts it: {} count and {} count of one denomination never mix; write `quantity {pi} in {in_text}`, or \
+             count {} in a unit of its own (`unit tick;`, `quantity {wi} in tick`) and convert through the count, \
+             `{}`",
+            s.display,
+            article_int(pi),
+            p.display,
+            if stdlib { " (the stdlib's, `std::time`)" } else { "" },
+            article_int(pi),
+            article_int(wi),
+            article_int(wi),
+            int_conversion(p.int, written)
+        ),
+    );
+    out.push(if stdlib { v } else { v.step(p.name_span, format!("`{}` counts {}", p.display, article_int(pi))) });
+}
+
+/// `an `Int``, `a `U64``: an integer's name with its article (`U` is
+/// said "you").
+pub(crate) fn article_int(name: &str) -> String {
+    let vowel = name.starts_with(|c: char| "AEIO".contains(c));
+    format!("{} `{name}`", if vowel { "an" } else { "a" })
 }
 
 /// Law 6: a point is over a quantity (or refines a point), an `origin:`
@@ -1393,6 +1532,26 @@ fn clauses(rows: &UnitRows, out: &mut Vec<Violation>) {
             ));
             continue;
         }
+        // GH #2131: a range holds values of the integer it counts.
+        let (min, max) = int_bounds(s.int);
+        if lo < min || hi > max + 1 {
+            let base = crate::ty::prim_name(s.int);
+            let why = if lo < 0 && min == 0 {
+                format!("{} is never negative", article_int(base))
+            } else {
+                format!("{} is {min} through {max}", article_int(base))
+            };
+            out.push(Violation::error(
+                CLAUSES,
+                r.span,
+                format!(
+                    "type `{}`: `range: {lo}..{hi}` holds values no `{base}` holds: {why}, and a range over it \
+                     bounds its values",
+                    s.display
+                ),
+            ));
+            continue;
+        }
         let Some((p, (plo, phi))) = parent_range(rows, i) else { continue };
         if plo <= lo && hi <= phi {
             continue;
@@ -1413,20 +1572,22 @@ fn clauses(rows: &UnitRows, out: &mut Vec<Violation>) {
     }
 }
 
-/// Law 8: an identity is `distinct Int`, with no denomination; a range
-/// type refines `Int`, an identity or another range, states its range
-/// over `Int`, and has no denomination.
+/// Law 8: an identity is `distinct` over an integer (`Int`, `U64`: GH
+/// #2131), with no denomination; a range type refines an integer, an
+/// identity or another range, states its range over an integer, and has
+/// no denomination.
 fn identity_and_range_bases(rows: &UnitRows, out: &mut Vec<Violation>) {
     for s in &rows.scalars {
         let w = &s.written;
         match (w.kind, s.kind) {
             (Some(ScalarKind::Distinct), _) => {
-                if w.base != Base::Int && !w.base.unresolved() {
+                if !matches!(w.base, Base::Integer(_)) && !w.base.unresolved() {
                     out.push(Violation::error(
                         BASES,
                         w.base_span,
                         format!(
-                            "type `{}`: an identity is `distinct Int`, and {} is not `Int`: write `distinct Int`",
+                            "type `{}`: an identity is `distinct` over an integer (`distinct Int`, `distinct U64`), \
+                             and {} is not one: write `distinct Int`",
                             s.display,
                             w.base.spelled(rows)
                         ),
@@ -1449,12 +1610,13 @@ fn identity_and_range_bases(rows: &UnitRows, out: &mut Vec<Violation>) {
                     BASES,
                     w.base_span,
                     format!(
-                        "type `{}`: a range type refines `Int`, an identity or another range, and {} is none of them",
+                        "type `{}`: a range type refines an integer (`Int`, `U64`), an identity or another range, and \
+                         {} is none of them",
                         s.display,
                         w.base.spelled(rows)
                     ),
                 )),
-                Base::Int | Base::Scalar(_) => {
+                Base::Integer(_) | Base::Scalar(_) => {
                     // `Int in D` is a quantity (law 5), so a range here is
                     // over an identity or a range.
                     if let Some(d) = w.denomination {
@@ -1468,13 +1630,14 @@ fn identity_and_range_bases(rows: &UnitRows, out: &mut Vec<Violation>) {
                             ),
                         ));
                     }
-                    if w.base == Base::Int && w.range.is_none() {
+                    if let (Base::Integer(p), None) = (&w.base, &w.range) {
+                        let p = crate::ty::prim_name(*p);
                         out.push(Violation::error(
                             BASES,
                             s.name_span,
                             format!(
-                                "type `{}`: a refinement of `Int` is a range, and states it: write `{{ range: \
-                                 LO..HI; }}`, or `type {} = Int;` for another name of `Int`",
+                                "type `{}`: a refinement of `{p}` is a range, and states it: write `{{ range: \
+                                 LO..HI; }}`, or `type {} = {p};` for another name of `{p}`",
                                 s.display, s.display
                             ),
                         ));
@@ -1496,7 +1659,7 @@ fn refinement_bases(rows: &UnitRows, out: &mut Vec<Violation>) {
         match &w.base {
             Base::Unknown(name) => {
                 let mut candidates: Vec<&str> = rows.scalars.iter().map(|r| r.display.as_str()).collect();
-                candidates.push("Int");
+                candidates.extend(["Int", "U64"]);
                 let suggestion =
                     nearest_name(name, candidates).map(|n| format!("; did you mean `{n}`?")).unwrap_or_default();
                 out.push(Violation::error(

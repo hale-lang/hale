@@ -88,6 +88,28 @@ impl Ratio {
     }
 }
 
+impl Ratio {
+    /// GH #2131: the factor as two values of the machine integer `int`
+    /// (an `Int`, a `U64`) a conversion's value counts, as their bits:
+    /// what its one multiplication and one division take. A numerator or
+    /// denominator no value of `int` holds is an explicit overflow.
+    pub fn to_machine_int(&self, int: hale_syntax::ast::PrimType) -> Result<(u64, u64), FactorOverflow> {
+        let bits = |n: &BigInt| -> Option<u64> {
+            if !crate::units::int_holds(int, n) {
+                return None;
+            }
+            match i64::try_from(n) {
+                Ok(v) => Some(v as u64),
+                Err(_) => u64::try_from(n).ok(),
+            }
+        };
+        match (bits(self.numerator()), bits(self.denominator())) {
+            (Some(n), Some(d)) => Ok((n, d)),
+            _ => Err(FactorOverflow { factor: self.clone() }),
+        }
+    }
+}
+
 /// A [`Ratio`] whose numerator and denominator both fit an `i64`;
 /// positive and reduced, as the ratio is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

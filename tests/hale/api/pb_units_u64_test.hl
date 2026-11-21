@@ -1,0 +1,203 @@
+// GH #2131: a quantity, an identity or a range counting a `U64` crosses
+// the wire as its `U64` does (spec/units.md § Layout and the wire): the
+// JSON codecs write a string of its decimal digits, read back from a
+// string or an integer that fits, and protobuf carries a `uint64`, the
+// varint of its 64 bits. A range's bounds are held on the way in. JSON
+// in, protobuf through, JSON out gives back the same text, for a field, a
+// list's elements and an enum's value. This program names no port: the
+// serve site is in a method nothing calls, which is all the compiler
+// needs to write the codecs.
+
+unit wei;
+unit gwei = 1_000_000_000 wei;
+
+type Wei = quantity U64 in wei;
+type Nonce = distinct U64;
+type Port = U64 { range: 1..65536; }
+// a range above `Int`'s max, and a refinement of it: each counts a `U64`
+type High = U64 { range: 9223372036854775808..18446744073709551615; }
+type Narrow = High { range: 9223372036854775808..9223372036854775811; }
+
+type Side = enum { Flat, By(Nonce) };
+
+type Transfer {
+    nonce: Nonce;
+    value: Wei;
+    port: Port = 443;
+    fees: bounded[Wei; 3];
+    side: Side = Side::Flat;
+}
+
+type Tagged {
+    value: Wei `json:"value"`;
+    nonce: Nonce `json:"nonce"`;
+}
+
+// an optional field holds its range's least value when the payload leaves
+// it out, past `Int`'s max here
+type Upper {
+    narrow: Narrow;
+    high: High;
+    has_high: Bool;
+}
+
+api PbUnits {
+    rpc Probe::transfer;
+    rpc Probe::upper;
+}
+
+locus Probe {
+    fn transfer(t: Transfer) -> Transfer { return t; }
+    fn upper(u: Upper) -> Upper { return u; }
+}
+
+locus Tokens {
+    fn principal(token: String) -> std::api::Principal {
+        return std::api::Principal { mode: "bearer", name: "" };
+    }
+    fn refused() -> String { return "no such token"; }
+}
+
+main locus Desk {
+    params {
+        probe: Probe = Probe { };
+        bearer: Tokens = Tokens { };
+        // Served only so the compiler writes the codecs; nothing calls it.
+        h: api::Exposure = api::serve(
+            PbUnits,
+            grpc::Rpc { bind: "127.0.0.1:0", codec: json, principals: self.bearer },
+            as: "pb",
+            receivers: { Probe: self.probe },
+            bound: 4,
+            on_full: refuse
+        );
+    }
+
+    // JSON in, protobuf through, JSON out: the same text.
+    fn round(json: String, what: String) {
+        let v = __api_decode_Transfer(json) or {
+            std::test::assert(false, what + ": the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        let back = __api_pb_decode_Transfer(__api_pb_encode_Transfer(v)) or {
+            std::test::assert(
+                false,
+                what + ": the protobuf decoder: " + err.kind + " " + err.field,
+            );
+            return;
+        };
+        std::test::assert_eq_str(__api_encode_Transfer(back), json, what);
+    }
+
+    fn refused(json: String, field: String, what: String) {
+        let t = __api_decode_Transfer(json) or {
+            std::test::assert_eq_str(err.kind + " " + err.field, "wrong_type " + field, what);
+            return;
+        };
+        std::test::assert(false, what + ": decoded " + __api_encode_Transfer(t));
+    }
+
+    run() {
+        let t = Transfer { nonce: 18446744073709551615, value: 18_000_000_000gwei };
+        push(t.fees, 3gwei) or raise;
+        push(t.fees, 1wei) or raise;
+        let text = __api_encode_Transfer(t);
+        std::test::assert_eq_str(
+            text,
+            "{\"nonce\":\"18446744073709551615\",\"value\":\"18000000000000000000\",\"port\":\"443\","
+                + "\"fees\":[\"3000000000\",\"1\"],\"side\":\"Flat\"}",
+            "each is a JSON string of its U64's digits",
+        );
+        let back = __api_decode_Transfer(text) or {
+            std::test::assert(false, "the JSON decoder: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(back.value == 18_000_000_000gwei, "a quantity round-trips");
+        std::test::assert(U64(back.nonce) == U64::max(), "an identity round-trips");
+        std::test::assert(back.port == 443, "a range round-trips");
+        let f0 = at(back.fees, 0) or 0wei;
+        std::test::assert(f0 == 3gwei, "a list's element round-trips");
+
+        self.round(
+            "{\"nonce\":\"18446744073709551615\",\"value\":\"18446744073709551615\",\"port\":\"65535\","
+                + "\"fees\":[\"0\",\"9223372036854775808\"],\"side\":{\"By\":\"9223372036854775808\"}}",
+            "the top of the range, in a field, a list and an enum",
+        );
+        self.round(
+            "{\"nonce\":\"0\",\"value\":\"0\",\"port\":\"1\",\"fees\":[],\"side\":\"Flat\"}",
+            "zero",
+        );
+
+        // an integer that fits reads as the digits do
+        let n = __api_decode_Transfer("{\"nonce\":7,\"value\":5,\"port\":80,\"fees\":[2]}") or {
+            std::test::assert(false, "integers: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(n.value == 5wei && n.port == 80, "integer numbers read");
+
+        // a range's bounds hold on the way in, and a U64 is never negative
+        self.refused(
+            "{\"nonce\":\"1\",\"value\":\"1\",\"port\":\"0\",\"fees\":[]}",
+            "port",
+            "below the range",
+        );
+        self.refused(
+            "{\"nonce\":\"1\",\"value\":\"1\",\"port\":\"70000\",\"fees\":[]}",
+            "port",
+            "above the range",
+        );
+        self.refused(
+            "{\"nonce\":\"1\",\"value\":\"-1\",\"port\":\"1\",\"fees\":[]}",
+            "value",
+            "a negative quantity",
+        );
+
+        // field 1, varint: tag 0x08, then 2^64 - 1 as ten bytes
+        let m = __api_pb_encode_Transfer(t);
+        std::test::assert_eq_str(
+            std::hex::encode(std::bytes::slice(m, 0, 11)),
+            "08ffffffffffffffffff01",
+            "a uint64 varint of all 64 bits",
+        );
+
+        // a refinement counts its parent's `U64` on the wire, and an absent
+        // optional field is its range's least value
+        let u = __api_decode_Upper("{\"narrow\":\"9223372036854775810\"}") or {
+            std::test::assert(false, "a refined U64 range: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(
+            U64(u.narrow) == 9223372036854775810,
+            "a refinement's U64, past Int's max",
+        );
+        std::test::assert(!u.has_high, "absent");
+        std::test::assert(
+            U64(u.high) == 9223372036854775808,
+            "an absent field holds the range's least value",
+        );
+        let back_u = __api_pb_decode_Upper(__api_pb_encode_Upper(u)) or {
+            std::test::assert(
+                false,
+                "a refined U64 range, protobuf: " + err.kind + " " + err.field,
+            );
+            return;
+        };
+        std::test::assert(U64(back_u.narrow) == 9223372036854775810, "through protobuf");
+
+        // the tagged codec, `to_json` / `from_json`
+        let g = Tagged { value: 18_000_000_000gwei, nonce: 9 };
+        let gt = Tagged::to_json(g);
+        std::test::assert_eq_str(
+            gt,
+            "{\"value\":\"18000000000000000000\",\"nonce\":\"9\"}",
+            "to_json",
+        );
+        let gb = Tagged::from_json(gt) or {
+            std::test::assert(false, "from_json: " + err.kind + " " + err.field);
+            return;
+        };
+        std::test::assert(gb.value == 18_000_000_000gwei && U64(gb.nonce) == 9, "from_json");
+    }
+}
+
+fn main() { Desk { }; }
