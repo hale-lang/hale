@@ -1,0 +1,62 @@
+// GH #2146: a send to an unkeyed `bounded(N); on_full: fail;` topic
+// carries `or discard`, and the check takes it. `or discard` sends
+// anyway, and a subscriber at the bound sheds what arrives past it.
+//
+// The publisher runs on its own thread; the subscriber's first delivery
+// holds main's queue (its handler waits on a latch the publisher sets
+// after the burst, and a sleep in a handler does not drain), so the
+// queue is at its bound through the burst whatever the scheduler does.
+type E { n: Int = 0; }
+topic Evt { payload: E; subject: "t_on_full_discard.evt"; bounded(2); on_full: fail; }
+
+fn latch() -> String {
+    return "/tmp/hale_t_on_full_discard_" + to_string(std::process::pid());
+}
+
+// up to 10 s, so a burst that never sets it still ends
+fn await_latch() {
+    let deadline = std::time::monotonic_ns() + 10000000000;
+    while !std::io::fs::file_exists(latch()) && std::time::monotonic_ns() < deadline {
+        std::time::sleep(1ms);
+    }
+}
+
+locus Tally {
+    params { seen: Int = 0; }
+    bus { subscribe Evt as on_e; }
+    fn on_e(e: E) {
+        if self.seen == 0 { await_latch(); }
+        self.seen = self.seen + 1;
+    }
+}
+
+locus Pusher {
+    bus { publish Evt; }
+    run() {
+        let mut i = 0;
+        while i < 10 {
+            Evt <- E { n: i } or discard;
+            i = i + 1;
+        }
+        std::io::fs::write_file(latch(), "") or discard;
+    }
+}
+
+main locus App {
+    params { t: Tally = Tally { }; p: Pusher = Pusher { }; }
+    placement { p: pinned(core = 0); }
+    run() {
+        await_latch();
+        std::time::sleep(50ms);
+        std::io::fs::unlink(latch()) or discard;
+        // the bound's two, and the one held in the handler when main
+        // took it before the burst was over
+        std::test::assert(
+            self.t.seen >= 2 && self.t.seen <= 3,
+            "the subscriber kept its bound and shed the rest: saw " + to_string(self.t.seen)
+                + " of 10",
+        );
+    }
+}
+
+fn main() { App { }; }

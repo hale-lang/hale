@@ -35,6 +35,9 @@
 //! - fallible plumbing: an `or` clause given another disposition (`or
 //!   raise`, `or fail err`, `or discard`, a default), a call routed through
 //!   a fallible wrapper and addressed each of those ways;
+//! - bus topics: a topic made `bounded(N); on_full: fail;`, its sends
+//!   given `or raise`, `or discard` or `or wait` (GH #2146: the check
+//!   refused the first two on an unkeyed topic the build took);
 //! - the entry point: `fn main` dropped from a seed with a `main locus`
 //!   of its own, which nothing then starts (GH #2108), or its body moved
 //!   to a helper the new `fn main` calls.

@@ -4211,6 +4211,45 @@ disposition expression's lowering. Mirror of the existing
   (evaluates `<expr>` with `err` in scope, discards the value),
   not a value substitution.
 
+### Send dispositions
+
+A send is refusal-fallible when its topic can refuse it: the topic
+declares `on_full: fail` (with `bounded(N)`: a subscriber at the
+topic's capacity refuses the send, GH #255 phase 2) or
+`on_unmatched: fail` (a keyed send no subscriber's filter matches
+is refused, § "Phase 3: routing keys"). A refusal-fallible send
+must carry an `or` disposition, and only such a send may carry one
+(`or wait` aside, below). Which ones each policy admits (GH #2146):
+
+| topic declares | `or raise` | `or discard` | `or wait` | `or <expr>` | `or fail <p>` |
+|---|---|---|---|---|---|
+| `on_full: fail` | yes | yes | yes | no | no |
+| `on_unmatched: fail` | yes | yes | no | yes | yes |
+| both | yes | yes | no | no | no |
+
+- `or raise` panics with the refusal: `BusFull` at the send site
+  for a full topic, the unmatched-key panic for an unmatched one.
+- `or discard` proceeds: a subscriber at capacity sheds the
+  newcomer (counted), an unmatched send is dropped.
+- `or wait` parks the publisher until the drain frees space. A full
+  queue is a transient condition; an unmatched key is not, so `or
+  wait` on an `on_unmatched: fail` topic is refused ("`or wait` is
+  not an unmatched-key disposition"). On a topic with neither
+  policy `or wait` needs a declared transport binding (the loss
+  window it outwaits, GH #255 phase 1).
+- `or <expr>` and `or fail <p>` bind `err: BusUnmatchedKey`; the
+  `BusFull` payload they would need on a full topic is not wired,
+  so there they are refused with a pointer to `or raise`,
+  `or discard` and `or wait`.
+
+The rule holds whether or not the topic is keyed: an unkeyed
+`bounded(N); on_full: fail;` topic takes `or raise` and
+`or discard` (until GH #2146 the check read only `on_unmatched`, so
+it asked such a send for a disposition and refused every one but
+`or wait`, while `hale build` took them). A send with no
+disposition to a topic declaring both policies is asked for one
+once.
+
 ## Placement block (F.31)
 
 The `placement { }` block on `main locus` controls per-locus

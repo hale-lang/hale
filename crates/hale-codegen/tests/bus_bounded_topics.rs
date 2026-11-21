@@ -18,8 +18,21 @@ use std::process::Command;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 
 fn build(name: &str, src: &str) -> PathBuf {
+    // The harness lowers without the check; each program here is held to
+    // it as well, as `hale build` holds a user's. Until GH #2146 the
+    // check refused `or raise` on an unkeyed `on_full: fail` topic, so
+    // only this harness could build `on_full_fail_or_raise_refuses`.
+    let program = hale_syntax::parse_source(src).expect("parses");
+    let errors: Vec<String> = entries::check_program(&program)
+        .into_iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.message)
+        .collect();
+    assert!(errors.is_empty(), "`{name}` does not check: {errors:?}");
     let bin = harness::unique_bin(&format!("hale_test_busbound_{}", name));
     build_opts::build_source(src, &bin, &build_opts::options()).expect("build");
     bin
