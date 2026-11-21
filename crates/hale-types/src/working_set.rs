@@ -801,6 +801,10 @@ fn primitive_size_info(p: PrimType) -> TypeSizeInfo {
         | PrimType::Float
         | PrimType::Time
         | PrimType::Duration => (8, 8),
+        // GH #2132: the declared width
+        PrimType::I32 | PrimType::U32 => (4, 4),
+        PrimType::I16 | PrimType::U16 => (2, 2),
+        PrimType::I8 | PrimType::U8 => (1, 1),
         PrimType::Decimal(_) => (16, 16),
         // GH #1934: an LLVM i256, 32 bytes at the target's i256
         // alignment (16 on x86-64 and aarch64).

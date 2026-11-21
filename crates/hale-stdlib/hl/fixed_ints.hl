@@ -1,0 +1,203 @@
+// std::i32 … std::u8 (GH #2132, F.64): what a fixed-width integer's
+// calls do that can fail. The operators stop the process on an overflow
+// or a division by zero (a violation, never a wrapped value);
+// `T::wrapping_*` wrap modulo the width, and these are the forms that fail
+// instead, with an `ArithError { kind, op }` (`kind` `overflow` or
+// `division_by_zero`). A sum, a difference and a product are computed in
+// `Int`, which holds each exactly (but a `U32`'s product, which asks the
+// quotient first), and the wrapping operator answers once the `Int` is
+// known to be in range.
+
+fn __std_i32_checked_add(a: I32, b: I32) -> I32 fallible(ArithError) {
+    let r = Int(a) + Int(b);
+    if r < -2147483648 || r > 2147483647 {
+        fail ArithError { kind: "overflow", op: "I32::checked_add" };
+    }
+    return I32::wrapping_add(a, b);
+}
+
+fn __std_i32_checked_sub(a: I32, b: I32) -> I32 fallible(ArithError) {
+    let r = Int(a) - Int(b);
+    if r < -2147483648 || r > 2147483647 {
+        fail ArithError { kind: "overflow", op: "I32::checked_sub" };
+    }
+    return I32::wrapping_sub(a, b);
+}
+
+fn __std_i32_checked_mul(a: I32, b: I32) -> I32 fallible(ArithError) {
+    let r = Int(a) * Int(b);
+    if r < -2147483648 || r > 2147483647 {
+        fail ArithError { kind: "overflow", op: "I32::checked_mul" };
+    }
+    return I32::wrapping_mul(a, b);
+}
+
+fn __std_i32_checked_div(a: I32, b: I32) -> I32 fallible(ArithError) {
+    if b == 0 {
+        fail ArithError { kind: "division_by_zero", op: "I32::checked_div" };
+    }
+    if a == I32::min() && b == -1 {
+        fail ArithError { kind: "overflow", op: "I32::checked_div" };
+    }
+    return a / b;
+}
+
+fn __std_u32_checked_add(a: U32, b: U32) -> U32 fallible(ArithError) {
+    let r = Int(a) + Int(b);
+    if r > 4294967295 {
+        fail ArithError { kind: "overflow", op: "U32::checked_add" };
+    }
+    return U32::wrapping_add(a, b);
+}
+
+fn __std_u32_checked_sub(a: U32, b: U32) -> U32 fallible(ArithError) {
+    let r = Int(a) - Int(b);
+    if r < 0 {
+        fail ArithError { kind: "overflow", op: "U32::checked_sub" };
+    }
+    return U32::wrapping_sub(a, b);
+}
+
+fn __std_u32_checked_mul(a: U32, b: U32) -> U32 fallible(ArithError) {
+    if a != 0 && b > U32::max() / a {
+        fail ArithError { kind: "overflow", op: "U32::checked_mul" };
+    }
+    return a * b;
+}
+
+fn __std_u32_checked_div(a: U32, b: U32) -> U32 fallible(ArithError) {
+    if b == 0 {
+        fail ArithError { kind: "division_by_zero", op: "U32::checked_div" };
+    }
+    return a / b;
+}
+
+fn __std_i16_checked_add(a: I16, b: I16) -> I16 fallible(ArithError) {
+    let r = Int(a) + Int(b);
+    if r < -32768 || r > 32767 {
+        fail ArithError { kind: "overflow", op: "I16::checked_add" };
+    }
+    return I16::wrapping_add(a, b);
+}
+
+fn __std_i16_checked_sub(a: I16, b: I16) -> I16 fallible(ArithError) {
+    let r = Int(a) - Int(b);
+    if r < -32768 || r > 32767 {
+        fail ArithError { kind: "overflow", op: "I16::checked_sub" };
+    }
+    return I16::wrapping_sub(a, b);
+}
+
+fn __std_i16_checked_mul(a: I16, b: I16) -> I16 fallible(ArithError) {
+    let r = Int(a) * Int(b);
+    if r < -32768 || r > 32767 {
+        fail ArithError { kind: "overflow", op: "I16::checked_mul" };
+    }
+    return I16::wrapping_mul(a, b);
+}
+
+fn __std_i16_checked_div(a: I16, b: I16) -> I16 fallible(ArithError) {
+    if b == 0 {
+        fail ArithError { kind: "division_by_zero", op: "I16::checked_div" };
+    }
+    if a == I16::min() && b == -1 {
+        fail ArithError { kind: "overflow", op: "I16::checked_div" };
+    }
+    return a / b;
+}
+
+fn __std_u16_checked_add(a: U16, b: U16) -> U16 fallible(ArithError) {
+    let r = Int(a) + Int(b);
+    if r > 65535 {
+        fail ArithError { kind: "overflow", op: "U16::checked_add" };
+    }
+    return U16::wrapping_add(a, b);
+}
+
+fn __std_u16_checked_sub(a: U16, b: U16) -> U16 fallible(ArithError) {
+    let r = Int(a) - Int(b);
+    if r < 0 {
+        fail ArithError { kind: "overflow", op: "U16::checked_sub" };
+    }
+    return U16::wrapping_sub(a, b);
+}
+
+fn __std_u16_checked_mul(a: U16, b: U16) -> U16 fallible(ArithError) {
+    let r = Int(a) * Int(b);
+    if r > 65535 {
+        fail ArithError { kind: "overflow", op: "U16::checked_mul" };
+    }
+    return U16::wrapping_mul(a, b);
+}
+
+fn __std_u16_checked_div(a: U16, b: U16) -> U16 fallible(ArithError) {
+    if b == 0 {
+        fail ArithError { kind: "division_by_zero", op: "U16::checked_div" };
+    }
+    return a / b;
+}
+
+fn __std_i8_checked_add(a: I8, b: I8) -> I8 fallible(ArithError) {
+    let r = Int(a) + Int(b);
+    if r < -128 || r > 127 {
+        fail ArithError { kind: "overflow", op: "I8::checked_add" };
+    }
+    return I8::wrapping_add(a, b);
+}
+
+fn __std_i8_checked_sub(a: I8, b: I8) -> I8 fallible(ArithError) {
+    let r = Int(a) - Int(b);
+    if r < -128 || r > 127 {
+        fail ArithError { kind: "overflow", op: "I8::checked_sub" };
+    }
+    return I8::wrapping_sub(a, b);
+}
+
+fn __std_i8_checked_mul(a: I8, b: I8) -> I8 fallible(ArithError) {
+    let r = Int(a) * Int(b);
+    if r < -128 || r > 127 {
+        fail ArithError { kind: "overflow", op: "I8::checked_mul" };
+    }
+    return I8::wrapping_mul(a, b);
+}
+
+fn __std_i8_checked_div(a: I8, b: I8) -> I8 fallible(ArithError) {
+    if b == 0 {
+        fail ArithError { kind: "division_by_zero", op: "I8::checked_div" };
+    }
+    if a == I8::min() && b == -1 {
+        fail ArithError { kind: "overflow", op: "I8::checked_div" };
+    }
+    return a / b;
+}
+
+fn __std_u8_checked_add(a: U8, b: U8) -> U8 fallible(ArithError) {
+    let r = Int(a) + Int(b);
+    if r > 255 {
+        fail ArithError { kind: "overflow", op: "U8::checked_add" };
+    }
+    return U8::wrapping_add(a, b);
+}
+
+fn __std_u8_checked_sub(a: U8, b: U8) -> U8 fallible(ArithError) {
+    let r = Int(a) - Int(b);
+    if r < 0 {
+        fail ArithError { kind: "overflow", op: "U8::checked_sub" };
+    }
+    return U8::wrapping_sub(a, b);
+}
+
+fn __std_u8_checked_mul(a: U8, b: U8) -> U8 fallible(ArithError) {
+    let r = Int(a) * Int(b);
+    if r > 255 {
+        fail ArithError { kind: "overflow", op: "U8::checked_mul" };
+    }
+    return U8::wrapping_mul(a, b);
+}
+
+fn __std_u8_checked_div(a: U8, b: U8) -> U8 fallible(ArithError) {
+    if b == 0 {
+        fail ArithError { kind: "division_by_zero", op: "U8::checked_div" };
+    }
+    return a / b;
+}

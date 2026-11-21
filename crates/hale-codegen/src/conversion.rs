@@ -341,6 +341,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if row.scale.is_some() {
             return self.lower_scale(row, v);
         }
+        // GH #2132: a cast between two machine integers, one narrower than
+        // 64 bits (`U8(n)`, `Int(b)`, `U64(i)`).
+        if let (Some(from), hale_types::ty::Ty::Prim(to)) = (crate::stdlib::fixed::int_prim(&ty), &row.to) {
+            if to.machine_int().is_some() && (from.is_narrow_int() || to.is_narrow_int()) {
+                return self.lower_fixed_cast(row, v, from, *to);
+            }
+        }
         // GH #2131: an identity or a range is the integer it counts, an
         // `Int` or a `U64`, and is compared as that integer is.
         let repr = self.unit_repr(&row.to);
@@ -370,7 +377,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let w = self.lower_wrap(row, v, lo, hi, signed)?;
                 Ok(Converted::Value(w.into(), repr))
             }
-            Some(_) => self.lower_checked_narrowing(row, v, below, above, (lo, hi), &repr).map(Converted::Checked),
+            Some(_) => self.lower_checked_narrowing(row, (v, v), below, above, (lo, hi), &repr).map(Converted::Checked),
             None => Err(CodegenError::UnsupportedAt(
                 format!(
                     "the narrowing into `{}` is discharged by nothing in its row; the check refuses a bare one",
@@ -434,11 +441,27 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     fn lower_checked_narrowing(
         &mut self,
         row: &ConversionRow,
-        v: IntValue<'ctx>,
+        (v, stored): (IntValue<'ctx>, IntValue<'ctx>),
         below: IntValue<'ctx>,
         above: IntValue<'ctx>,
         (lo, hi): (i128, i128),
         repr: &CodegenTy,
+    ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
+        self.lower_checked_narrowing_from(row, (v, stored), below, above, (lo, hi), repr, repr)
+    }
+
+    /// [`Self::lower_checked_narrowing`] of a value `v` of `source`, which
+    /// is `stored` at the target `repr` when it is inside the range.
+    #[allow(clippy::too_many_arguments)]
+    fn lower_checked_narrowing_from(
+        &mut self,
+        row: &ConversionRow,
+        (v, stored): (IntValue<'ctx>, IntValue<'ctx>),
+        below: IntValue<'ctx>,
+        above: IntValue<'ctx>,
+        (lo, hi): (i128, i128),
+        repr: &CodegenTy,
+        source: &CodegenTy,
     ) -> Result<FallibleCallResult<'ctx>, CodegenError> {
         let func = self
             .current_fn
@@ -453,13 +476,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         emit(self.builder.build_conditional_branch(outside, err_bb, ok_bb))?;
 
         self.builder.position_at_end(ok_bb);
-        emit(self.builder.build_store(out_val_slot, v))?;
+        emit(self.builder.build_store(out_val_slot, stored))?;
         emit(self.builder.build_unconditional_branch(join_bb))?;
 
         self.builder.position_at_end(err_bb);
         let i64_t = self.context.i64_type();
         let (low, high) = (i64_t.const_int(saturate(lo) as u64, true), i64_t.const_int(saturate(hi) as u64, true));
-        let value = self.saturate_to_int(v, repr)?;
+        let value = self.saturate_to_int(v, source)?;
         let err = self.emit_range_error_alloc(&row.target, value, low, high, row.span)?;
         emit(self.builder.build_store(out_err_slot, err))?;
         emit(self.builder.build_unconditional_branch(join_bb))?;
@@ -472,6 +495,60 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             success_ty: Some(repr.clone()),
             payload_ty,
         })
+    }
+
+    /// GH #2132 (F.64): the cast `to(x)` of `v`, a value of the machine
+    /// integer `from`, one of the two narrower than 64 bits. A total
+    /// conversion and a widening are `v` at `to`'s width (sign-extended
+    /// from a signed integer). A narrowing compares `v` against `to`'s
+    /// range in `from`'s own width and signedness (a bound `from` cannot
+    /// reach compares nothing), then: `or clamp` the nearest bound, `or
+    /// wrap` the value modulo `to`'s width, which is `to`'s bits of it; any
+    /// other policy the checked value, or the `RangeError` (its `value`
+    /// the source's) for the `or`'s join.
+    fn lower_fixed_cast(
+        &mut self,
+        row: &ConversionRow,
+        v: IntValue<'ctx>,
+        from: hale_syntax::ast::PrimType,
+        to: hale_syntax::ast::PrimType,
+    ) -> Result<Converted<'ctx>, CodegenError> {
+        let repr = self.type_expr_to_codegen_ty(&hale_syntax::ast::TypeExpr::Primitive(to, Span::new(0, 0)))?;
+        if row.kind != ConversionKind::Narrowing {
+            return Ok(Converted::Value(self.resize_int(v, from, to)?.into(), repr));
+        }
+        let Some((lo, hi)) = row.range else {
+            return Err(CodegenError::UnsupportedAt(format!("the narrowing into `{}` has no range in its row", row.target), row.span));
+        };
+        let source = self.type_expr_to_codegen_ty(&hale_syntax::ast::TypeExpr::Primitive(from, Span::new(0, 0)))?;
+        let (from_lo, from_hi) = from.int_bounds().expect("a machine integer");
+        let (_, signed) = from.machine_int().expect("a machine integer");
+        let src_t = v.get_type();
+        let last = hi - 1;
+        let never = self.context.bool_type().const_zero();
+        let at = |b: i128| src_t.const_int(b as u64, signed && b < 0);
+        let (lt, gt) = if signed { (IntPredicate::SLT, IntPredicate::SGT) } else { (IntPredicate::ULT, IntPredicate::UGT) };
+        let below = if lo <= from_lo { never } else { emit(self.builder.build_int_compare(lt, v, at(lo), "narrow.below"))? };
+        let above = if last >= from_hi { never } else { emit(self.builder.build_int_compare(gt, v, at(last), "narrow.above"))? };
+        match row.policy {
+            Some(Discharge::Clamp) => {
+                let v = if lo > from_lo { emit(self.builder.build_select(below, at(lo), v, "narrow.clamp.lo"))?.into_int_value() } else { v };
+                let v = if last < from_hi { emit(self.builder.build_select(above, at(last), v, "narrow.clamp"))?.into_int_value() } else { v };
+                Ok(Converted::Value(self.resize_int(v, from, to)?.into(), repr))
+            }
+            // `to`'s range is the whole of its width: wrapping into it is
+            // keeping its bits (of the sign-extended value, from a signed
+            // integer narrower than it)
+            Some(Discharge::Wrap) => Ok(Converted::Value(self.resize_int(v, from, to)?.into(), repr)),
+            Some(_) => {
+                let stored = self.resize_int(v, from, to)?;
+                self.lower_checked_narrowing_from(row, (v, stored), below, above, (lo, hi), &repr, &source).map(Converted::Checked)
+            }
+            None => Err(CodegenError::UnsupportedAt(
+                format!("the narrowing into `{}` is discharged by nothing in its row; the check refuses a bare one", row.target),
+                row.span,
+            )),
+        }
     }
 
     /// A `RangeError` in the current arena, its fields as the builtin
@@ -763,6 +840,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         if v.get_type().get_bit_width() == 64 {
             return Ok(v);
+        }
+        // GH #2132: a signed integer narrower than an `Int` is one exactly
+        if v.get_type().get_bit_width() < 64 {
+            return emit(self.builder.build_int_s_extend(v, i64_t, "sat.wide"));
         }
         let wide = v.get_type();
         let (max, min) = (wide.const_int(i64::MAX as u64, false), wide.const_int(i64::MIN as u64, true));

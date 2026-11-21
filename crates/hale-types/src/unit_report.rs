@@ -180,7 +180,12 @@ pub fn report(rows: &UnitRows, typed: &TypedBodies, place: &dyn Fn(Span) -> Opti
     for (_, row) in typed.conversion_sites() {
         // A Decimal's `.rescale(S)` is no conversion of the unit
         // dialect's types.
-        if row.kind != ConversionKind::Narrowing || matches!(row.to, crate::ty::Ty::Prim(hale_syntax::ast::PrimType::Decimal(_))) {
+        // Nor is a fixed-width integer's cast (GH #2132): a primitive's.
+        if row.kind != ConversionKind::Narrowing
+            || matches!(row.to, crate::ty::Ty::Prim(hale_syntax::ast::PrimType::Decimal(_)))
+            || matches!((&row.from, &row.to), (crate::ty::Ty::Prim(a), crate::ty::Ty::Prim(b))
+                if a.machine_int().is_some() && b.machine_int().is_some())
+        {
             continue;
         }
         let factor = row.scale.as_ref().map(|s| s.factor.to_string());

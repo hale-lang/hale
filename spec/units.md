@@ -6,7 +6,7 @@ equations between them, and **scalar types** counted in them: a
 on a quantity's line: `Price`, `Time`), an **identity** (an integer
 that never mixes with another: `OrderId`) and a **range** (an integer
 with bounds: `Byte`). Every value of one is the integer it counts, its
-**base**: an `Int`, or a `U64` (§ The base). The compiler knows each conversion between two of them as one exact
+**base**: an `Int`, a `U64`, or a fixed-width integer (`I32` … `U8`, § The base). The compiler knows each conversion between two of them as one exact
 rational factor, and holds one rule: **widening is free and narrowing
 is named**. A conversion that multiplies by a whole factor is exact and
 implicit; one that divides, or that may leave a range, is written with
@@ -922,8 +922,14 @@ u64_base.hl:9:1  type Wei = quantity U64 in wei
 
 ## The base
 
-A scalar's **base** is the integer it counts (GH #2131): `Int`, or
-`U64`. It is a parameter of the dialect, not a kind of its own: every
+A scalar's **base** is the integer it counts (GH #2131): `Int`, `U64`,
+or a fixed-width integer, `I32`, `U32`, `I16`, `U16`, `I8` or `U8` (GH
+#2132, spec/types.md § Fixed-width integers): `type Ticks = quantity U32
+in tick;`, `type Level = U8 { range: 0..100; }`, `type Port = distinct
+U16;`. A fixed-width base is stored at its width, its arithmetic is
+checked at it (signed or unsigned as it is), and the conversion between
+it and another integer is a cast (`U32(x)`, `U8(n) or ...`). It is a
+parameter of the dialect, not a kind of its own: every
 rule above is written over it, and reads its width and its signedness
 from the primitive (`PrimType::machine_int`), so a machine integer the
 language adds is a base with no rule of the dialect's changed.
@@ -974,7 +980,8 @@ At v1, by the committed form's deferral or the plan's own decision:
 - **Calendars.** `day` is 24 hours; months, years and time zones are
   projections, not units.
 - **Packing by width.** The report says what a range fits in; no layout
-  reads it, and every scalar is its integer's 8 bytes.
+  reads it, and every scalar is its base integer's width (a `U8`'s one
+  byte, GH #2132): a range over an `Int` is 8 bytes whatever it holds.
 - **Rounding functions declared by a program**: a handler after `or` is
   already a program's own function. **A JSON form for a quantity**:
   `Duration` has none either.

@@ -3163,7 +3163,7 @@ impl TypeExpr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Copy)]
+#[derive(Debug, Clone, PartialEq, Eq, Copy)]
 pub enum PrimType {
     Int,
     /// `U64` (GH #2121): a 64-bit unsigned integer, `0` through
@@ -3173,6 +3173,21 @@ pub enum PrimType {
     /// are a runtime violation, `U64::wrapping_*` wrap modulo 2^64 and
     /// `U64::checked_*` fail instead.
     U64,
+    /// The explicit fixed-width integers (GH #2132, F.64): `I32`,
+    /// `U32`, `I16`, `U16`, `I8`, `U8`, each its declared width in every
+    /// layout (a record, a `bounded` element, a locus field, a topic
+    /// payload, a local), signed two's complement or unsigned. An integer
+    /// literal whose place is one is one (range-checked where it is
+    /// written). Arithmetic never wraps: overflow and division by zero
+    /// are a runtime violation; `T::wrapping_*` wrap and `T::checked_*`
+    /// fail instead. One widens implicitly only where nothing is lost
+    /// ([`PrimType::widens_to`]); a narrowing is a cast with an `or`.
+    I32,
+    U32,
+    I16,
+    U16,
+    I8,
+    U8,
     Float,
     /// `Decimal<S>`: an i128 mantissa at the scale `S` (`mantissa ×
     /// 10⁻ˢ`), `S` from 0 to `decimal_literal::MAX_SCALE`. The scale is
@@ -3241,8 +3256,72 @@ impl PrimType {
         match self {
             PrimType::Int => Some((64, true)),
             PrimType::U64 => Some((64, false)),
+            PrimType::I32 => Some((32, true)),
+            PrimType::U32 => Some((32, false)),
+            PrimType::I16 => Some((16, true)),
+            PrimType::U16 => Some((16, false)),
+            PrimType::I8 => Some((8, true)),
+            PrimType::U8 => Some((8, false)),
             _ => None,
         }
+    }
+
+    /// GH #2132: the machine integer of `bits` and `signed`, the inverse
+    /// of [`PrimType::machine_int`].
+    pub fn from_machine_int(bits: u32, signed: bool) -> Option<PrimType> {
+        Some(match (bits, signed) {
+            (64, true) => PrimType::Int,
+            (64, false) => PrimType::U64,
+            (32, true) => PrimType::I32,
+            (32, false) => PrimType::U32,
+            (16, true) => PrimType::I16,
+            (16, false) => PrimType::U16,
+            (8, true) => PrimType::I8,
+            (8, false) => PrimType::U8,
+            _ => return None,
+        })
+    }
+
+    /// GH #2132: the fixed-width integers narrower than 64 bits, widest
+    /// first.
+    pub const NARROW_INTS: [PrimType; 6] =
+        [PrimType::I32, PrimType::U32, PrimType::I16, PrimType::U16, PrimType::I8, PrimType::U8];
+
+    /// GH #2132: a fixed-width integer narrower than 64 bits (`I32` …
+    /// `U8`).
+    pub fn is_narrow_int(self) -> bool {
+        self.machine_int().is_some_and(|(bits, _)| bits < 64)
+    }
+
+    /// GH #2121, #2132: a machine integer other than `Int`, whose integer
+    /// literals are typed from their place (`U64`, `I32` … `U8`).
+    pub fn is_fixed_int(self) -> bool {
+        self != PrimType::Int && self.machine_int().is_some()
+    }
+
+    /// GH #2132: the smallest and largest value of a machine integer.
+    pub fn int_bounds(self) -> Option<(i128, i128)> {
+        let (bits, signed) = self.machine_int()?;
+        Some(if signed {
+            (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+        } else {
+            (0, (1i128 << bits) - 1)
+        })
+    }
+
+    /// GH #2132 (F.64): whether a value of `self` flows into a place of
+    /// `to` implicitly: only where nothing is lost. Into a wider integer
+    /// of the same signedness, an unsigned one into a strictly wider
+    /// signed one, and anything into `Int` that fits (a `U64` does not).
+    /// Never the type itself (that is no conversion) and never a
+    /// narrowing, which is a cast with an `or`.
+    pub fn widens_to(self, to: PrimType) -> bool {
+        let (Some((fb, fs)), Some((tb, ts))) = (self.machine_int(), to.machine_int()) else { return false };
+        if self == to {
+            return false;
+        }
+        // a signed value may be negative, which no unsigned type holds
+        !(fs && !ts) && tb > fb
     }
 }
 

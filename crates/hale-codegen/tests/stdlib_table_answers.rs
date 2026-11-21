@@ -63,6 +63,12 @@ fn sig_ty(t: &SigTy) -> String {
     match t {
         SigTy::Int => "Int".into(),
         SigTy::U64 => "U64".into(),
+        SigTy::I32 => "I32".into(),
+        SigTy::U32 => "U32".into(),
+        SigTy::I16 => "I16".into(),
+        SigTy::U16 => "U16".into(),
+        SigTy::I8 => "I8".into(),
+        SigTy::U8 => "U8".into(),
         SigTy::Float => "Float".into(),
         SigTy::Bool => "Bool".into(),
         SigTy::Str => "Str".into(),

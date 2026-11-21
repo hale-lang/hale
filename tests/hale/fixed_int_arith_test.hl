@@ -1,0 +1,300 @@
+// tests/hale/fixed_int_arith_test.hl — the fixed-width integers `I32`,
+// `U32`, `I16`, `U16`, `I8` and `U8` (GH #2132, F.64). Literals typed from
+// their place and held to its range; arithmetic at both ends of each
+// range; signed and unsigned division, remainder, comparison and shifts;
+// the bitwise operators; `wrapping_*`, which wrap modulo the width, and
+// `checked_*`, which fail instead of stopping; `min`, `max` and `abs`;
+// the implicit widenings (into a wider type of the same signedness, an
+// unsigned type into a strictly wider signed one, anything into `Int`);
+// the narrowing cast and each thing its `or` can say; `Int(x)` and
+// `Float(x)`; match patterns; and the text. (An operator that would wrap
+// stops the process instead; those are `fixed_int_violation_test.hl`'s.)
+
+fn arith(e: ArithError) -> String {
+    return e.kind + " " + e.op;
+}
+
+fn twice(x: I16) -> I16 {
+    return x * 2;
+}
+
+fn widened(x: U8) -> U32 {
+    return x;
+}
+
+fn as_int(x: I32) -> Int {
+    return x;
+}
+
+fn literals() {
+    let a: U8 = 255;
+    let b: I8 = -128;
+    let c: I8 = 127;
+    let d: U16 = 65535;
+    let e: I16 = -32768;
+    let f: U32 = 4294967295;
+    let g: I32 = -2147483648;
+    std::test::assert_eq_str(
+        f"{a} {b} {c} {d} {e} {f} {g}",
+        "255 -128 127 65535 -32768 4294967295 -2147483648",
+        "each end of each range",
+    );
+    std::test::assert(a == U8::max() && b == I8::min() && c == I8::max(), "max and min");
+    std::test::assert(
+        U8::min() == 0 && I32::max() == 2147483647 && U16::max() == d,
+        "for every width",
+    );
+    let hex: U8 = 0xFF;
+    std::test::assert(hex == a, "a radix literal is its value");
+    let mask: U8 = ~0;
+    std::test::assert(mask == 255, "~0 is all ones at the width");
+    std::test::assert(twice(-300) == -600, "an argument literal is the parameter's type");
+    let arr: [I8; 3] = [-1, 0, 1];
+    std::test::assert(arr[0] + arr[2] == 0, "an array literal of I8s");
+    let zeros: [U16; 4] = [0; 4];
+    std::test::assert(zeros[3] == 0, "a repeated literal");
+    let pick: U8 = if a > 200 { 1 } else { 2 };
+    std::test::assert(pick == 1, "an if whose arms are literals");
+    let m: I16 = match pick {
+        1 -> -1,
+        _ -> 1,
+    };
+    std::test::assert(m == -1, "a match whose arms are literals");
+}
+
+fn arithmetic() {
+    let a: U8 = 200;
+    let b: U8 = 55;
+    std::test::assert(a + b == 255 && a - b == 145, "U8 + and - at the top");
+    let x: I8 = -100;
+    std::test::assert(x - 28 == -128 && x * -1 == 100, "I8 at the bottom");
+    let big: U32 = 65536;
+    std::test::assert(big * 65535 == 4294901760, "a U32 product near the top");
+    let n: I32 = -7;
+    std::test::assert(
+        n / 2 == -3 && n % 2 == -1,
+        "signed / truncates and % keeps the dividend's sign",
+    );
+    let u: U32 = 4294967295;
+    std::test::assert(u / 2 == 2147483647 && u % 10 == 5, "unsigned / and %");
+    std::test::assert(I8::min() % -1 == 0, "the minimum's remainder by -1 is zero");
+    std::test::assert(-x == 100, "unary - of a signed one");
+    std::test::assert(abs(x) == 100 && abs(a) == 200, "abs");
+    std::test::assert(min(a, b) == 55 && max(x, 3) == 3, "min and max, a literal beside one");
+    let big16: U16 = 40000;
+    std::test::assert(big16 > 30000, "unsigned comparison past the signed top");
+    let neg16: I16 = -1;
+    std::test::assert(neg16 < 0, "signed comparison");
+    let mut acc: U16 = 0;
+    acc += 1000;
+    acc *= 3;
+    std::test::assert(acc == 3000, "compound assignment");
+}
+
+fn bits() {
+    let a: U8 = 0b1010_0101;
+    std::test::assert((a & 0x0F) == 5 && (a | 0x0F) == 0xAF && (a ^ 0xFF) == 0x5A, "& | ^");
+    std::test::assert(~a == 0x5A, "~ at the width");
+    std::test::assert(a << 1 == 0x4A, "<< drops what is shifted out of the width");
+    std::test::assert(a >> 4 == 0x0A, "an unsigned >> fills with zeros");
+    let s: I8 = -128;
+    std::test::assert(s >> 7 == -1, "a signed >> fills with the sign");
+    let one: U32 = 1;
+    std::test::assert(one << 31 == 2147483648, "a shift up to the width less one");
+}
+
+fn wrapping() {
+    std::test::assert(U8::wrapping_add(250, 10) == 4, "wrapping_add");
+    std::test::assert(U8::wrapping_sub(3, 5) == 254, "wrapping_sub");
+    std::test::assert(I8::wrapping_add(127, 1) == -128, "a signed wrap");
+    std::test::assert(U16::wrapping_mul(300, 300) == 24464, "wrapping_mul");
+    std::test::assert(I32::wrapping_mul(65536, 65536) == 0, "a 32-bit product wraps to 0");
+    std::test::assert(U8::wrapping_shl(1, 9) == 2, "wrapping_shl takes the count modulo the width");
+    std::test::assert(I16::wrapping_shr(-32768, 17) == -16384, "wrapping_shr, arithmetic");
+    // FNV-1a over three bytes, 32 bits
+    let mut h: U32 = 2166136261;
+    let bytes: [U8; 3] = [104, 105, 33];
+    for x in bytes {
+        h = U32::wrapping_mul(h ^ U32(x), 16777619);
+    }
+    std::test::assert(h == 3486672993, "FNV-1a over U32");
+}
+
+fn checked() {
+    let a: U8 = 250;
+    std::test::assert((U8::checked_add(a, 5) or 0) == 255, "checked_add in range");
+    let over = U8::checked_add(a, 6) or {
+        std::test::assert_eq_str(arith(err), "overflow U8::checked_add", "checked_add's error");
+        0
+    };
+    std::test::assert(over == 0, "and its fallback");
+    std::test::assert((U16::checked_sub(1, 2) or 7) == 7, "checked_sub below zero");
+    std::test::assert((I8::checked_sub(-100, 29) or 0) == 0, "checked_sub past the bottom");
+    std::test::assert((I32::checked_mul(65536, 32768) or 1) == 1, "checked_mul past the top");
+    std::test::assert(
+        (U32::checked_mul(65536, 65535) or 0) == 4294901760,
+        "a U32 product that fits",
+    );
+    std::test::assert((U32::checked_mul(65536, 65536) or 9) == 9, "and one that does not");
+    let zero = I16::checked_div(1, 0) or {
+        std::test::assert_eq_str(
+            arith(err),
+            "division_by_zero I16::checked_div",
+            "checked_div by zero",
+        );
+        0
+    };
+    std::test::assert(zero == 0, "its fallback");
+    std::test::assert((I8::checked_div(-128, -1) or 5) == 5, "the minimum over -1");
+    std::test::assert((I8::checked_div(-128, 2) or 5) == -64, "a division in range");
+}
+
+fn conversions() {
+    let a: U8 = 200;
+    let wide: U32 = a;
+    std::test::assert(wide == 200 && widened(a) == 200, "U8 widens into U32");
+    let signed: I16 = a;
+    std::test::assert(signed == 200, "an unsigned one into a strictly wider signed one");
+    let n: Int = a;
+    let m: I32 = -5;
+    std::test::assert(n == 200 && as_int(m) == -5, "anything into Int, sign kept");
+    let u: U64 = wide;
+    std::test::assert(u == 200, "an unsigned one into U64");
+    std::test::assert(
+        Int(m) * 2 == -10 && Float(m) == -5.0 && Float(a) == 200.0,
+        "Int(x) and Float(x)",
+    );
+
+    let big: Int = 300;
+    std::test::assert((U8(big) or 0) == 0, "a narrowing's substitute");
+    std::test::assert((U8(big) or clamp) == 255, "or clamp, above");
+    std::test::assert((U8(-big) or clamp) == 0, "or clamp, below");
+    std::test::assert((U8(big) or wrap) == 44, "or wrap keeps the low bits");
+    std::test::assert(
+        (I8(big) or wrap) == 44 && (I8(Int(200)) or wrap) == -56,
+        "and a signed one's two's complement",
+    );
+    let ok: Int = 77;
+    std::test::assert((U8(ok) or 0) == 77, "a value in range narrows to itself");
+    let r = U8(big) or {
+        std::test::assert_eq_str(
+            f"{err.kind} {err.value} {err.low} {err.high}",
+            "U8 300 0 256",
+            "the RangeError",
+        );
+        1
+    };
+    std::test::assert(r == 1, "its handler's value");
+    let neg: I32 = -1;
+    std::test::assert(
+        (U32(neg) or 9) == 9 && (U32(neg) or wrap) == 4294967295,
+        "a signed one into an unsigned one narrows",
+    );
+    let w: U32 = 70000;
+    std::test::assert(
+        (U16(w) or clamp) == 65535 && (I16(w) or wrap) == 4464,
+        "between two fixed widths",
+    );
+    std::test::assert(U8(5) == 5, "a literal's cast is the literal");
+}
+
+type Wide = enum { Nothing, Exact(U32), Two(Int, I32) };
+
+type Slots {
+    wide: U32;
+    n: Int;
+    list: bounded[U32; 4];
+}
+
+locus Acc {
+    params { total: U32 = 0; }
+    fn add(x: U32) {
+        self.total = self.total + x;
+    }
+    fn half(x: Int) -> Int fallible(ArithError) {
+        if x < 0 {
+            fail ArithError { kind: "negative", op: "half" };
+        }
+        return x / 2;
+    }
+}
+
+fn doubled(x: Int) -> Int {
+    return x * 2;
+}
+
+fn payload(w: Wide) -> Int {
+    return match w {
+        .Exact(v) -> Int(v),
+        .Two(a, b) -> a + Int(b),
+        _ -> 0,
+    };
+}
+
+// every place a value flows widens it where nothing is lost
+fn widening_sites() {
+    let small: U8 = 9;
+    let neg: I8 = -4;
+    let acc = Acc { };
+    acc.add(small);
+    acc.add(small);
+    std::test::assert(acc.total == 18, "a method's argument");
+    std::test::assert((acc.half(small) or 0) == 4, "a fallible method's argument");
+    std::test::assert(
+        payload(Wide::Exact(small)) == 9 && payload(Wide::Two(small, neg)) == 5,
+        "an enum payload",
+    );
+    let f: fn (Int) -> Int = doubled;
+    std::test::assert(f(neg) == -8, "a call through a fn value");
+    let arr: [U32; 2] = [small, 7];
+    std::test::assert(arr[0] == 9, "an array literal's element");
+    let mut s = Slots { wide: small, n: neg };
+    push(s.list, small) or raise;
+    s.wide = small;
+    s.n = small;
+    std::test::assert(
+        s.wide == 9 && s.n == 9 && (at(s.list, 0) or 0) == 9,
+        "a field, an assignment, a push",
+    );
+    let mut w: U32 = 0;
+    w = small;
+    let big: Int = 1000;
+    let x: U32 = U8(big) or small;
+    std::test::assert(w == 9 && x == 9, "an assignment and an `or`'s fallback");
+}
+
+fn patterns(x: U8) -> String {
+    return match x {
+        0 -> "zero",
+        255 -> "top",
+        _ -> "other",
+    };
+}
+
+fn text() {
+    let a: U8 = 200;
+    let b: I8 = -5;
+    std::test::assert_eq_str(to_string(a) + " " + to_string(b), "200 -5", "to_string");
+    std::test::assert_eq_str("a=" + a, "a=200", "+ with a String");
+    std::test::assert_eq_str(
+        f"{a:x} {b:x} {a:4}",
+        "c8 fb  200",
+        "f-string hex and width (a signed one's own bits)",
+    );
+    std::test::assert_eq_str(
+        patterns(0) + patterns(255) + patterns(7),
+        "zerotopother",
+        "literal patterns",
+    );
+}
+
+fn main() {
+    literals();
+    arithmetic();
+    bits();
+    wrapping();
+    checked();
+    conversions();
+    widening_sites();
+    text();
+}

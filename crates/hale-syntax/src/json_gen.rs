@@ -551,6 +551,19 @@ impl Conv {
     }
 }
 
+/// GH #2132: a fixed-width integer narrower than 64 bits, by its name.
+fn fixed_int_name(p: PrimType) -> Option<&'static str> {
+    Some(match p {
+        PrimType::I32 => "I32",
+        PrimType::U32 => "U32",
+        PrimType::I16 => "I16",
+        PrimType::U16 => "U16",
+        PrimType::I8 => "I8",
+        PrimType::U8 => "U8",
+        _ => return None,
+    })
+}
+
 /// A machine integer's name as a program writes it (`Int`, `U64`).
 fn prim_type_name(p: PrimType) -> &'static str {
     match p {
@@ -4152,6 +4165,13 @@ fn elem_of(
         Some((Elem::Scalar(ScalarTy::Int, Some(Conv::Quantity(1, "ns".to_string(), PrimType::Int))), "Duration".to_string()))
     } else if let Some(s) = scalar_of(&ty) {
         Some((Elem::Scalar(s, None), s.type_name().to_string()))
+    } else if let TypeExpr::Primitive(p, _) = ty.clone() {
+        // GH #2132: a fixed-width integer narrower than 64 bits is a JSON
+        // number and a protobuf `int32` / `uint32`, carried as the `Int`
+        // it is and narrowed back with its range checked: a value outside
+        // it is the wrong type, as a range type's is
+        let name = fixed_int_name(p)?;
+        Some((Elem::Scalar(ScalarTy::Int, Some(Conv::Range(name.to_string(), 0, PrimType::Int))), name.to_string()))
     } else if let Some((tn, c)) = named_single(&ty).and_then(|tn| scalars.get(tn).map(|c| (tn, c))) {
         // a scalar of the unit dialect: the integer it counts on the wire
         // (GH #2131: a `U64`'s as a `U64` is)

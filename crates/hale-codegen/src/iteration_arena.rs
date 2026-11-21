@@ -62,6 +62,7 @@ fn outer_local(ty: &CodegenTy) -> OuterLocal {
     match ty {
         CodegenTy::Int
         | CodegenTy::U64
+        | CodegenTy::Narrow(_)
         | CodegenTy::Float
         | CodegenTy::Bool
         | CodegenTy::Duration

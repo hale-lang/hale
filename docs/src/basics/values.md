@@ -25,6 +25,7 @@ Hale provides eight built-in scalar types and two inline sequence types. `Decima
 | `Float` | 64-bit IEEE-754 float | `3.14`, `1.0e-3`, `2.5` | Default type for fractional literals |
 | `Decimal` | Exact fixed-point number (`Decimal<9>`) | `1.50d`, `0.00d` | `d` suffix; parameterized as `Decimal<S>` (`S` in `0..=18`) |
 | `U64` | 64-bit unsigned integer | `let n: U64 = 7;`, `18446744073709551615`, `U64::parse("0xff") or ...` | An integer literal is one where its place is; checked arithmetic (see [Numbers, Money & Time](./math.md)) |
+| `I32`, `U32`, `I16`, `U16`, `I8`, `U8` | Fixed-width signed / unsigned integers | `let b: U8 = 255;`, `U8(n) or clamp` | Stored at their width; an integer literal is one where its place is; widen implicitly where nothing is lost; checked arithmetic (see [Numbers, Money & Time](./math.md)) |
 | `U256`, `I256` | 256-bit unsigned / signed integer | `U256::from_int(5)`, `U256::parse("0xff") or ...` | No literal; checked arithmetic (see [Numbers, Money & Time](./math.md)) |
 | `Bool` | Boolean truth value | `true`, `false` | Supports `==`, `!=`, `&&`, `\|\|`, `!` |
 | `String` | UTF-8 text | `"hello"`, `f"val={x}"`, `"""..."""` | Immutable UTF-8 byte sequence |
