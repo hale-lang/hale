@@ -325,6 +325,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         fd: &FnDecl,
         func: FunctionValue<'ctx>,
     ) -> Result<(), CodegenError> {
+        let name = format!("{}.{}", l.name.name, fd.name.name);
+        let stdlib = crate::codegen::stdlib_named(&l.name.name);
+        self.with_vec_fn(fd, name, stdlib, |cx| cx.lower_fallible_locus_method_body_at(l, info, fd, func))
+    }
+
+    fn lower_fallible_locus_method_body_at(
+        &mut self,
+        l: &LocusDecl,
+        info: &LocusInfo<'ctx>,
+        fd: &FnDecl,
+        func: FunctionValue<'ctx>,
+    ) -> Result<(), CodegenError> {
         let entry = self.context.append_basic_block(func, "entry");
         self.builder.position_at_end(entry);
         self.di_begin_function();

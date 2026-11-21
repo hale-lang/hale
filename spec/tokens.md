@@ -1184,6 +1184,7 @@ They attach to the declaration that follows.
 | `@bounded` | locus | opt into the memory-bound proof |
 | `@unbounded` | fn | acknowledge intentional unbounded allocation |
 | `@hot` | fn | certify a hot path (promotes advisories to errors) |
+| `@vectorize` / `@vectorize(min_width: N)` | fn | every innermost loop must be vectorized on the build's target, at least `N` lanes wide when given (spec/semantics.md § Vectorized loops) |
 | `@budget(alloc_per_call = N, stack_bytes = N, block_points = N, publish = N, fanout = N)` | fn | quantitative budgets, comma-separated |
 | `@effects(none: {…})` | fn | forbid effect classes, checked transitively |
 | `@phase_effects(phase: {…}, …)` | locus | per-lifecycle-phase effect contract |
@@ -1202,8 +1203,8 @@ They attach to the declaration that follows.
 | `@no_panic` | fn | no reachable trap (disposition coverage — a different analysis) |
 | `@rpc` / `@rpc(requires: [ROLE, …])` | locus fn | a row of the seed's default surface (spec/api.md) |
 
-The fn CONTRACT annotations — `@unbounded`, `@hot`, `@budget(...)` and
-the effect assertions — stack on one fn in any order; `@ffi` and
+The fn CONTRACT annotations — `@unbounded`, `@hot`, `@budget(...)`,
+`@vectorize` and the effect assertions — stack on one fn in any order; `@ffi` and
 `@export` say what a declaration IS and take the slot alone. A stack
 that contradicts itself (the same annotation twice, or `@unbounded`
 with a contract that forbids allocation) is a check-time error at the

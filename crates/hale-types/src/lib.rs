@@ -107,6 +107,7 @@ pub mod requirements;
 pub mod seam_expand;
 pub mod surfaces;
 pub mod json_codec_laws;
+pub mod vectorize;
 pub(crate) mod listener_window;
 /// The listener window's walk over every statement and expression a
 /// program holds, for a reader outside the crate that needs the node
