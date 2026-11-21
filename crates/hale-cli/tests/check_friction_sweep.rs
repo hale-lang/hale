@@ -138,27 +138,34 @@ fn a_topic_named_after_its_payload_says_the_namespace_is_shared() {
     assert!(!checked && out.contains("`Tick` is declared as a type and as a locus"), "{out}");
 }
 
+/// F.61: a `mode` is refused by check and build alike, at the word, with
+/// the `fn` to write; written as that `fn`, the same member takes the
+/// `@unbounded` acknowledgement its warning asks for, as a mode did.
 #[test]
-fn a_mode_takes_the_unbounded_acknowledgement_its_warning_asks_for() {
-    let program = |deco: &str| {
+fn a_removed_mode_names_the_fn_to_write() {
+    let program = |deco: &str, word: &str| {
         format!(
             "@form(vec)\nlocus V {{ capacity {{ heap items of String; }} }}\n\
-             locus L {{\n    params {{ v: V = V {{ }}; n: Int = 3; }}\n    {deco}\n    mode bulk() {{\n        let mut i = 0;\n        \
+             locus L {{\n    params {{ v: V = V {{ }}; n: Int = 3; }}\n    {deco}\n    {word} bulk() {{\n        let mut i = 0;\n        \
              while i < self.n {{ self.v.push(\"x\" + to_string(i)); i = i + 1; }}\n    }}\n    run() {{ self.bulk(); }}\n}}\n\
              fn main() {{ let l = L {{ }}; }}\n"
         )
     };
+    const REMOVED: &str = "locus modes were removed in 0.38: write `fn bulk(...)`";
+    for deco in ["", "@unbounded"] {
+        let (checked, out, built, bout) = check_and_build(&program(deco, "mode"), "mode_removed");
+        assert!(!checked && out.contains(REMOVED), "{deco}: {out}");
+        assert_eq!(out.matches("error").count(), 1, "one diagnostic: {out}");
+        assert!(!built && bout.contains(REMOVED), "{deco}: {bout}");
+    }
     const WARNING: &str = "unbounded allocation: this vec-insert inside an unbounded loop accumulates in `L::bulk`'s region";
-    let (checked, out, _, _) = check_and_build(&program(""), "mode_bare");
+    let (checked, out, _, _) = check_and_build(&program("", "fn"), "mode_as_fn");
     assert!(checked && out.contains(WARNING), "{out}");
-    assert!(out.contains("`@unbounded` on the enclosing fn, lifecycle hook or mode"), "{out}");
     for deco in ["@unbounded", "@bounded_by(n)"] {
-        let (checked, out, built, bout) = check_and_build(&program(deco), "mode_ack");
+        let (checked, out, built, bout) = check_and_build(&program(deco, "fn"), "mode_as_fn_ack");
         assert!(checked && !out.contains("unbounded allocation"), "{deco}: {out}");
         assert!(built, "{deco}: {bout}");
     }
-    let (checked, out, _, _) = check_and_build(&program("@hot"), "mode_hot");
-    assert!(!checked && out.contains("`@hot` can't precede a mode — a mode takes `@unbounded`"), "{out}");
 }
 
 #[test]

@@ -79,7 +79,7 @@ hale.root: ⊥(language-graph) = DESIGN itself
 ## The locus axiom
 
 Everything named and structural is a **locus** (Σ). If it has
-lifecycle, contracts, bus participation, modes, closures,
+lifecycle, contracts, bus participation, closures,
 capacity slots, or projection class, it is a fully-grown
 locus. If it is pure data — record, returnable by value, no
 flow — it is a **type**, a locus still in proto-form. There is
@@ -205,6 +205,8 @@ Filter these reflexes before they cost you time.
   There are no perspectives (`perspective`, `serves`,
   `reperspective` are refused, F.55) and no live swap of a
   running implementation.
+- **No locus modes.** `mode bulk|harmonic|resolution` is refused
+  (F.61): write the `fn` it compiled as (`fn bulk(...)`).
 - **No parametric collection types** — no `Vec<T>` / `Map<K,V>`
   / `Option<T>` / `Result<T,E>`. Use `@form(vec)` /
   `@form(hashmap)` / `@form(ring_buffer)` on a locus. Errors
@@ -259,9 +261,8 @@ Filter these reflexes before they cost you time.
 - **No `return` inside `birth` / `run` / `dissolve` bodies.**
   Factor short-circuit logic into helper free fns.
 - **`fallible(E)` is rejected on substrate-facing surfaces:**
-  lifecycle methods (`birth` / `run` / `dissolve`), mode bodies
-  (`bulk` / `harmonic` / `resolution`), closure-assertion
-  bodies, and bus-subscribed handlers. Those have no caller
+  lifecycle methods (`birth` / `run` / `dissolve`),
+  closure-assertion bodies, and bus-subscribed handlers. Those have no caller
   frame to address the error channel, so a `fallible(E)`
   declaration would describe a contract that can't be
   satisfied. User-declared `fn` members on a locus and free

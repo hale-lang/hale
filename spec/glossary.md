@@ -43,8 +43,6 @@ skip them:
   locus may `accept`. Defined in [`types.md`](./types.md); the ASCII
   source spellings `B`, `c`, `sigma`, `phi` are reserved identifiers
   (see [`tokens.md`](./tokens.md)).
-- **`bulk` / `harmonic` / `resolution`** — the three execution modes
-  (real keywords, not codenames).
 
 > Rule of thumb: an `F.`/`m`/`WS`/`v1.x-` tag is history you can
 > ignore; everything else in the spec is the current contract.

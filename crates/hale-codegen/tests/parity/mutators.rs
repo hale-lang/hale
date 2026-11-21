@@ -162,7 +162,7 @@ pub fn fns(program: &Program) -> Vec<FnSite<'_>> {
     out
 }
 
-/// Every body a program runs: fns, and a locus's lifecycle, mode and
+/// Every body a program runs: fns, and a locus's lifecycle and
 /// failure bodies; with whether it is a `fallible(E)` fn's.
 fn bodies(program: &Program) -> Vec<(&Block, bool)> {
     let mut out = Vec::new();
@@ -174,7 +174,6 @@ fn bodies(program: &Program) -> Vec<(&Block, bool)> {
                     match m {
                         LocusMember::Fn(f) => out.push((&f.body, f.fallible.is_some())),
                         LocusMember::Lifecycle(d) => out.push((&d.body, false)),
-                        LocusMember::Mode(d) => out.push((&d.body, false)),
                         LocusMember::Failure(d) => out.push((&d.body, false)),
                         _ => {}
                     }

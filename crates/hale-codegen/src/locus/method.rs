@@ -1,10 +1,9 @@
 //! Phase-B locus method body emission: lifecycle (birth / run /
-//! dissolve / accept), user `fn` members, modes (bulk / harmonic /
-//! resolution), closure-eval synthetics. Round 4c of the codegen
+//! dissolve / accept), user `fn` members, closure-eval synthetics. Round 4c of the codegen
 //! model-org refactor.
 
 use hale_syntax::ast::{
-    EpochSpec, LifecycleKind, LocusDecl, LocusMember, ModeKind,
+    EpochSpec, LifecycleKind, LocusDecl, LocusMember,
 };
 use inkwell::values::FunctionValue;
 use inkwell::AddressSpace;
@@ -31,7 +30,7 @@ impl<'ctx, 'p> LocusMethodBodies<'ctx> for Cx<'ctx, 'p> {
     ) -> Result<(), CodegenError> {
         // The locus's own text is its body; each member that has a body
         // of its own (a lifecycle method, an `on_failure`, a closure, a
-        // method, a mode) is that member's.
+        // method) is that member's.
         self.in_body(l.id, |cx| cx.lower_locus_method_bodies_at(l))
     }
 }
@@ -851,110 +850,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
-        // Mode bodies — same lowering as Fn members, with the
-        // synthetic method name (bulk / harmonic / resolution).
-        for (member_idx, member) in l.members.iter().enumerate() {
-            if let LocusMember::Mode(md) = member {
-                self.member_site = Some(md.span);
-                let mode_name = match md.kind {
-                    ModeKind::Bulk => "bulk",
-                    ModeKind::Harmonic => "harmonic",
-                    ModeKind::Resolution => "resolution",
-                };
-                let func = *info
-                    .user_methods
-                    .get(mode_name)
-                    .expect("mode declared in pass A2");
-                let entry = self.context.append_basic_block(func, "entry");
-                self.builder.position_at_end(entry);
-                self.di_begin_function();
-                let self_ptr = func
-                    .get_nth_param(0)
-                    .expect("self_ptr param")
-                    .into_pointer_value();
-                self.current_fn = Some(func);
-                let ret_ty = match &md.ret {
-                    None => None,
-                    Some(t) => Some(self.type_expr_to_codegen_ty(t)?),
-                };
-                self.current_user_fn_ret = Some(ret_ty.clone());
-                self.current_self = Some(SelfCx {
-                    locus_name: l.name.name.clone(),
-                    struct_ty: info.struct_ty,
-                    self_ptr,
-                    fields: info.fields.clone(),
-                });
-                self.loops.clear();
-                self.push_dissolve_frame();
-                // Stage-1 scratch elision (mode body) — same gate as fn
-                // members: non-allocating body + by-value scalar/Unit ret,
-                // the mode's elision row.
-                let elide_scratch = self.member_scratch_elided(&l.name.name, member_idx)?;
-                if !elide_scratch {
-                    self.open_method_scratch()?;
-                }
-                // Fn-call protocol shave (2026-07-02): see fn members.
-                let prev_skip_drain = self.current_fn_skip_exit_drain;
-                self.current_fn_skip_exit_drain = elide_scratch;
-
-                let mut scope = Scope::default();
-                self.bind_member_params(&md.params, func, &mut scope)?;
-                self.note_param_len_caches(&md.params, &md.body, &scope)?;
-
-                // Downstream handoff: implicit block-tail return —
-                // same treatment as fn members above.
-                let end = self.in_body(md.id, |cx| {
-                    Ok(if ret_ty.is_some() && md.body.tail.is_some() {
-                        let mut stmts_end = BlockEnd::Open;
-                        for (i, stmt) in md.body.stmts.iter().enumerate() {
-                            match cx.lower_stmt(stmt, &mut scope)? {
-                                BlockEnd::Open => cx.note_string_len_cache(&md.body, i, &scope)?,
-                                BlockEnd::Terminated => {
-                                    stmts_end = BlockEnd::Terminated;
-                                    break;
-                                }
-                            }
-                        }
-                        match stmts_end {
-                            BlockEnd::Open => cx.lower_return(md.body.tail.as_deref(), &scope)?,
-                            BlockEnd::Terminated => BlockEnd::Terminated,
-                        }
-                    } else {
-                        cx.lower_block(&md.body, &mut scope)?
-                    })
-                })?;
-                if end == BlockEnd::Open {
-                    self.flush_dissolve_frame()?;
-                    match ret_ty {
-                        None => {
-                            self.close_method_scratch()?;
-                            self.builder
-                                .build_return(None)
-                                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
-                        }
-                        Some(_) => {
-                            return Err(CodegenError::Refused(
-                                format!(
-                                    "mode `{}` of `{}` can reach the end of its body without returning a \
-                                     value: return one on every path",
-                                    mode_name, l.name.name
-                                ),
-                                md.span,
-                            ));
-                        }
-                    }
-                } else {
-                    let _ = self.deferred_dissolves.pop();
-                    self.current_method_scratch = None;
-                    self.current_method_caller_arena = None;
-                }
-                self.current_fn_skip_exit_drain = prev_skip_drain;
-
-                self.current_fn = None;
-                self.current_user_fn_ret = None;
-                self.current_self = None;
-            }
-        }
         Ok(())
     }
 
@@ -966,7 +861,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// member body with user parameters binds them here: a `fn` member, a
     /// fallible one (GH #1832: its loop once bound them without the mark,
     /// so its writes through a record parameter landed in the scratch its
-    /// return frees) and a mode.
+    /// return frees).
     pub(crate) fn bind_member_params(
         &mut self,
         params: &[hale_syntax::ast::Param],

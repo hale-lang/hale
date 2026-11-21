@@ -245,7 +245,6 @@ impl Walk<'_> {
             LocusMember::Contract(_) => {}
             LocusMember::Bus(bb) => self.bus(bb),
             LocusMember::Lifecycle(ld) => self.body(&mut ld.params, &mut ld.body),
-            LocusMember::Mode(md) => self.body(&mut md.params, &mut md.body),
             LocusMember::Failure(fd) => self.body(&mut fd.params, &mut fd.body),
             LocusMember::Closure(cd) => {
                 if let Some(a) = &mut cd.assertion {

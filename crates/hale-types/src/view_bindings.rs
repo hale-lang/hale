@@ -1303,11 +1303,6 @@ fn collect<'a>(items: &'a [TopDecl], p: &mut Bodies<'a>) {
                             p.body_locus.push(Some(l.name.name.clone()));
                             p.bodies.push((&d.params, &d.body))
                         }
-                        LocusMember::Mode(d) => {
-                            p.body_locus.resize(p.bodies.len(), None);
-                            p.body_locus.push(Some(l.name.name.clone()));
-                            p.bodies.push((&d.params, &d.body))
-                        }
                         LocusMember::Failure(d) => {
                             p.body_locus.resize(p.bodies.len(), None);
                             p.body_locus.push(Some(l.name.name.clone()));

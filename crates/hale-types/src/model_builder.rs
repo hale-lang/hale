@@ -606,7 +606,7 @@ pub fn derive_application_model_over(
         .collect();
 
     // Functions: the DECLARATION universe (free fns, methods,
-    // lifecycle hooks, modes), unioned with the summary's user keys.
+    // lifecycle hooks), unioned with the summary's user keys.
     // The summary is a behavior analysis, not a declaration
     // inventory — an EMPTY free fn has no summary entry but must
     // still exist as an entity (group member, seed member, zero-
@@ -641,14 +641,6 @@ pub fn derive_application_model_over(
             LK::Run => "run",
             LK::Drain => "drain",
             LK::Dissolve => "dissolve",
-        }
-    }
-    fn mode_name(k: &hale_syntax::ast::ModeKind) -> &'static str {
-        use hale_syntax::ast::ModeKind as MK;
-        match k {
-            MK::Bulk => "bulk",
-            MK::Harmonic => "harmonic",
-            MK::Resolution => "resolution",
         }
     }
     let mut fn_rows: BTreeMap<String, FnInfo> = BTreeMap::new();
@@ -700,12 +692,6 @@ pub fn derive_application_model_over(
                         FunctionKind::Hook,
                         lc.span,
                         lc.id,
-                    ),
-                    LocusMember::Mode(md) => (
-                        mode_name(&md.kind).to_string(),
-                        FunctionKind::Mode,
-                        md.span,
-                        md.id,
                     ),
                     LocusMember::Failure(fd) => {
                         // on_failure handlers ARE executable hooks;
@@ -1565,9 +1551,6 @@ pub fn derive_application_model_over(
                                 }
                                 LocusMember::Lifecycle(lc) => {
                                     walk_block(&lc.body, out)
-                                }
-                                LocusMember::Mode(md) => {
-                                    walk_block(&md.body, out)
                                 }
                                 LocusMember::Failure(fd) => {
                                     walk_block(&fd.body, out)
@@ -3757,7 +3740,6 @@ pub fn render_internal(m: &ApplicationModel) -> String {
                 FunctionKind::Hook => "hook",
                 FunctionKind::Method => "method",
                 FunctionKind::Free => "free",
-                FunctionKind::Mode => "mode",
                 FunctionKind::FailureHandler => "failure",
             },
             if f.effects.is_empty() {

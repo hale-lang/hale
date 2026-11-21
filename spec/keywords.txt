@@ -41,7 +41,6 @@ birth_check
 block
 bound
 bubble
-bulk
 bus
 cap
 capacity
@@ -84,7 +83,6 @@ forbid
 group
 half_even
 half_up
-harmonic
 heap
 host
 includes
@@ -97,7 +95,6 @@ l3
 listen
 main
 may_be_empty
-mode
 node
 of
 on
@@ -132,7 +129,6 @@ requires
 reserve
 resets_on
 resets_per_epoch
-resolution
 restart
 restart_in_place
 rich

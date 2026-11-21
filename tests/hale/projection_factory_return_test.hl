@@ -1,0 +1,65 @@
+// A locus-valued projection built by a free-fn FACTORY must survive to
+// the caller. This is the v0.14 regression (GH: downstream handoff),
+// found on a locus `mode`, the one member that could return a locus: a
+// `bulk() -> M { let out = make(...); return out; }` mode handed the
+// caller a RECLAIMED locus — the factory result was left in the mode's
+// method-scratch subregion, which the epilogue destroys at return.
+//
+// Modes are removed (spec/decisions.md F.61) and a locus method may not
+// return a locus, so the projection is a free fn over the locus, the
+// form a mode returning a locus migrates to. This holds that form to
+// the same cells: a factory-built projection, a literal-built one, and
+// two projections that must not see each other's storage.
+
+@form(vec)
+locus Mx { capacity { heap cells of Float; } }
+
+fn make_mx(a: Float) -> Mx {
+    let out = Mx { };
+    out.push(a);
+    out.push(a + 1.0);
+    return out;
+}
+
+locus Box {
+    params { n: Int = 3; }
+}
+
+// factory-built, returned: the reclaim regression's shape
+fn bulk(b: Box) -> Mx {
+    let out = make_mx(1.5);
+    out.push(9.5);
+    return out;
+}
+
+// literal-built, returned: the control that always survived
+fn harmonic(b: Box) -> Mx {
+    let out = Mx { };
+    out.push(4.5);
+    return out;
+}
+
+main locus App {
+    params { b: Box = Box { }; }
+}
+
+fn main() {
+    let app = App { };
+
+    let m = bulk(app.b);
+    let h = harmonic(app.b);
+
+    // The factory-built projection carries its three pushed cells all
+    // the way to the caller — not a reclaimed length-0 handle, and not
+    // harmonic's recycled storage bleeding through.
+    std::test::assert_eq_int(m.len(), 3, "factory-built projection survives");
+    std::test::assert(
+        (m.get(0) or 0.0) == 1.5 && (m.get(2) or 0.0) == 9.5,
+        "factory-built projection carries its own cells");
+
+    // The literal control is unchanged.
+    std::test::assert_eq_int(h.len(), 1, "literal-built projection survives");
+    std::test::assert(
+        (h.get(0) or 0.0) == 4.5,
+        "literal-built projection carries its own cell");
+}

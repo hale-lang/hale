@@ -27,8 +27,6 @@ pub enum FunctionKind {
     Method,
     /// A free function.
     Free,
-    /// A mode body.
-    Mode,
     /// An `on_failure` handler (round 11): executable, but the
     /// behavior analysis never walks it — a TYPED identity, so
     /// consumers never infer handler-ness from a display-name
@@ -43,8 +41,8 @@ pub struct Function {
     /// Author-facing spelling when it differs (stdlib publics render
     /// their `std::…` path, never the mangled name).
     pub display: String,
-    /// Which executable shape this is. Free fns, methods, hooks, modes
-    /// and failure handlers are one sort because they are all things a
+    /// Which executable shape this is. Free fns, methods, hooks and
+    /// failure handlers are one sort because they are all things a
     /// walk can enter.
     pub kind: FunctionKind,
     /// DERIVED effect classes in declaration order (the stdlib-merged

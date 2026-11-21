@@ -2638,7 +2638,6 @@ impl<'a> Scopes<'a> {
                                 w.type_parameters = enclosing_parameters;
                             }
                             LocusMember::Lifecycle(ld) => w.block(&ld.body),
-                            LocusMember::Mode(md) => w.block(&md.body),
                             LocusMember::Failure(fd) => w.block(&fd.body),
                             LocusMember::BirthCheck(bc) => {
                                 w.expr(&bc.cond);

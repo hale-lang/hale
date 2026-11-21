@@ -194,7 +194,6 @@ fn normalize_unit_return_annotations(items: &mut [TopDecl]) {
                 for member in &mut l.members {
                     match member {
                         LocusMember::Fn(f) => norm(&mut f.ret),
-                        LocusMember::Mode(md) => norm(&mut md.ret),
                         LocusMember::Lifecycle(lc) => norm(&mut lc.ret),
                         _ => {}
                     }

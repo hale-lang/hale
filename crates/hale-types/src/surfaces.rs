@@ -26,7 +26,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use hale_syntax::ast::{
-    Block, ElseBranch, Expr, FnDecl, LifecycleKind, LocusDecl, LocusMember, MatchArmBody, ModeKind,
+    Block, ElseBranch, Expr, FnDecl, LifecycleKind, LocusDecl, LocusMember, MatchArmBody,
     ParamDecl, ParamInit, Program, ServeSite, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
 use hale_syntax::{Diag, Span};
@@ -504,14 +504,6 @@ fn lifecycle_name(k: &LifecycleKind) -> &'static str {
     }
 }
 
-fn mode_name(k: &ModeKind) -> &'static str {
-    match k {
-        ModeKind::Bulk => "bulk",
-        ModeKind::Harmonic => "harmonic",
-        ModeKind::Resolution => "resolution",
-    }
-}
-
 /// `self.<field>` as written, and the field.
 pub(crate) fn self_field(e: &Expr) -> Option<&str> {
     match e {
@@ -638,7 +630,6 @@ pub(crate) fn body_serve_sites(l: &LocusDecl) -> Vec<ServeSite<'_>> {
         match m {
             LocusMember::Lifecycle(lc) => serve_sites_in(&lc.body, &mut out),
             LocusMember::Fn(f) => serve_sites_in(&f.body, &mut out),
-            LocusMember::Mode(md) => serve_sites_in(&md.body, &mut out),
             _ => {}
         }
     }
@@ -923,9 +914,6 @@ pub fn surface_rows(
                 }
                 LocusMember::Lifecycle(lc) if lifecycle_name(&lc.kind) == method => {
                     return Handled::NotAHandler { kind: "lifecycle method" };
-                }
-                LocusMember::Mode(md) if mode_name(&md.kind) == method => {
-                    return Handled::NotAHandler { kind: "mode" };
                 }
                 LocusMember::Failure(_) if method == "on_failure" => {
                     return Handled::NotAHandler { kind: "failure handler" };
@@ -2528,7 +2516,6 @@ fn serve_laws_of(
         match m {
             LocusMember::Lifecycle(lc) => let_handles(&lc.body, &mut handles),
             LocusMember::Fn(f) => let_handles(&f.body, &mut handles),
-            LocusMember::Mode(md) => let_handles(&md.body, &mut handles),
             _ => {}
         }
     }

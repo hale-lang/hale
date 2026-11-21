@@ -115,12 +115,12 @@ const ISOLATION_SRC: &str = r#"
         params { tag: Int = 0; }
         contract { consume hull: Int; }
         accept(s: Ship) { }
-        mode harmonic() -> Int {
+        fn harmonic() -> Int {
             let mut n: Int = 0;
             for child in self.children { n = n + 1; }
             return n;
         }
-        mode bulk() -> Int {
+        fn bulk() -> Int {
             let mut t: Int = 0;
             for child in self.children { t = t + child.hull; }
             return t;
@@ -247,12 +247,12 @@ fn threading_depth_two_intermediaries() {
             params { tag: Int = 0; }
             contract { consume hull: Int; }
             accept(s: Ship) { }
-            mode harmonic() -> Int {
+            fn harmonic() -> Int {
                 let mut n: Int = 0;
                 for child in self.children { n = n + 1; }
                 return n;
             }
-            mode bulk() -> Int {
+            fn bulk() -> Int {
                 let mut t: Int = 0;
                 for child in self.children { t = t + child.hull; }
                 return t;
@@ -311,12 +311,12 @@ fn ship_outside_any_world_stays_transient() {
             params { tag: Int = 0; }
             contract { consume hull: Int; }
             accept(s: Ship) { }
-            mode harmonic() -> Int {
+            fn harmonic() -> Int {
                 let mut n: Int = 0;
                 for child in self.children { n = n + 1; }
                 return n;
             }
-            mode bulk() -> Int {
+            fn bulk() -> Int {
                 let mut t: Int = 0;
                 for child in self.children { t = t + child.hull; }
                 return t;

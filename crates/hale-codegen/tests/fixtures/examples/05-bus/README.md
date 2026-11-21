@@ -143,7 +143,7 @@ Three things, all resolved in this commit:
    enclosing scope. v0.1.6 extends: (c) unbound + has bus
    subscriptions = anonymous child of enclosing scope.
    Generalization: any locus that *can do work after birth*
-   (run, mode invocations from outside, bus subscriptions) is
+   (run, method calls from outside, bus subscriptions) is
    long-lived if unbound. A locus that's purely ephemeral
    (only birth + params) dissolves at statement boundary.
    Updated §A.

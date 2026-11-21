@@ -16,10 +16,7 @@
 // Locus methods support defaults too (m34). Bus-handler
 // methods reject defaults — bus dispatch is fixed-arity
 // `(self, payload)` at the C-runtime level and can't fill
-// defaults for extra params at call time. Mode methods
-// (bulk / harmonic / resolution) also still reject defaults
-// — modes are designated regime selectors and v0 keeps their
-// param surface tight.
+// defaults for extra params at call time.
 
 fn greet(name: String, greeting: String = "hello", times: Int = 1) {
     let mut i = 0;

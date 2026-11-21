@@ -1076,21 +1076,6 @@ impl<'a> QualifiedRenameApplier<'a> {
                 self.rewrite_sends_in_block(&mut lc.body);
                 self.rewrite_let_generic_args_in_block(&mut lc.body);
             }
-            // GH #854: a mode DOES take typed params — the grammar
-            // is `mode bulk(n: Int) -> T { }` and the full mangler
-            // walks them (`walk_fn_like`). This arm rewrote `ret`
-            // only, so `mode bulk(t: lib::Thing)` reached the
-            // checker still spelled qualified while every sibling
-            // arm's params were collapsed. Not intentional; the
-            // arm is now the same shape as `Fn` and `Failure`.
-            LocusMember::Mode(md) => {
-                for p in &mut md.params {
-                    self.rewrite_type_expr(&mut p.ty);
-                }
-                if let Some(r) = &mut md.ret {
-                    self.rewrite_type_expr(r);
-                }
-            }
             LocusMember::Failure(fd) => {
                 for p in &mut fd.params {
                     self.rewrite_type_expr(&mut p.ty);
@@ -1930,7 +1915,6 @@ impl<'a> Mangler<'a> {
                 }
             }
             LocusMember::Lifecycle(lc) => self.walk_fn_like(&mut lc.params, lc.ret.as_mut(), &mut lc.body),
-            LocusMember::Mode(md) => self.walk_fn_like(&mut md.params, md.ret.as_mut(), &mut md.body),
             LocusMember::Failure(f) => self.walk_fn_like(&mut f.params, None, &mut f.body),
             LocusMember::Closure(c) => {
                 if let Some(a) = &mut c.assertion {

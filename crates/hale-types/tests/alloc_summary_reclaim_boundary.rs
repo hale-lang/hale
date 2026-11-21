@@ -690,6 +690,10 @@ fn per_target_moves() {
 /// `module_is_a_name_test` (F.57) is a new target: two tags of values its
 /// fns hand back move into the caller's arena; no leak site goes or
 /// appears.
+///
+/// `mode_is_a_name_test` (F.61) is a new target: one tag of a value its
+/// fns hand back moves into the caller's arena; no leak site goes or
+/// appears.
 /// GH #2090 widened the scratch-local class to plain records (taken and
 /// built, not returned) and the `bounded` builtins on a fn's own locals, so
 /// more fns free at return: every DNA target and the API, JSON and record
@@ -781,6 +785,7 @@ const PINNED: &[&str] = &[
     "tests/hale/let_block_scope_test.hl: 0 go, 0 appear; dump 5 tags, 0 reclaim, 0 verdicts",
     "tests/hale/literal_default_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/local_place_value_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
+    "tests/hale/mode_is_a_name_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/module_is_a_name_test.hl: 0 go, 0 appear; dump 2 tags, 0 reclaim, 0 verdicts",
     "tests/hale/open_slices_test.hl: 0 go, 0 appear; dump 1 tags, 0 reclaim, 0 verdicts",
     "tests/hale/optional_field_test.hl: 0 go, 0 appear; dump 1 tags, 2 reclaim, 0 verdicts",

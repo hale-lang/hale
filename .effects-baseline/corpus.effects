@@ -24,7 +24,7 @@ main  does={alloc}
 ### 03c-closure-bubbled
 AuditL::run  does={alloc}
 main  does={syscall,alloc,stdio}
-### 04-modes
+### 04-child-aggregates
 AggregatorL::run  does={syscall,alloc,stdio}
 main  does={alloc}
 ### 05-bus
@@ -215,7 +215,7 @@ Pulse::birth  does={publish,alloc}
 Watcher::on_evt  does={syscall,stdio}
 main  does={syscall,alloc,stdio}
 make_pair  does={alloc}
-### 50-mode-defaults
+### 50-method-defaults
 AggregatorL::run  does={syscall,stdio}
 main  does={alloc}
 ### 51-geom-segment

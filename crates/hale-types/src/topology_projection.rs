@@ -332,7 +332,7 @@ pub fn project_model_half<'a>(m: &'a ApplicationModel) -> String {
     for po in &r.phase_of {
         let hook = matches!(
             e.functions[po.function.index()].kind,
-            FunctionKind::Hook | FunctionKind::Mode
+            FunctionKind::Hook
         );
         phase_rows.insert(
             fn_display(po.function),

@@ -277,15 +277,14 @@ fn b10_locus_typed_param_forward_ref() {
 }
 
 #[test]
-fn b11_external_mode_dispatch() {
+fn b11_external_method_dispatch() {
     // `g.bulk(...)` from outside the locus body dispatches to
-    // the locus's `mode bulk { ... }` member. Previously
-    // failed because the external-method signature lookup
-    // didn't walk LocusMember::Mode.
+    // the locus's `fn bulk() { ... }` member (a `mode bulk`
+    // until F.61 removed modes).
     let src = r#"
         locus Grinder {
             params { factor: Int = 2; }
-            mode bulk {
+            fn bulk() {
                 println("bulk factor=", self.factor);
             }
         }

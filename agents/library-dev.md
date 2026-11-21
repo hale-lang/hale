@@ -164,9 +164,8 @@ too: a CI gate, with no Mac to try it on first. Write it for both:
 ## Two-channel rule (narrowed 2026-05-25)
 
 `fallible(E)` is rejected on **substrate-facing surfaces**:
-lifecycle methods (`birth` / `run` / `dissolve`), mode bodies
-(`bulk` / `harmonic` / `resolution`), closure-assertion
-bodies, and bus-subscribed handlers. The substrate
+lifecycle methods (`birth` / `run` / `dissolve`),
+closure-assertion bodies, and bus-subscribed handlers. The substrate
 orchestrates those — there's no caller frame to address
 the error channel, so a `fallible(E)` declaration would
 describe a contract that can't be satisfied. Surface failure

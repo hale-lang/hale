@@ -2985,10 +2985,6 @@ pub fn rewrite_items(items: &mut [TopDecl], visit: &mut dyn FnMut(&mut Expr)) {
                             defaults(&mut lc.params, visit);
                             rewrite_block(&mut lc.body, visit);
                         }
-                        LocusMember::Mode(md) => {
-                            defaults(&mut md.params, visit);
-                            rewrite_block(&mut md.body, visit);
-                        }
                         LocusMember::Fn(fd) => {
                             defaults(&mut fd.params, visit);
                             rewrite_block(&mut fd.body, visit);

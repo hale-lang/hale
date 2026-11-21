@@ -878,7 +878,6 @@ pub(crate) fn member_site(m: &hale_syntax::ast::LocusMember) -> Option<hale_synt
     match m {
         LocusMember::Fn(f) => Some(f.name.span),
         LocusMember::Lifecycle(lc) => Some(lc.span),
-        LocusMember::Mode(md) => Some(md.span),
         LocusMember::Failure(fd) => Some(fd.span),
         LocusMember::Closure(c) => Some(c.name.span),
         _ => None,
@@ -4336,7 +4335,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     pub(crate) default_evaluation: Vec<u32>,
     /// The declaration whose body is being lowered: the id the checker
     /// recorded that body's rows under (`TypedBodies::body`), a fn's, a
-    /// locus member's (a lifecycle method, a mode, an `on_failure`, a
+    /// locus member's (a lifecycle method, an `on_failure`, a
     /// closure, a method), or the locus's own for the text the checker
     /// walks as the locus's (its params' defaults, its birth checks); a
     /// `const`'s at each use of its initializer. Set where that body
@@ -4443,8 +4442,8 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// into its own subregion instead of the caller's arena; and the
     /// FORM-3 free fns proven to allocate nothing, each of which skips its
     /// per-call scratch arena, a call to one allocating nothing; and per
-    /// locus, whether its arena is elided and which of its hooks, methods
-    /// and modes lower without their per-call scratch (`locus_elision`),
+    /// locus, whether its arena is elided and which of its hooks and
+    /// methods lower without their per-call scratch (`locus_elision`),
     /// with the elidable-method sets the noalias-self proof reads.
     pub(crate) alloc_routing: &'p hale_types::alloc_routing::AllocRouting,
     /// The view's lifecycle plan (`LoweringView::lifecycle`): the
@@ -5866,7 +5865,6 @@ pub(crate) fn count_self_field_accesses_in_locus(l: &LocusDecl) -> std::collecti
     for member in &l.members {
         let body_opt: Option<&Block> = match member {
             LocusMember::Lifecycle(lc) => Some(&lc.body),
-            LocusMember::Mode(md) => Some(&md.body),
             LocusMember::Fn(fd) => Some(&fd.body),
             LocusMember::Failure(fl) => Some(&fl.body),
             _ => None,
@@ -14615,10 +14613,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     requests,
                 )?;
             }
-            LocusMember::Mode(_) => {
-                /* Modes' body / params walk would mirror Fn; not
-                 * yet wired. m61c. */
-            }
             LocusMember::Const(c) => {
                 Self::collect_generic_uses(
                     &c.ty,
@@ -17499,10 +17493,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return Ok(None);
         };
         // Find the FnDecl so we can consult its fallible
-        // declaration + param list. Mode-method decls also live
-        // in user_methods, but mode methods don't carry
-        // `fallible` (the parser doesn't accept it on modes),
-        // so we'd miss them naturally.
+        // declaration + param list.
         let fd_opt: Option<FnDecl> =
             self.program.items.iter()
                 .find_map(|item| match item {
@@ -19425,24 +19416,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 let hint_ty = ascribed
                     .as_ref()
                     .and_then(|asc| self.type_expr_to_codegen_ty(asc).ok());
-                // A returned binding must escape to the caller. In a
-                // method with a scratch subregion (every `mode` body),
-                // allocations default to that scratch, which is
-                // destroyed at method return — so a factory-built locus
-                // bound here and then returned is freed out from under
-                // the caller. That is the P0 mode-projection regression:
-                // `mode bulk() -> M { let out = make_m(); return out; }`
-                // handed back reclaimed storage (empty reads, or another
-                // projection's recycled cells). A LITERAL-built binding
-                // survives because return-position routing already sends
-                // the literal to the caller arena; a factory CALL result
-                // does not, so route THIS binding's RHS through the
-                // caller arena too — exactly how a free fn threads its
-                // `__caller_arena` to the same factory. Gated on the
-                // binding actually being returned (the returned walk
-                // sees mode bodies), so ordinary transient bindings keep
-                // using scratch.
-                //
                 // F.40 1.2b: what the `let` knows about its own binding
                 // is the owner table's row for this site. A `let` with
                 // no row (a `NONE` id, or a site the resolved program
@@ -19459,25 +19432,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         Some(*span),
                     )
                 })?;
-                let saved_override_for_returned = self.current_arena_override;
-                let binding_is_returned =
-                    self.current_method_scratch.is_some() && facts.returned;
-                if binding_is_returned {
-                    if let Some(slot) = self.current_method_caller_arena {
-                        let ptr_t =
-                            self.context.ptr_type(AddressSpace::default());
-                        let caller_arena = self
-                            .builder
-                            .build_load(
-                                ptr_t,
-                                slot,
-                                "method.caller_arena.for_returned_let",
-                            )
-                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
-                            .into_pointer_value();
-                        self.current_arena_override = Some(caller_arena);
-                    }
-                }
                 // GH #767: a literal `[c; N]` bound here, whose every
                 // use in this fn is an element access, is a frame
                 // local, not an arena allocation. Signalled one-shot to
@@ -19488,7 +19442,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // repeat is the only such path).
                 self.next_array_repeat_is_stack_local =
                     matches!(value_to_lower, Expr::ArrayRepeat { .. })
-                        && !binding_is_returned
                         && facts.stack_array;
                 // GH #402: the binding decides ownership for its own
                 // RHS (below), so suppress temporary registration for
@@ -19549,7 +19502,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.fused_call = false;
                     r
                 };
-                self.current_arena_override = saved_override_for_returned;
                 self.next_array_repeat_is_stack_local = false;
                 let (mut val, mut ty) = lower_result?;
                 // GH #713: `let` copies a struct value. A struct read
@@ -25473,7 +25425,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // them stays a direct build_return as before.
         let in_free_fn = self.current_user_fn_exit_bb.is_some();
         // Bus-arena reclaim (2026-05-21): locus methods (user-fn
-        // members, modes) now open a per-call scratch subregion
+        // members) now open a per-call scratch subregion
         // — distinct from the free-fn `exit_bb` path. At each
         // `return`, we must (a) deep-copy a heap return value
         // out of the scratch into the caller's arena (read from
@@ -33002,10 +32954,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ))
             })?;
         // Find the source-level decl so we can read param / ret
-        // types. Methods come from either LocusMember::Fn (named
-        // user fns) or LocusMember::Mode (synthetic name from
-        // ModeKind). We extract a uniform (params, ret) tuple
-        // from whichever matches.
+        // types from the method's `LocusMember::Fn`.
         struct MethodSig {
             params: Vec<Param>,
             ret: Option<TypeExpr>,
@@ -33020,21 +32969,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 params: fd.params.clone(),
                                 ret: fd.ret.clone(),
                             })
-                        }
-                        LocusMember::Mode(md) => {
-                            let n = match md.kind {
-                                ModeKind::Bulk => "bulk",
-                                ModeKind::Harmonic => "harmonic",
-                                ModeKind::Resolution => "resolution",
-                            };
-                            if n == method_name {
-                                Some(MethodSig {
-                                    params: md.params.clone(),
-                                    ret: md.ret.clone(),
-                                })
-                            } else {
-                                None
-                            }
                         }
                         _ => None,
                     }))
@@ -33513,32 +33447,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 ret: fd.ret.clone(),
                                 fallible: fd.fallible.clone(),
                             })
-                        }
-                        // B11 / G25: external `g.bulk(...)` /
-                        // `g.harmonic(...)` / `g.resolution(...)`
-                        // dispatches into a `mode <kind> { ... }`
-                        // member. Modes register as user_methods
-                        // keyed by their kind name (see
-                        // declare_locus_methods), so the func
-                        // lookup above already succeeds — the
-                        // signature lookup just needs to walk
-                        // ModeKind too. Same shape as the self-
-                        // method-call arm above.
-                        LocusMember::Mode(md) => {
-                            let n = match md.kind {
-                                ModeKind::Bulk => "bulk",
-                                ModeKind::Harmonic => "harmonic",
-                                ModeKind::Resolution => "resolution",
-                            };
-                            if n == method_name {
-                                Some(MethodSig {
-                                    params: md.params.clone(),
-                                    ret: md.ret.clone(),
-                                    fallible: None,
-                                })
-                            } else {
-                                None
-                            }
                         }
                         _ => None,
                     }))
@@ -37909,7 +37817,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             LocusMember::Lifecycle(lc) => bodies.push(&lc.body),
                             LocusMember::Failure(fd) => bodies.push(&fd.body),
                             LocusMember::Fn(fd) => bodies.push(&fd.body),
-                            LocusMember::Mode(md) => bodies.push(&md.body),
                             _ => {}
                         }
                     }
@@ -39256,8 +39163,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         })
     }
 
-    /// Whether member `idx` of the locus `name` (a lifecycle hook, `fn`
-    /// method or mode) lowers without its per-call scratch subregion.
+    /// Whether member `idx` of the locus `name` (a lifecycle hook or `fn`
+    /// method) lowers without its per-call scratch subregion.
     /// Total within the locus's rows: a member with no entry keeps its
     /// scratch.
     pub(crate) fn member_scratch_elided(&self, name: &str, idx: usize) -> Result<bool, CodegenError> {

@@ -1,8 +1,7 @@
 //! Aliasing stage 2 (2026-07-02): `noalias` on `self` for locus
 //! methods where both reentrancy channels are provably closed —
 //! elidable (non-allocating ⇒ no publish, no callee exit-drains)
-//! AND all params by-value scalars. Modes participate via the
-//! elidable fixpoint under their synthetic names.
+//! AND all params by-value scalars.
 
 
 #[path = "support/harness.rs"]
@@ -16,7 +15,7 @@ fn ir_for(src: &str) -> String {
 }
 
 #[test]
-fn scalar_elidable_methods_and_modes_get_noalias_self() {
+fn scalar_elidable_methods_get_noalias_self() {
     let ir = ir_for(
         r#"
         locus Counter {
@@ -25,9 +24,9 @@ fn scalar_elidable_methods_and_modes_get_noalias_self() {
                 self.n = self.n + by;
                 return self.n;
             }
-            mode bulk() -> Float { return self.scale; }
-            mode harmonic() -> Float { return self.scale; }
-            mode resolution() -> Float { return self.scale; }
+            fn bulk() -> Float { return self.scale; }
+            fn harmonic() -> Float { return self.scale; }
+            fn resolution() -> Float { return self.scale; }
         }
         fn main() {
             let c = Counter { };

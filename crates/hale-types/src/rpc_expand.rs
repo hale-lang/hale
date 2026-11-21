@@ -2390,7 +2390,6 @@ fn inject_key(l: &mut LocusDecl, field: &str, key_param: &str, key: i64, span: S
             LocusMember::Lifecycle(lc) => inject_block(&mut lc.body, field, &init),
             LocusMember::Failure(fd) => inject_block(&mut fd.body, field, &init),
             LocusMember::Fn(f) => inject_block(&mut f.body, field, &init),
-            LocusMember::Mode(md) => inject_block(&mut md.body, field, &init),
             _ => {}
         }
     }
@@ -3521,7 +3520,6 @@ fn walk_items_exprs_mut(items: &mut [TopDecl], f: &mut dyn FnMut(&mut Expr)) {
                         }
                         LocusMember::Lifecycle(lc) => walk_block_mut(&mut lc.body, f),
                         LocusMember::Failure(fd) => walk_block_mut(&mut fd.body, f),
-                        LocusMember::Mode(md) => walk_block_mut(&mut md.body, f),
                         LocusMember::Fn(func) => walk_block_mut(&mut func.body, f),
                         _ => {}
                     }

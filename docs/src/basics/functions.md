@@ -84,7 +84,7 @@ fn main() {
 | **Module-level scope only** | Defaults may reference literals, top-level `const`s, free functions, types, enum variants, and builtins. They cannot reference caller locals, function pointers, or earlier parameters. |
 | **No constant shadowing at call site** | If a default reads `const K`, a caller that defines a local `let K` cannot omit that parameter; rename the local or pass the argument explicitly. |
 | **Locus construction & bus sends** | A default that constructs a locus builds it in the caller's pool context (which can trigger cross-pool spawn checks). Publishing (`<-`) is forbidden inside a default expression; call a helper method instead. |
-| **Locus method support** | User-defined `fn` methods on a locus support default parameters. Bus-subscribed handlers and mode bodies (`bulk`, `harmonic`, `resolution`) do not allow defaults. |
+| **Locus method support** | User-defined `fn` methods on a locus support default parameters. Bus-subscribed handlers do not allow defaults. |
 
 ## Generic Functions and the `Numeric` Bound
 

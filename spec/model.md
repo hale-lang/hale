@@ -264,7 +264,7 @@ digest.
 
 | table | what a row is |
 |---|---|
-| `functions` | free fn, method, lifecycle hook, mode, failure handler |
+| `functions` | free fn, method, lifecycle hook, failure handler |
 | `loci` | a locus *declaration* |
 | `locus_instances` | a statically exact instance in the main arrangement (`App.w`, `App.workers[3]`) |
 | `topics` | a declared topic |
