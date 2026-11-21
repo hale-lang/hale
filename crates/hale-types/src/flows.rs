@@ -919,7 +919,6 @@ fn locus_assigns_self_field(decl: &LocusDecl, field: &str) -> bool {
     decl.members.iter().any(|m| match m {
         LocusMember::Fn(f) => block_assigns(&f.body, field),
         LocusMember::Lifecycle(l) => block_assigns(&l.body, field),
-        LocusMember::Mode(md) => block_assigns(&md.body, field),
         LocusMember::Failure(fd) => block_assigns(&fd.body, field),
         _ => false,
     })

@@ -20,7 +20,7 @@
 //!   one of its diagnostics has a position outside the declaration,
 //!   which the move would not carry, or the declaration is a dependent;
 //! - **changed in a body**: the two are one declaration once every
-//!   position and every body (a fn's, a method's, a hook's, a mode's, an
+//!   position and every body (a fn's, a method's, a hook's, an
 //!   `on_failure`'s) is set aside. It is checked again, and so is every
 //!   declaration the families name as its dependent
 //!   (`Snapshot::declaration_dependents`), in the previous snapshot (an
@@ -246,7 +246,6 @@ fn set_bodies_aside(d: &mut TopDecl) {
                 match m {
                     LocusMember::Fn(f) => empty(&mut f.body),
                     LocusMember::Lifecycle(lc) => empty(&mut lc.body),
-                    LocusMember::Mode(md) => empty(&mut md.body),
                     LocusMember::Failure(fd) => empty(&mut fd.body),
                     _ => {}
                 }

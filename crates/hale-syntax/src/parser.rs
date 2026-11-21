@@ -486,9 +486,9 @@ impl Parser {
         ));
     }
 
-    /// A locus METHOD named like a lifecycle hook, the failure handler
-    /// or a mode: that name IS the hook (`run() { … }` declares `run`,
-    /// `self.bulk()` calls `mode bulk`), so a `fn` of the name would
+    /// A locus METHOD named like a lifecycle hook or the failure
+    /// handler: that name IS the hook (`run() { … }` declares `run`), so
+    /// a `fn` of the name would
     /// collide with it. The words are contextual keywords — a field,
     /// parameter, local or free fn may take them — and this is the one
     /// declaration position that stays refused.
@@ -503,11 +503,6 @@ impl Parser {
             "the failure handler — declare it as `on_failure(c: Child) \
              { … }` (no `fn`)"
                 .to_string()
-        } else if matches!(word, "bulk" | "harmonic" | "resolution") {
-            format!(
-                "the `mode {word}` member's call name (`self.{word}()` \
-                 runs the mode) — declare it as `mode {word}() {{ … }}`"
-            )
         } else {
             return;
         };
@@ -4624,11 +4619,12 @@ impl Parser {
             TokenKind::Ident(kw) if is_lifecycle_word(kw) => {
                 self.parse_lifecycle_decl().map(LocusMember::Lifecycle)
             }
-            // `mode` is contextual; recognized as a member-
-            // introducer here. Frees the identifier for use as a
-            // param/field name (raylib's `cam.mode` etc.).
-            TokenKind::Ident(s) if s == "mode" => {
-                self.parse_mode_decl().map(LocusMember::Mode)
+            // F.61: locus modes were removed. `mode bulk(…) { … }` is
+            // refused at the word and parsed on as the `fn` it now is.
+            TokenKind::Ident(_) if self.at_removed_mode_decl() => {
+                self.refuse_removed_mode_decl();
+                let fn_decl = self.parse_fn_decl(false)?;
+                Ok(LocusMember::Fn(fn_decl))
             }
             TokenKind::Ident(kw) if kw == "on_failure" => self.parse_failure_decl().map(LocusMember::Failure),
             TokenKind::Ident(kw) if kw == "closure" => self.parse_closure_decl().map(LocusMember::Closure),
@@ -4685,11 +4681,16 @@ impl Parser {
                         decos.apply_to_fn(&mut fn_decl);
                         Ok(LocusMember::Fn(fn_decl))
                     }
-                    TokenKind::Ident(kw) if is_lifecycle_word(kw) || kw == "mode" => {
-                        let is_mode = kw == "mode";
-                        // A lifecycle hook — and a `mode`, whose body is
-                        // one the unbounded-allocation warning asks to
-                        // annotate (friction sweep 2026-10-12) — takes `@unbounded` or
+                    // F.61: a decorated `mode bulk(…)`, refused as the bare
+                    // one is and parsed on as a `fn` carrying the decorators.
+                    TokenKind::Ident(_) if self.at_removed_mode_decl() => {
+                        self.refuse_removed_mode_decl();
+                        let mut fn_decl = self.parse_fn_decl(false)?;
+                        decos.apply_to_fn(&mut fn_decl);
+                        Ok(LocusMember::Fn(fn_decl))
+                    }
+                    TokenKind::Ident(kw) if is_lifecycle_word(kw) => {
+                        // A lifecycle hook takes `@unbounded` or
                         // `@bounded_by(<name>)` (GH #1490) and nothing
                         // else: a hook is one-shot (so a per-call ceiling
                         // has no calls to divide by) and it is not a fn a
@@ -4698,8 +4699,7 @@ impl Parser {
                         // than a decorator list, which is also why a
                         // repeat or the pair is caught here instead of at
                         // check time.
-                        let what = if is_mode { "a mode" } else { "a lifecycle hook" };
-                        let (who, it) = if is_mode { ("a mode", "the mode") } else { ("a hook", "the hook") };
+                        let (what, who, it) = ("a lifecycle hook", "a hook", "the hook");
                         let silencer = |n: &str| n == "unbounded" || n == "bounded_by";
                         if let Some(d) = decos.written.iter().find(|d| !silencer(&d.name)) {
                             return Err(Diag::parse(
@@ -4725,18 +4725,9 @@ impl Parser {
                                         d.name
                                     )
                                 } else {
-                                    bounded_by_with_unbounded(if is_mode { "this mode" } else { "this hook" })
+                                    bounded_by_with_unbounded("this hook")
                                 },
                             ));
-                        }
-                        if is_mode {
-                            let mut md = self.parse_mode_decl()?;
-                            md.unbounded = decos.unbounded;
-                            md.bounded_by = decos.bounded_by;
-                            if let Some(s) = decos.span {
-                                md.span = s.merge(md.span);
-                            }
-                            return Ok(LocusMember::Mode(md));
                         }
                         let mut lc = self.parse_lifecycle_decl()?;
                         lc.unbounded = decos.unbounded;
@@ -4750,7 +4741,7 @@ impl Parser {
                         self.peek_token().span,
                         format!(
                             "expected `fn` after {} (or a lifecycle hook \
-                             — `run`, `birth`, … — or a `mode` after \
+                             — `run`, `birth`, … — after \
                              `@unbounded` or `@bounded_by(<name>)`)",
                             decos.written_list()
                         ),
@@ -6235,10 +6226,6 @@ impl Parser {
                                 span: direction_tok.span.merge(semi.span),
             });
         }
-        // Mode keywords are admitted as contract names per the
-        // exposed-mode pull rule (`expose bulk: Float;` — a parent
-        // may call the child's mode iff it's contract-exposed).
-        // Same F.10 keyword-as-name fallback as `self.bulk()`.
         let name =
             self.expect_ident("contract field name")?;
         self.expect(TokenKind::Colon, ":")?;
@@ -6571,39 +6558,38 @@ impl Parser {
         })
     }
 
-    fn parse_mode_decl(&mut self) -> Result<ModeDecl, Diag> {
-        // Caller guarantees current token is `Ident("mode")`.
-        let kw = self.peek_token().clone();
-        self.bump();
-        let kind_tok = self.bump();
-        let kind = match kind_tok.kind {
-            TokenKind::Ident(kw) if kw == "bulk" => ModeKind::Bulk,
-            TokenKind::Ident(kw) if kw == "harmonic" => ModeKind::Harmonic,
-            TokenKind::Ident(kw) if kw == "resolution" => ModeKind::Resolution,
-            other => {
-                return Err(Diag::parse(
-                    kind_tok.span,
-                    format!("expected mode name (bulk/harmonic/resolution), got {:?}", other),
-                ));
-            }
+    /// F.61: the removed `mode NAME` member, told apart by the name and
+    /// what may follow it (`(`, `->` or the body's `{`; a locus member
+    /// never otherwise begins with an identifier `mode`).
+    fn at_removed_mode_decl(&self) -> bool {
+        matches!(self.peek(), TokenKind::Ident(s) if s == "mode")
+            && matches!(self.peek_at(1), TokenKind::Ident(_))
+            && matches!(self.peek_at(2), TokenKind::LParen | TokenKind::Arrow | TokenKind::LBrace)
+    }
+
+    /// F.61: report the removed `mode NAME(…)` at the word `mode`, naming
+    /// the `fn` to write, then turn the word into `fn` in place (and give a
+    /// mode written without its parameter list an empty one) so the member
+    /// parses on as that `fn` and nothing after it reports again.
+    fn refuse_removed_mode_decl(&mut self) {
+        let span = self.peek_token().span;
+        let name = match self.peek_at(1) {
+            TokenKind::Ident(s) => s.clone(),
+            _ => unreachable!("at_removed_mode_decl"),
         };
-        let params = self.parse_paren_params()?;
-        let ret = if self.eat(&TokenKind::Arrow) {
-            Some(self.parse_type_expr()?)
-        } else {
-            None
-        };
-        let body = self.parse_block()?;
-        Ok(ModeDecl {
-            kind,
-            params,
-            ret,
-            unbounded: false,
-            bounded_by: None,
-            span: kw.span.merge(body.span),
-            body,
-            id: NodeId::NONE,
-        })
+        self.diags.push(Diag::parse(
+            span,
+            format!(
+                "locus modes were removed in 0.38: write `fn {name}(...)` \
+                 (a mode compiled as an ordinary method; spec/decisions.md F.61)"
+            ),
+        ));
+        self.tokens[self.pos].kind = TokenKind::Fn;
+        if !matches!(self.peek_at(2), TokenKind::LParen) {
+            let at = self.tokens[self.pos + 1].span;
+            self.tokens.insert(self.pos + 2, Token::new(TokenKind::RParen, at));
+            self.tokens.insert(self.pos + 2, Token::new(TokenKind::LParen, at));
+        }
     }
 
     fn parse_failure_decl(&mut self) -> Result<FailureDecl, Diag> {
@@ -9362,8 +9348,7 @@ impl Parser {
             // capitalize-types + bus-send-operator refactor,
             // primitive types are predefined identifiers and
             // `publish`/`subscribe` are no longer used as
-            // expression-position names. Mode keywords appear
-            // only post-dot, never as expression heads.)
+            // expression-position names.)
 
             // Identifier — might be ident, path, struct expression, or call.
             TokenKind::Ident(name) => {
@@ -10181,7 +10166,7 @@ fn is_lifecycle_word(s: &str) -> bool {
 /// `type` body's field, a struct literal's field). The post-dot
 /// position is unambiguous, so it is safe to admit these declaration
 /// words as field names: `err.closure` and `err.locus` on built-in
-/// struct values, `x.type`, `d.in(s)`. Every lifecycle, mode, closure,
+/// struct values, `x.type`, `d.in(s)`. Every lifecycle, closure,
 /// recovery and locus-member word is a contextual keyword now and
 /// arrives as an `Ident` anyway.
 fn try_member_keyword_as_name(k: &TokenKind) -> Option<&'static str> {
@@ -10397,7 +10382,7 @@ fn main() {
     }
 
     /// Friction sweep 2026-10-12: every contextual keyword (the
-    /// lifecycle, mode, closure, recovery, locus-member, contract, bus
+    /// lifecycle, closure, recovery, locus-member, contract, bus
     /// and statement words) is a name wherever a name is
     /// written: a type field, a params field, a parameter, a local, an
     /// enum variant, a struct-literal field, a member read and — but for
@@ -10407,8 +10392,7 @@ fn main() {
         const WORDS: &[&str] = &[
             "params", "contract", "bus", "capacity", "as_parent_for",
             "indexed_by", "birth", "accept", "release", "run", "drain",
-            "dissolve", "on_failure", "bulk", "harmonic", "resolution",
-            "projection", "rich", "chunked", "recognition", "tier",
+            "dissolve", "on_failure", "projection", "rich", "chunked", "recognition", "tier",
             "closure", "epoch", "persists_through", "resets_on",
             "resets_per_epoch", "restart", "restart_in_place", "quarantine",
             "reorganize", "bubble", "expose", "consume", "inferred",
@@ -10458,7 +10442,6 @@ fn main() {
             ("run", "lifecycle hook"),
             ("accept", "lifecycle hook"),
             ("on_failure", "failure handler"),
-            ("bulk", "mode bulk"),
         ] {
             let errs = parse_str(&format!("locus L {{ fn {w}() {{ }} }}"))
                 .unwrap_err();

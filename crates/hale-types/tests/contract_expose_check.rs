@@ -32,7 +32,7 @@ fn expose_of_nonexistent_member_errors() {
     );
     assert!(
         e.iter().any(|m| m.contains("exposes `no_such_field`")
-            && m.contains("no field, mode, or method")),
+            && m.contains("no field or method")),
         "got: {:?}",
         e
     );
@@ -71,24 +71,23 @@ fn valid_field_expose_passes() {
     assert!(e.is_empty(), "got: {:?}", e);
 }
 
+/// F.61: `bulk`, `harmonic` and `resolution` are ordinary names now. An
+/// `expose bulk: T;` binds to a `fn bulk` like any other method, and with
+/// none it is refused as any unbound name is.
 #[test]
-fn mode_expose_checks_return_type() {
-    // Valid: bulk declared, returns Float, exposed as Float.
+fn a_former_mode_name_exposes_as_a_method() {
     let ok = contract_errs(
         r#"
         locus Sensor {
             params { v: Float = 0.0; }
             contract { expose bulk: Float; }
-            mode bulk() -> Float { return self.v; }
-            mode harmonic() -> Float { return self.v; }
-            mode resolution() -> Float { return self.v; }
+            fn bulk() -> Float { return self.v; }
         }
         fn main() { Sensor { }; }
     "#,
     );
     assert!(ok.is_empty(), "got: {:?}", ok);
 
-    // Exposing an undeclared mode errors.
     let e = contract_errs(
         r#"
         locus Plain {
@@ -99,8 +98,7 @@ fn mode_expose_checks_return_type() {
     "#,
     );
     assert!(
-        e.iter().any(|m| m.contains("exposes mode `bulk`")
-            && m.contains("does not declare it")),
+        e.iter().any(|m| m.contains("exposes `bulk` but has no field or method")),
         "got: {:?}",
         e
     );

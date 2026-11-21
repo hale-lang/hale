@@ -971,15 +971,15 @@ fn main() {{ App {{ }}; }}
 }
 
 /// P1 (round 6): the function universe comes from DECLARATIONS. An
-/// empty free fn exists (and stays groupable); a mode is a Mode,
-/// not a Hook.
+/// empty free fn exists (and stays groupable); a locus `fn` is a
+/// Method, not a Hook.
 #[test]
-fn declaration_universe_includes_empty_fns_and_modes() {
+fn declaration_universe_includes_empty_fns_and_methods() {
     let src = r#"
 fn unused_helper() { }
 locus Cell {
     params { v: Int = 0; }
-    mode bulk() -> Int { return self.v; }
+    fn bulk() -> Int { return self.v; }
     fn poke(v: Int) { self.v = v; }
 }
 group helpers = { unused_helper };
@@ -1007,11 +1007,11 @@ fn main() { App { }; }
         .functions
         .iter()
         .find(|f| f.name == "Cell::bulk")
-        .expect("mode present");
+        .expect("method present");
     assert_eq!(
         bulk.kind,
-        hale_model::FunctionKind::Mode,
-        "a mode is a Mode, not a Hook"
+        hale_model::FunctionKind::Method,
+        "a locus fn is a Method, not a Hook"
     );
 }
 

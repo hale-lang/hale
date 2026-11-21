@@ -20,7 +20,7 @@
 //! Not yet:
 //! - Bus router (no `<-`)
 //! - Lifecycle beyond birth()
-//! - Closures, modes, accept, contract
+//! - Closures, accept, contract
 //! - Recovery primitives, dissolve cascade
 //! - Decimal / Int arithmetic beyond literals
 //! - Any non-string types past the println pipe

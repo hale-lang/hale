@@ -111,6 +111,8 @@ full suite as well, so a DNA or cli failure a compiler change causes
 stops it in the queue. `scripts/ci-scope-test.sh` pins the scope on
 synthetic diffs.
 
+**Releases are milestones; nightlies run daily** (`nightly.yml`, through the `build-binaries.yml`/`build-image.yml` a `v*` tag uses, publishing a `nightly-YYYY-MM-DD` pre-release and `:nightly`).
+
 **CI tests from archives, built once.** `quick-build`, `build-cli` and
 `build-codegen` each compile a family's test binaries and hand them on
 as a `cargo nextest archive`; the `quick`, `cli`, `dna` and `codegen`

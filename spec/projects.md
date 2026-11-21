@@ -184,7 +184,7 @@ import "<path>" as <alias> { <Name>, <Name> as <Local>, ... };
 The alias-required rule is the same forcing-function discipline
 v1.x-3 enforces for `: projection recognition` (no default
 sub-mode) and v1.x-FORM-2 enforces for the two-channel rule
-(substrate-facing surfaces — lifecycle, mode, closure assertions,
+(substrate-facing surfaces — lifecycle, closure assertions,
 bus handlers — can't declare `fallible(E)`; user-declared `fn`
 members and free fns can): the user names the commitment at the
 surface so a downstream reader doesn't have to reconstruct the

@@ -401,7 +401,6 @@ impl<'p> UseScopes<'p, '_> {
         match m {
             LocusMember::Fn(fd) => self.fn_decl(fd),
             LocusMember::Lifecycle(ld) => self.body(&ld.params, &ld.body),
-            LocusMember::Mode(md) => self.body(&md.params, &md.body),
             LocusMember::Failure(fd) => self.body(&fd.params, &fd.body),
             LocusMember::Params(pb) => self.params_block(pb),
             LocusMember::Const(c) => self.detached(&c.value),

@@ -117,9 +117,6 @@ pub(crate) fn resolve_qualified_bus_subjects(
                     LocusMember::Lifecycle(lc) => {
                         walk_block(&mut lc.body, import_renames);
                     }
-                    LocusMember::Mode(md) => {
-                        walk_block(&mut md.body, import_renames);
-                    }
                     LocusMember::Fn(fd) => {
                         walk_block(&mut fd.body, import_renames);
                     }

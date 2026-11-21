@@ -92,7 +92,7 @@ main locus App {
         println("BORN n=" + to_string(b.n) + " tid=" + to_string(b.tid));
         self.born = self.born + 1;
     }
-    mode harmonic() -> Int {
+    fn harmonic() -> Int {
         let mut n: Int = 0;
         for child in self.children { n = n + 1; }
         return n;

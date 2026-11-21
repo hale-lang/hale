@@ -4,7 +4,7 @@
 // parent locus that accepts LeadingEdge children — one per
 // price source / feed / sensor. Each child holds its own
 // sliding-window regression of incoming samples; the parent
-// combines those regressions through three modes:
+// combines those regressions through three methods:
 //
 //   - bulk:       arithmetic mean of every child's
 //                 extrapolation at t_target (the consensus
@@ -24,15 +24,15 @@
 // Lotus-first: Triangulator IS the parent locus; LeadingEdges
 // are its children attached via accept(). Pushing happens
 // directly to the bound handle of each child; the parent
-// only reads via modes. Vertical-only flow: parent reads
+// only reads via its methods. Vertical-only flow: parent reads
 // children, children don't see siblings, children don't see
 // parent state.
 //
 // Surface (Triangulator):
 //   - accept(le: LeadingEdge)         — registers a child
-//   - mode bulk(t_target: Float) -> Float
-//   - mode harmonic(t_target: Float) -> Float
-//   - mode resolution(t_target: Float) -> Float
+//   - fn bulk(t_target: Float) -> Float
+//   - fn harmonic(t_target: Float) -> Float
+//   - fn resolution(t_target: Float) -> Float
 
 locus Segment {
     params {
@@ -143,7 +143,7 @@ locus Triangulator {
     }
 
     // Mean extrapolation across all children.
-    mode bulk(t_target: Float) -> Float {
+    fn bulk(t_target: Float) -> Float {
         let mut sum = 0.0;
         let mut count = 0.0;
         for child in self.children {
@@ -157,7 +157,7 @@ locus Triangulator {
     }
 
     // Spread across children at t_target.
-    mode harmonic(t_target: Float) -> Float {
+    fn harmonic(t_target: Float) -> Float {
         let mut lo = 1.0e18;
         let mut hi = -1.0e18;
         let mut count = 0;
@@ -180,7 +180,7 @@ locus Triangulator {
     // The child whose extrapolation is closest to the mean.
     // Two-pass: pass 1 computes the mean, pass 2 finds the
     // child with min |est - mean|.
-    mode resolution(t_target: Float) -> Float {
+    fn resolution(t_target: Float) -> Float {
         let mut sum = 0.0;
         let mut count = 0.0;
         for child in self.children {
@@ -206,7 +206,7 @@ locus Triangulator {
 
     run() {
         // Birth three feed-shaped children, push known data
-        // into each, then exercise the three modes.
+        // into each, then exercise the three methods.
 
         // Feed 1: y = 2t (slope 2, intercept 0).
         let f1 = LeadingEdge { };

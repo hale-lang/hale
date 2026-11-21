@@ -342,10 +342,35 @@ pub(super) fn release_target(os: &str, arch: &str) -> Option<&'static str> {
     }
 }
 
-/// A pin as its release's tag: `0.30.1` and `v0.30.1` are both `v0.30.1`.
+/// A pin as its release's tag: `0.30.1` and `v0.30.1` are both `v0.30.1`,
+/// and a nightly's version is its nightly's tag (`nightly_tag`).
 pub(super) fn release_tag(pin: &str) -> String {
     let p = pin.trim();
+    if let Some(tag) = nightly_tag(p) {
+        return tag;
+    }
     if p.starts_with('v') { p.to_string() } else { format!("v{p}") }
+}
+
+/// A nightly build's version as the tag of the pre-release it ships in:
+/// `0.37.1-nightly.20261121+8fd8d68` is `nightly-2026-11-21`, and a day's
+/// second, `0.37.1-nightly.20261121.2+…`, `nightly-2026-11-21.2`
+/// (.github/workflows/nightly.yml). Anything else is `None`.
+fn nightly_tag(version: &str) -> Option<String> {
+    let pre = version.split('+').next()?.split_once("-nightly.")?.1;
+    let (day, n) = match pre.split_once('.') {
+        Some((day, n)) => (day, Some(n)),
+        None => (pre, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if day.len() != 8 || !digits(day) || n.is_some_and(|n| !digits(n)) {
+        return None;
+    }
+    let mut tag = format!("nightly-{}-{}-{}", &day[..4], &day[4..6], &day[6..]);
+    if let Some(n) = n {
+        tag = format!("{tag}.{n}");
+    }
+    Some(tag)
 }
 
 /// The toolchain `tag` installed from its release under `$HOME/<TOOLCHAINS>/<tag>`:
@@ -1612,6 +1637,11 @@ readers = ["api"]
         assert_eq!(pinned_toolchain("[dna]\nneeds = []\ntoolchain = \"v0.30.1\"\n").as_deref(), Some("v0.30.1"));
         assert_eq!(pinned_toolchain("[dna]\nneeds = []\n"), None);
         assert_eq!((release_tag("0.30.1"), release_tag("v0.30.1")), ("v0.30.1".to_string(), "v0.30.1".to_string()));
+        // a nightly's version is installed from its nightly pre-release
+        assert_eq!(release_tag("0.37.1-nightly.20261121+8fd8d68"), "nightly-2026-11-21");
+        assert_eq!(release_tag("v0.37.1-nightly.20261121.2+8fd8d68"), "nightly-2026-11-21.2");
+        assert_eq!(release_tag("0.38.0-rc.1"), "v0.38.0-rc.1");
+        assert_eq!(release_tag("0.37.1-nightly.2026112+8fd8d68"), "v0.37.1-nightly.2026112+8fd8d68");
         assert_eq!(release_target("Linux", "aarch64"), Some("aarch64-unknown-linux-gnu"));
         assert_eq!(release_target("Darwin", "arm64"), Some("aarch64-apple-darwin"));
         assert_eq!(release_target("Darwin", "x86_64"), None);

@@ -1083,7 +1083,6 @@ fn register_locus(
     // silently stopped existing. Remember where the first one was
     // so the second can name it.
     let mut accept_span: Option<Span> = None;
-    let mut mode_returns: BTreeMap<ModeKind, Ty> = BTreeMap::new();
     let mut annotations = Annotations::default();
     let mut contract_expose: Vec<ContractEntry> = Vec::new();
     let mut contract_consume: Vec<ContractEntry> = Vec::new();
@@ -1211,33 +1210,6 @@ fn register_locus(
                         }
                     }
                 }
-            }
-            LocusMember::Mode(md) => {
-                let ret = match &md.ret {
-                    Some(te) => resolve_type_expr(te, known),
-                    None => Ty::Unit,
-                };
-                mode_returns.insert(md.kind, ret.clone());
-                let mname = match md.kind {
-                    ModeKind::Bulk => "bulk",
-                    ModeKind::Harmonic => "harmonic",
-                    ModeKind::Resolution => "resolution",
-                };
-                methods.push(MethodInfo {
-                    name: mname.to_string(),
-                    params: md
-                        .params
-                        .iter()
-                        .map(|p| resolve_type_expr(&p.ty, known))
-                        .collect(),
-                    // Mode params are projection inputs the
-                    // SUBSTRATE may supply (50-mode-defaults
-                    // calls `self.x.bulk()` bare) — exempt from
-                    // the GH #229 lower bound.
-                    min_params: Some(0),
-                    ret,
-                    fallible: None,
-                });
             }
             // GH #1530: a callable seam still here is one its expansion
             // refused (`seam_expand::refusals` reports why). Its method is
@@ -1412,7 +1384,6 @@ fn register_locus(
         bus_subscribes,
         accept_param,
         accept_written,
-        mode_returns,
         annotations,
         contract_expose,
         contract_consume,
@@ -2409,9 +2380,6 @@ fn scan_items_for_stdlib_usage(items: &[TopDecl], out: &mut StdlibErrorUsage) {
                         }
                         LocusMember::Fn(f) => {
                             scan_block_for_stdlib_usage(&f.body, out)
-                        }
-                        LocusMember::Mode(md) => {
-                            scan_block_for_stdlib_usage(&md.body, out)
                         }
                         LocusMember::Failure(fd) => {
                             // lowering hands the handler a `ClosureViolation`

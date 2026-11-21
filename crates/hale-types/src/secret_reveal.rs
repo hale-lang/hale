@@ -882,7 +882,6 @@ fn walk_member(world: &World, key: &str, locus: Option<&str>, locus_name: &str, 
     match m {
         LocusMember::Fn(fd) => walk_fn(world, key, locus, fd, diags),
         LocusMember::Lifecycle(lc) => body(&format!("{:?}", lc.kind).to_lowercase(), &lc.params, &lc.body, diags),
-        LocusMember::Mode(md) => body("<mode>", &md.params, &md.body, diags),
         LocusMember::Failure(fd) => body("on_failure", &fd.params, &fd.body, diags),
         LocusMember::Params(pb) => {
             let mut b = Body::new(world, locus, Context::of(locus, "params"), &[], Deferral::None, diags);

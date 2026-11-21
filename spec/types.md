@@ -1062,8 +1062,6 @@ Locus types have:
   slot 0 / Arena).
 - Optional **lifecycle methods** (`birth`, `accept`, `run`,
   `drain`, `dissolve`, `on_failure`).
-- Optional **mode declarations** (`bulk`, `harmonic`,
-  `resolution`).
 - Optional **bus interface** (subscribe, publish).
 - Optional **closure tests**.
 - Optional **member fns**.
@@ -1816,7 +1814,7 @@ Semantics:
   writes the place. A local's storage is a block of the frame's arena,
   never a stack slot, whatever its capacity.
 - **A fn returns a `bounded` by value** (GH #1951): a free fn, a locus
-  method, a mode and an interface method may be declared to return
+  method and an interface method may be declared to return
   `bounded[T; N]` (written, or through an alias), and return its storage
   as a record is returned, a pointer into the caller's arena. Every
   return copies the list there, its live pointer-shaped elements with
@@ -3270,9 +3268,6 @@ that have no caller frame to address the error channel:
 - **Lifecycle methods** (`birth` / `run` / `accept` / `drain` /
   `dissolve` / `on_failure`). Physically rejected at the AST
   level — `LifecycleDecl` doesn't carry a `fallible` field.
-- **Mode methods** (`bulk` / `harmonic` / `resolution`).
-  Same shape as lifecycle: AST doesn't carry a `fallible`
-  field.
 - **Closure assertions.** Substrate evaluates the assertion at
   the epoch boundary; no caller frame exists in the expression.
 - **Bus-subscribed handlers.** A fn that's declared
@@ -3661,8 +3656,8 @@ Where each typing rule lives in the compiler pipeline:
   signature, generic instantiation, projection-class
   constraints.
 - **Locus-shape checking**: contract compatibility (F.8 / F.14),
-  k_max bounds (F.1 / runtime-checked when dynamic), mode
-  signature consistency, lifecycle method signatures.
+  k_max bounds (F.1 / runtime-checked when dynamic),
+  lifecycle method signatures.
 - **Region-lifetime checking** (compile-time): no escape from
   shorter-lived to longer-lived scope; no sibling references.
 - **Closure-cycle existence check**: closure assertions

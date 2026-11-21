@@ -620,7 +620,6 @@ impl<'a, F: FnMut(&'a Expr, bool)> Literals<F> {
             match m {
                 LocusMember::Fn(fd) => self.fn_decl(fd),
                 LocusMember::Lifecycle(ld) => self.block(&ld.body),
-                LocusMember::Mode(md) => self.block(&md.body),
                 LocusMember::Failure(fd) => self.block(&fd.body),
                 LocusMember::BirthCheck(bc) => {
                     self.expr(&bc.cond);

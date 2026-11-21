@@ -83,7 +83,7 @@ pub struct WeightRow {
 
 #[derive(Clone, Default, Debug)]
 pub struct Entities {
-    /// Free fns, methods, lifecycle hooks, modes, failure handlers.
+    /// Free fns, methods, lifecycle hooks, failure handlers.
     pub functions: Vec<Function>,
     /// Locus DECLARATIONS — what may exist, not what does.
     pub loci: Vec<LocusDecl>,

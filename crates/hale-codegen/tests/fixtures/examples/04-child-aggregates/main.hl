@@ -1,17 +1,15 @@
-// 04-modes — one kernel, three projections.
+// 04-child-aggregates — one locus, three reads over its children.
 //
-// An aggregator over leaf children that exposes the same
-// underlying state through three modes:
-//   - bulk:       total sum across all children (aggregate)
-//   - harmonic:   count of children (per-class projection;
-//                 for homogeneous accept, this is just the
-//                 cardinality)
-//   - resolution: largest single child value (tail / edge)
+// An aggregator over leaf children that reads the same
+// underlying state through three methods:
+//   - total:   sum across all children (aggregate)
+//   - count:   number of children (for homogeneous accept,
+//              the cardinality)
+//   - largest: largest single child value (tail / edge)
 //
 // All three read self.children, the locus's typed collection
-// of accepted coordinatees. They share the locus's arena (per
-// design commitment F.5), so no copy or extra allocation
-// happens between modes.
+// of accepted coordinatees, in the locus's own arena: no copy
+// or extra allocation happens between them.
 
 locus LeafL {
     params {
@@ -42,7 +40,7 @@ locus AggregatorL {
         // `expose value: Int` at compile time.
     }
 
-    mode bulk() -> Int {
+    fn total() -> Int {
         let mut total: Int = 0;
         for child in self.children {
             total = total + child.value;
@@ -50,7 +48,7 @@ locus AggregatorL {
         return total;
     }
 
-    mode harmonic() -> Int {
+    fn count() -> Int {
         let mut count: Int = 0;
         for child in self.children {
             count = count + 1;
@@ -58,7 +56,7 @@ locus AggregatorL {
         return count;
     }
 
-    mode resolution() -> Int {
+    fn largest() -> Int {
         let mut max: Int = 0;
         for child in self.children {
             if child.value > max {
@@ -74,9 +72,9 @@ locus AggregatorL {
         let _l2 = LeafL { value: 20 };
         let _l3 = LeafL { value: 30 };
 
-        println("bulk (total):     ", self.bulk());
-        println("harmonic (count): ", self.harmonic());
-        println("resolution (max): ", self.resolution());
+        println("total:   ", self.total());
+        println("count:   ", self.count());
+        println("largest: ", self.largest());
     }
 }
 

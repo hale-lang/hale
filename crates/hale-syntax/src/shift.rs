@@ -407,7 +407,6 @@ impl Shift for LocusMember {
             LocusMember::Contract(x) => x.shift(d),
             LocusMember::Bus(x) => x.shift(d),
             LocusMember::Lifecycle(x) => x.shift(d),
-            LocusMember::Mode(x) => x.shift(d),
             LocusMember::Failure(x) => x.shift(d),
             LocusMember::Closure(x) => x.shift(d),
             LocusMember::Fn(x) => x.shift(d),
@@ -556,12 +555,10 @@ impl Shift for KeyFilter {
     }
 }
 
-// Lifecycle, modes, failure, closures.
+// Lifecycle, failure, closures.
 
 shift_struct!(LifecycleDecl { kind, params, ret, unbounded, bounded_by, body, span, id, synthesized });
 shift_unit_enum!(LifecycleKind { Birth, Accept, Release, Run, Drain, Dissolve });
-shift_struct!(ModeDecl { kind, params, ret, unbounded, bounded_by, body, span, id });
-shift_unit_enum!(ModeKind { Bulk, Harmonic, Resolution });
 shift_struct!(FailureDecl { params, body, span, id });
 shift_struct!(ClosureDecl { name, assertion, clauses, span, id });
 shift_struct!(ClosureAssertion { left, right, tolerance, span });

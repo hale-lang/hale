@@ -172,9 +172,6 @@ Useful comparative-perf categories for internal use:
   rate vs. GC'd languages.
 - **Closure-test overhead.** Same program with closure tests
   on / off — measures the cost of the framework discipline.
-- **Mode-projection.** Same kernel computed three ways
-  (bulk / harmonic / resolution) vs. a hand-written
-  per-N-implementation in another language.
 
 Comparative results are not gatekept; any branch can produce
 them and stash them in `bench-results/` (gitignored). A regression
@@ -372,7 +369,7 @@ source line and a caret, from `build`, `run`, `test`, `bench` and
 lowering hands a program carries a place (GH #1941): one raised with
 none of its own is placed at the nearest enclosing site lowering was
 crossing when it was raised — the innermost expression, else the
-statement, else the locus member (a method, hook, mode or handler), else
+statement, else the locus member (a method, hook or handler), else
 the declaration (a fn, a type, a locus) or `fn main` — so a refusal of a
 `let`'s annotation, a signature or a locus's layout names a line as an
 expression's always did (2026-11-14: `block used as expression has no

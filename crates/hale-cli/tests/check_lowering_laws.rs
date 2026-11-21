@@ -109,7 +109,7 @@ const XPOOL_ARG_SUPPLIED: &str = "locus Ship { params { hull: Int = 0; } }\n\
      locus Driver { params { got: Ship; } run() { Ship { hull: 7 }; take(self.got); } }\n\
      main locus World { params { driver: Driver = Driver { got: Ship { hull: 5 } }; } \
      placement { driver: cooperative(pool = workers); } accept(s: Ship) { } \
-     mode harmonic() -> Int { let mut n: Int = 0; for child in self.children { n = n + 1; } return n; } \
+     fn harmonic() -> Int { let mut n: Int = 0; for child in self.children { n = n + 1; } return n; } \
      run() { let mut waited: Int = 0; while self.harmonic() < 1 && waited < 120 { std::time::sleep(100ms); \
      waited = waited + 1; } } }\n\
      fn main() { World { }; }\n";

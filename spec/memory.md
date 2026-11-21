@@ -238,8 +238,7 @@ Per design-rationale §A:
 
 - **Ephemeral** (only `birth` + `params`, no ongoing-work surface):
   dissolves at the enclosing statement boundary.
-- **Long-lived** (has `run`, bus subscriptions, mode declarations
-  callable from outside, or any post-birth work surface):
+- **Long-lived** (has `run`, bus subscriptions, or any post-birth work surface):
   becomes anonymous child of enclosing scope; lives until scope
   dissolves.
 
@@ -350,18 +349,6 @@ This implies that during drain:
   no new messages accepted.
 - Any in-flight handler invocations complete.
 - After in-flight work completes, dissolve runs; region freed.
-
-## Mode-projections share the arena
-
-Per F.5: a locus's three modes (bulk / harmonic / resolution)
-operate on the same locus state via the same arena. Generated
-code reads/writes one region across three implementations. No
-duplicate allocation, no copy.
-
-The compiler verifies that the modes don't write-conflict
-(resolution-mode mutating state that bulk-mode also writes
-during overlapping evaluation is a compile-time error if the
-writes would race).
 
 ## Inter-locus access
 
@@ -1170,7 +1157,7 @@ answer.
 
 **Phase-4 per-method scratch reclaim.** Locus
 method bodies (lifecycle `birth` / `run` / `accept` / `drain` /
-`dissolve`, user-fn members, mode bodies) open a per-call
+`dissolve`, user-fn members) open a per-call
 scratch subregion of `self.__arena` on entry, route transient
 allocations through it via `current_arena_ptr()`, and destroy
 the subregion at every return point — except a body proven to
@@ -1238,7 +1225,7 @@ Two correctness invariants make this safe:
      into the wrong arena (whichever nested callee was
      called last).
   3. A record, array or tuple parameter of a method (a
-     `fallible(E)` one and a mode as much as any other) is the
+     `fallible(E)` one as much as any other) is the
      caller's storage, passed by pointer, so a heap value
      stored under it (`x.b = p`, `x.inner.b = p`, `a[i] = p`,
      a `bounded` field assigned whole) is deep-copied into
@@ -1300,7 +1287,7 @@ call but is deferred — the leak's the load-bearing bug; the
 fast-path optimization can follow.
 
 **Per-iteration reclaim.** A loop body in a frame with a
-method scratch (a locus method, a lifecycle hook, a mode, a bus
+method scratch (a locus method, a lifecycle hook, a bus
 handler), in a free fn or in `fn main` allocates into a region of its
 own for each iteration:
 the iteration's region is a subregion owned by the arena the loop

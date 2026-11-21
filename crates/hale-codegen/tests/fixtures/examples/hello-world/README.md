@@ -64,8 +64,6 @@ These appear in subsequent examples (planned, not yet written):
 - **`accept` / `run` / `drain` / `dissolve` lifecycles** —
   this program only uses `birth`. A future example shows a
   long-lived locus with a steady-state `run` loop.
-- **Mode declarations** (`mode bulk`, `mode harmonic`, `mode
-  resolution`) — no kernel projection is happening.
 - **Closure tests** (`closure name { ... ~~ ... within ... }`)
   — no audit cycle to assert.
 - **Bus interface** (`bus { subscribe ... ; publish ... ; }`)
@@ -115,8 +113,8 @@ These appear in subsequent examples (planned, not yet written):
 - **03-closure-test** — a parent locus with two children
   whose outputs must satisfy a cyclic-closure test. Adds
   `closure name { ... ~~ ... within ... ; }`.
-- **04-modes** — a locus that exposes the same kernel under
-  bulk / harmonic / resolution modes. Adds `mode` declarations.
+- **04-child-aggregates** — a locus that reads its children's
+  state through several methods. Adds `self.children` iteration.
 - **05-bus** — a locus whose input is a bus subscription
   (placeholder transport). Adds `bus { subscribe ... ; }`.
 

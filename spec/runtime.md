@@ -449,7 +449,7 @@ reusing the same cpuset affinity mechanism as `pinned(cores =
 non-overlapping domains, no domain/reserved overlap, and every
 `pinned(node/l3)` referencing a declared domain) is static. L3
 domain names go through the identifier rule, so a hard keyword
-(e.g. `bulk`) can't name a domain.
+(e.g. `match`) can't name a domain.
 
 **Replicas (Phase 1c).** `pinned(..., replicas = K)` is the
 parallelism sugar: it fans the field into **K single-threaded

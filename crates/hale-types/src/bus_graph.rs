@@ -456,7 +456,6 @@ pub(crate) fn publishes_before_their_subscriber(bundle: &Bundle<'_>, top: &TopSc
                         match m {
                             LocusMember::Lifecycle(lc) => bodies.push(&lc.body),
                             LocusMember::Fn(f) => bodies.push(&f.body),
-                            LocusMember::Mode(md) => bodies.push(&md.body),
                             LocusMember::Failure(fd) => bodies.push(&fd.body),
                             _ => {}
                         }
@@ -750,7 +749,6 @@ fn ingress_sites(items: &[TopDecl], out: &mut Vec<Ingress>) {
                     match m {
                         LocusMember::Lifecycle(lc) => block(&lc.body, out),
                         LocusMember::Failure(fd) => block(&fd.body, out),
-                        LocusMember::Mode(md) => block(&md.body, out),
                         LocusMember::Fn(f) => block(&f.body, out),
                         _ => {}
                     }
