@@ -95,6 +95,114 @@ fn std_str_parse_user_parse_error_collision_diagnoses_cleanly() {
     );
 }
 
+/// The scaling tests below share one way of timing (GH #2115).
+///
+/// Each guards a quadratic shape that came back as an O(n) cost per
+/// element: a `strlen`, a copy of the rest of the text. A count of
+/// allocations or copied bytes would see a copy and miss a `strlen`, and
+/// `std::diag::heap_alloc_count` answers -1 on macOS, so they measure
+/// time, held so that a loaded runner cannot fake a ratio:
+///
+///  * the time is the process's CPU time, libc's `clock()` (microseconds:
+///    POSIX fixes `CLOCKS_PER_SEC` at 1,000,000), not the wall clock. A
+///    runner with more work than cores takes the CPU away from a long
+///    sample far more often than from a short one, which faked the 10x
+///    of #2115 on a 0.6 ms base; it does not add to the CPU time;
+///  * the cases run in rounds, every case once per round, so what load
+///    still costs (caches, memory bandwidth, the clock rate) lands on the
+///    small and the large size of a pair alike;
+///  * a sample is `reps` calls back to back, milliseconds of work, so the
+///    clock's microsecond is noise far below the bound;
+///  * a pair's growth is the median, over the rounds, of the large
+///    sample's time per call over the small one's, so no one round
+///    decides it;
+///  * the bound stays where it separates the shapes: 4x the input is 4x
+///    the time when linear and 16x when quadratic, held under 10x.
+///
+/// A sample that passes a second stops its repeats, and a round that
+/// passes three the rounds, so a regression costs seconds, not minutes.
+/// Each sample prints `<label> got=<answer> ns=<total> reps=<calls>`;
+/// `work(kind, s, n)` is the test's own dispatch.
+const SAMPLE_HL: &str = r#"
+    @ffi("c") fn clock() -> Int;
+    fn sample(kind: Int, s: String, n: Int, reps: Int, label: String) -> Int {
+        let mut got = 0;
+        let mut done = 0;
+        let mut ns = 0;
+        let t0 = clock();
+        while done < reps && ns < 1000000000 {
+            got = work(kind, s, n);
+            done = done + 1;
+            ns = (clock() - t0) * 1000;
+        }
+        println(label, " got=", got, " ns=", ns, " reps=", done);
+        return ns;
+    }
+"#;
+
+/// The samples a [`SAMPLE_HL`] program printed.
+struct Samples {
+    stdout: String,
+}
+
+impl Samples {
+    fn run(name: &str, program: &str) -> Samples {
+        let (stdout, status) = build_and_run(name, &format!("{SAMPLE_HL}\n{program}"));
+        assert!(status.success(), "build/run failed: {:?}", stdout);
+        Samples { stdout }
+    }
+
+    /// `(got, ns, reps)` of each of `label`'s samples, in round order.
+    fn of(&self, label: &str) -> Vec<(i64, i64, i64)> {
+        let field = |line: &str, key: &str| -> i64 {
+            line.split_whitespace()
+                .find_map(|w| w.strip_prefix(key))
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("no {key} in {line:?}"))
+        };
+        let rows: Vec<_> = self
+            .stdout
+            .lines()
+            .filter(|l| l.split_whitespace().next() == Some(label))
+            .map(|l| (field(l, "got="), field(l, "ns="), field(l, "reps=")))
+            .collect();
+        assert!(!rows.is_empty(), "no {label} sample in:\n{}", self.stdout);
+        rows
+    }
+
+    /// What every one of `label`'s calls answered.
+    fn got(&self, label: &str) -> i64 {
+        let rows = self.of(label);
+        let got = rows[0].0;
+        assert!(rows.iter().all(|r| r.0 == got), "{label} answered differently across rounds: {rows:?}");
+        got
+    }
+
+    /// `label`'s time per call in each round, ns.
+    fn per_call(&self, label: &str) -> Vec<f64> {
+        self.of(label).iter().map(|&(_, ns, reps)| ns.max(1) as f64 / reps.max(1) as f64).collect()
+    }
+
+    /// `label`'s median time per call, ns.
+    fn median(&self, label: &str) -> f64 {
+        median(self.per_call(label))
+    }
+
+    /// The median over the rounds of `large`'s time per call over
+    /// `small`'s.
+    fn growth(&self, small: &str, large: &str) -> f64 {
+        let (s, l) = (self.per_call(small), self.per_call(large));
+        median(s.iter().zip(&l).map(|(s, l)| l / s).collect())
+    }
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    assert!(!v.is_empty());
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let m = v.len() / 2;
+    if v.len() % 2 == 1 { v[m] } else { (v[m - 1] + v[m]) / 2.0 }
+}
+
 /// GH #720 — a ByteView scan is LINEAR in the input, not quadratic.
 ///
 /// What this replaces was quadratic for a structural reason: a
@@ -111,13 +219,14 @@ fn std_str_parse_user_parse_error_collision_diagnoses_cleanly() {
 /// 5-second cap. The ratio check is what catches a subtler one — a
 /// per-access cost that is sublinear but not constant.
 ///
-/// The program times each size nine times and reports the fastest,
-/// so a scheduler hiccup inflates a measurement rather than the
-/// ratio — CI runs this binary alongside every other one. It
-/// deliberately does NOT run the quadratic loop at 4 MiB.
+/// Timed as [`SAMPLE_HL`] says: 8, 16 and 32 MiB, four scans a sample,
+/// nine rounds. It deliberately does NOT run the quadratic loop at
+/// 4 MiB.
 #[test]
 fn byte_view_scan_scales_linearly() {
-    let src = r#"
+    let s = Samples::run(
+        "byte_view_scaling",
+        r#"
         fn scan(s: String) -> Int {
             let v = std::str::bytes_view(s);
             let mut count = 0;
@@ -129,101 +238,61 @@ fn byte_view_scan_scales_linearly() {
             }
             return count;
         }
-        fn best_of_nine(s: String, label: String) {
-            let mut best = -1;
-            let mut counted = 0;
-            let mut k = 0;
-            while k < 9 {
-                let t0 = std::time::monotonic_ns();
-                let c = scan(s);
-                let t1 = std::time::monotonic_ns();
-                let ns = t1 - t0;
-                counted = c;
-                if best < 0 || ns < best { best = ns; }
-                k = k + 1;
-            }
-            println(label, " count=", counted, " ns=", best);
-        }
+        fn work(kind: Int, s: String, n: Int) -> Int { return scan(s); }
         fn main() {
             let one = std::str::repeat("abcdefgh", 1048576);
             let two = std::str::repeat("abcdefgh", 2097152);
             let four = std::str::repeat("abcdefgh", 4194304);
-            best_of_nine(one, "sz8");
-            best_of_nine(two, "sz16");
-            best_of_nine(four, "sz32");
+            let mut k = 0;
+            while k < 9 {
+                let mut round = sample(0, one, 0, 4, "sz8");
+                round = round + sample(0, two, 0, 4, "sz16");
+                round = round + sample(0, four, 0, 4, "sz32");
+                k = if round > 3000000000 { 9 } else { k + 1 };
+            }
         }
-    "#;
-    let (stdout, status) = build_and_run("byte_view_scaling", src);
-    assert!(status.success(), "build/run failed: {:?}", stdout);
-
-    let read = |label: &str, key: &str| -> i64 {
-        let line = stdout
-            .lines()
-            .find(|l| l.starts_with(label))
-            .unwrap_or_else(|| panic!("no {} line in:\n{}", label, stdout));
-        let after = line
-            .split(key)
-            .nth(1)
-            .unwrap_or_else(|| panic!("no {} in {:?}", key, line));
-        after
-            .split_whitespace()
-            .next()
-            .unwrap_or_else(|| panic!("empty {} in {:?}", key, line))
-            .parse()
-            .unwrap_or_else(|e| panic!("bad {} in {:?}: {}", key, line, e))
-    };
+    "#,
+    );
 
     // Every byte was actually visited — 'e' is one byte in eight.
-    assert_eq!(read("sz8", "count="), 1048576, "8 MiB scan visited 8 MiB");
-    assert_eq!(read("sz16", "count="), 2097152, "16 MiB scan visited 16 MiB");
-    assert_eq!(read("sz32", "count="), 4194304, "32 MiB scan visited 32 MiB");
+    assert_eq!(s.got("sz8"), 1048576, "8 MiB scan visited 8 MiB");
+    assert_eq!(s.got("sz16"), 2097152, "16 MiB scan visited 16 MiB");
+    assert_eq!(s.got("sz32"), 4194304, "32 MiB scan visited 32 MiB");
 
-    let ns1 = read("sz8", "ns=");
-    let ns2 = read("sz16", "ns=");
-    let ns4 = read("sz32", "ns=");
+    let (ns1, ns2, ns4) = (s.median("sz8"), s.median("sz16"), s.median("sz32"));
+    let growth = s.growth("sz8", "sz32");
+    println!("byte view 8 MiB {ns1:.0} ns, 16 MiB {ns2:.0} ns, 32 MiB {ns4:.0} ns ({growth:.1}x)");
+
+    // Absolute cap: 32 MiB of safe byte access is milliseconds of work.
+    // Five seconds is hundreds of times the measured cost and still far
+    // below the minutes a quadratic scan needs.
     assert!(
-        ns1 > 0 && ns2 > 0 && ns4 > 0,
-        "monotonic clock gave a non-positive span: {} / {} / {}",
-        ns1,
-        ns2,
-        ns4
+        ns4 < 5e9,
+        "32 MiB scan took {ns4:.0} ns — a linear scan is milliseconds, so this \
+         is the quadratic shape #720 reported"
     );
 
-    // Absolute cap: four megabytes of safe byte access is
-    // microseconds of work. Five seconds is ~40,000x the measured
-    // cost and still far below the minutes a quadratic scan needs.
+    // Shape: 4x the input for under 10x the time. Measured on an M1:
+    // 1.6 / 3.3 / 6.6 ms a scan at 8 / 16 / 32 MiB (4.0x); the quadratic
+    // form is 16x or worse. The point of the bound is
+    // to separate O(n) from O(n^2), not to police a constant factor.
     assert!(
-        ns4 < 5_000_000_000,
-        "32 MiB scan took {} ns — a linear scan is a millisecond, so this \
-         is the quadratic shape #720 reported",
-        ns4
-    );
-
-    // Shape: 4x the input for under 10x the time. Measured 3.9x
-    // locally (29 / 57 / 114 us at 1/2/4 MiB); the quadratic form is
-    // 16x or worse. The sizes are 8/16/32 MiB so the fastest-of-nine
-    // is hundreds of microseconds and a shared CI runner's jitter is a
-    // small fraction of it — the first cut at 1/2/4 MiB and 6x read
-    // 7.1x on one runner and passed on the next. The point of the
-    // bound is to separate O(n) from O(n^2), not to police a constant
-    // factor.
-    assert!(
-        ns4 < ns1 * 10,
-        "32 MiB ({} ns) should cost under 10x 8 MiB ({} ns) — 16 MiB \
-         was {} ns; a per-access cost that grows with the input is back",
-        ns4,
-        ns1,
-        ns2
+        growth < 10.0,
+        "32 MiB ({ns4:.0} ns) should cost under 10x 8 MiB ({ns1:.0} ns), took {growth:.1}x — 16 MiB \
+         was {ns2:.0} ns; a per-access cost that grows with the input is back"
     );
 }
 
 /// `std::str::find` over a view pays the distance to each hit, so a
 /// line-at-a-time scan is linear in the text, where `index_of_from`,
 /// which measures the whole String on every call, made it quadratic
-/// (16 MB in 32,000 lines took 4.7 s; this takes under a millisecond).
+/// (16 MB in 32,000 lines took 4.7 s; this takes about 3 ms). Timed as
+/// [`SAMPLE_HL`] says: 4 and 16 MB, eight scans a sample.
 #[test]
 fn a_find_line_scan_scales_linearly() {
-    let src = r#"
+    let s = Samples::run(
+        "find_line_scan_scaling",
+        r#"
         fn lines(s: String) -> Int {
             let v = std::str::bytes_view(s);
             let mut k = 0;
@@ -231,39 +300,27 @@ fn a_find_line_scan_scales_linearly() {
             while nl >= 0 { k = k + 1; nl = std::str::find(v, "\n", nl + 1); }
             return k;
         }
-        fn best_of_five(s: String, label: String) {
-            let mut best = -1;
-            let mut counted = 0;
-            let mut k = 0;
-            while k < 5 {
-                let t0 = std::time::monotonic_ns();
-                let c = lines(s);
-                let ns = std::time::monotonic_ns() - t0;
-                counted = c;
-                if best < 0 || ns < best { best = ns; }
-                k = k + 1;
-            }
-            println(label, " count=", counted, " ns=", best);
-        }
+        fn work(kind: Int, s: String, n: Int) -> Int { return lines(s); }
         fn main() {
             let row = std::str::repeat("x", 499) + "\n";
-            best_of_five(std::str::repeat(row, 8192), "sz4");
-            best_of_five(std::str::repeat(row, 32768), "sz16");
+            let small = std::str::repeat(row, 8192);
+            let large = std::str::repeat(row, 32768);
+            let mut k = 0;
+            while k < 9 {
+                let round = sample(0, small, 0, 8, "sz4") + sample(0, large, 0, 8, "sz16");
+                k = if round > 3000000000 { 9 } else { k + 1 };
+            }
         }
-    "#;
-    let (stdout, status) = build_and_run("find_line_scan_scaling", src);
-    assert!(status.success(), "build/run failed: {:?}", stdout);
-    let read = |label: &str, key: &str| -> i64 {
-        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
-        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
-    };
-    assert_eq!(read("sz4", "count="), 8192, "every line of 4 MB was found");
-    assert_eq!(read("sz16", "count="), 32768, "every line of 16 MB was found");
-    let (ns4, ns16) = (read("sz4", "ns="), read("sz16", "ns="));
+    "#,
+    );
+    assert_eq!(s.got("sz4"), 8192, "every line of 4 MB was found");
+    assert_eq!(s.got("sz16"), 32768, "every line of 16 MB was found");
+    let (ns4, ns16) = (s.median("sz4"), s.median("sz16"));
+    let growth = s.growth("sz4", "sz16");
+    println!("find lines 4 MB {ns4:.0} ns, 16 MB {ns16:.0} ns ({growth:.1}x)");
     // Quadratic, 4x the text is 16x the time, and 16 MB took seconds.
-    assert!(ns16 < 1_000_000_000, "a 16 MB line scan took {ns16} ns: the quadratic shape");
-    assert!(ns16 < 10 * ns4.max(100_000), "4x the text took {ns16} ns against {ns4} ns: not linear");
+    assert!(ns16 < 1e9, "a 16 MB line scan took {ns16:.0} ns: the quadratic shape");
+    assert!(growth < 10.0, "4x the text took {growth:.1}x the time ({ns4:.0} -> {ns16:.0} ns): not linear");
 }
 
 /// GH #1995 S2: `for w in std::str::words(s)` is one scan, linear in the
@@ -272,21 +329,22 @@ fn a_find_line_scan_scales_linearly() {
 /// the rest of the text and copies it, so 4x the text is 16x the work
 /// (and the copies stay in the frame's arena until it returns).
 ///
-/// Ratios, not absolute times: each form is timed at two sizes 4x apart,
-/// best of several runs, and the source's growth is held under 10x (4x
-/// is linear, 16x quadratic) and under the hand loop's, measured beside
-/// it in the same process. The source runs at 1 and 4 MiB, the hand loop
-/// at 256 KiB and 1 MiB, so neither takes long and the hand loop's
-/// copies stay near 128 MiB; words are 4 KiB for the same reason.
-/// Measured on an M1: the source 0.69 / 2.8 ms (4.0x), the hand loop
-/// 1.0 / 14.7 ms (14.5x).
+/// Ratios, not absolute times, timed as [`SAMPLE_HL`] says: each form at
+/// two sizes 4x apart, its growth held under 10x (4x is linear, 16x
+/// quadratic) and under the hand loop's, measured in the same rounds. The
+/// source runs at 1 and 4 MiB, the hand loop at 256 KiB and 1 MiB, so
+/// the hand loop's copies stay near 128 MiB a call; words are 4 KiB for
+/// the same reason. Measured on an M1, per call: the source 0.65 /
+/// 2.6 ms (4.0x), the hand loop 0.54 / 7.5 ms (13.6x).
 ///
 /// A chain over the source (GH #1995 S2) is held to the same bound, both
 /// a counting one and `max`, whose element-valued terminal keeps the best
 /// part's offsets rather than the part.
 #[test]
 fn words_source_scales_linearly_where_the_hand_loop_does_not() {
-    let src = r#"
+    let s = Samples::run(
+        "words_source_scaling",
+        r#"
         fn hand(s: String) -> Int {
             let mut rest = s;
             let mut n = 0;
@@ -314,76 +372,62 @@ fn words_source_scales_linearly_where_the_hand_loop_does_not() {
             let w = std::str::words(s).max(len(it)) or "";
             return len(w);
         }
-        fn best(s: String, by_hand: Bool, rounds: Int, label: String) {
-            best_of(s, if by_hand { 1 } else { 0 }, rounds, label);
-        }
-        fn best_of(s: String, kind: Int, rounds: Int, label: String) {
-            let mut best = -1;
-            let mut counted = 0;
-            let mut k = 0;
-            while k < rounds {
-                let t0 = std::time::monotonic_ns();
-                let c = if kind == 1 { hand(s) } else if kind == 2 { chain(s) } else if kind == 3 { longest(s) } else { source(s) };
-                let ns = std::time::monotonic_ns() - t0;
-                counted = c;
-                if best < 0 || ns < best { best = ns; }
-                k = k + 1;
-            }
-            println(label, " count=", counted, " ns=", best);
+        fn work(kind: Int, s: String, n: Int) -> Int {
+            return if kind == 1 { hand(s) } else if kind == 2 { chain(s) } else if kind == 3 { longest(s) } else { source(s) };
         }
         fn main() {
             let word = std::str::repeat("x", 4095) + " ";
             let quarter = std::str::repeat(word, 64);
             let one = std::str::repeat(word, 256);
             let four = std::str::repeat(word, 1024);
-            best(one, false, 9, "source1m");
-            best(four, false, 9, "source4m");
-            best(quarter, true, 5, "hand256k");
-            best(one, true, 5, "hand1m");
-            best_of(one, 2, 9, "chain1m");
-            best_of(four, 2, 9, "chain4m");
-            best_of(one, 3, 9, "max1m");
-            best_of(four, 3, 9, "max4m");
+            let mut k = 0;
+            while k < 9 {
+                let mut round = sample(0, one, 0, 8, "source1m");
+                round = round + sample(0, four, 0, 8, "source4m");
+                round = round + sample(1, quarter, 0, 8, "hand256k");
+                round = round + sample(1, one, 0, 8, "hand1m");
+                round = round + sample(2, one, 0, 8, "chain1m");
+                round = round + sample(2, four, 0, 8, "chain4m");
+                round = round + sample(3, one, 0, 8, "max1m");
+                round = round + sample(3, four, 0, 8, "max4m");
+                k = if round > 3000000000 { 9 } else { k + 1 };
+            }
         }
-    "#;
-    let (stdout, status) = build_and_run("words_source_scaling", src);
-    assert!(status.success(), "build/run failed: {:?}", stdout);
-    let read = |label: &str, key: &str| -> i64 {
-        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
-        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
-    };
-    assert_eq!(read("source1m", "count="), 256, "every word of 1 MiB");
-    assert_eq!(read("source4m", "count="), 1024, "every word of 4 MiB");
-    assert_eq!(read("hand256k", "count="), 64, "the hand loop's words of 256 KiB");
-    assert_eq!(read("hand1m", "count="), 256, "the hand loop's words of 1 MiB");
-    let (s1, s4) = (read("source1m", "ns=").max(1), read("source4m", "ns=").max(1));
-    let (h1, h4) = (read("hand256k", "ns=").max(1), read("hand1m", "ns=").max(1));
-    let source_growth = s4 as f64 / s1.max(100_000) as f64;
-    let hand_growth = h4 as f64 / h1 as f64;
-    println!("source 1 MiB {s1} ns, 4 MiB {s4} ns ({source_growth:.1}x); hand 256 KiB {h1} ns, 1 MiB {h4} ns ({hand_growth:.1}x)");
+    "#,
+    );
+    assert_eq!(s.got("source1m"), 256, "every word of 1 MiB");
+    assert_eq!(s.got("source4m"), 1024, "every word of 4 MiB");
+    assert_eq!(s.got("hand256k"), 64, "the hand loop's words of 256 KiB");
+    assert_eq!(s.got("hand1m"), 256, "the hand loop's words of 1 MiB");
+    let (s1, s4) = (s.median("source1m"), s.median("source4m"));
+    let (h1, h4) = (s.median("hand256k"), s.median("hand1m"));
+    let source_growth = s.growth("source1m", "source4m");
+    let hand_growth = s.growth("hand256k", "hand1m");
+    println!(
+        "source 1 MiB {s1:.0} ns, 4 MiB {s4:.0} ns ({source_growth:.1}x); \
+         hand 256 KiB {h1:.0} ns, 1 MiB {h4:.0} ns ({hand_growth:.1}x)"
+    );
     assert!(
         source_growth < 10.0,
-        "4x the text took {source_growth:.1}x the time through `words` ({s1} -> {s4} ns): not linear"
+        "4x the text took {source_growth:.1}x the time through `words` ({s1:.0} -> {s4:.0} ns): not linear"
     );
     assert!(
         source_growth < hand_growth,
         "`words` grew {source_growth:.1}x over 4x the text, the quadratic hand loop {hand_growth:.1}x \
-         ({h1} -> {h4} ns): the source should grow slower"
+         ({h1:.0} -> {h4:.0} ns): the source should grow slower"
     );
-    assert!(s1 < h4, "`words` over 1 MiB took {s1} ns, the hand loop {h4} ns: the source should be faster");
+    assert!(s1 < h4, "`words` over 1 MiB took {s1:.0} ns, the hand loop {h4:.0} ns: the source should be faster");
     // a chain over the source is the same scan (GH #1995 S2): linear, and
     // `max` keeps offsets, not the parts
-    assert_eq!(read("chain1m", "count="), 256, "the chain counts every word of 1 MiB");
-    assert_eq!(read("chain4m", "count="), 1024, "the chain counts every word of 4 MiB");
-    assert_eq!(read("max1m", "count="), 4095, "max picks a 4095-byte word");
-    for (label, (one, four)) in [
-        ("chain", (read("chain1m", "ns="), read("chain4m", "ns="))),
-        ("max", (read("max1m", "ns="), read("max4m", "ns="))),
-    ] {
-        let growth = four.max(1) as f64 / one.max(100_000) as f64;
-        println!("{label} 1 MiB {one} ns, 4 MiB {four} ns ({growth:.1}x)");
-        assert!(growth < 10.0, "4x the text took {growth:.1}x the time through a `{label}` chain ({one} -> {four} ns): not linear");
+    assert_eq!(s.got("chain1m"), 256, "the chain counts every word of 1 MiB");
+    assert_eq!(s.got("chain4m"), 1024, "the chain counts every word of 4 MiB");
+    assert_eq!(s.got("max1m"), 4095, "max picks a 4095-byte word");
+    for label in ["chain", "max"] {
+        let (small, large) = (format!("{label}1m"), format!("{label}4m"));
+        let (one, four) = (s.median(&small), s.median(&large));
+        let growth = s.growth(&small, &large);
+        println!("{label} 1 MiB {one:.0} ns, 4 MiB {four:.0} ns ({growth:.1}x)");
+        assert!(growth < 10.0, "4x the text took {growth:.1}x the time through a `{label}` chain ({one:.0} -> {four:.0} ns): not linear");
         assert!(growth < hand_growth, "a `{label}` chain grew {growth:.1}x, the quadratic hand loop {hand_growth:.1}x: it should grow slower");
     }
 }
@@ -392,10 +436,13 @@ fn words_source_scales_linearly_where_the_hand_loop_does_not() {
 /// the best part where it lies. A long first word followed by many short
 /// ones is the shape that would copy the winner out once per later part
 /// (quadratic when the two are the same size); keyed and bare, each runs
-/// at two sizes 4x apart, best of 5, and its growth is held under 10x.
+/// at two sizes 4x apart, timed as [`SAMPLE_HL`] says, and its growth is
+/// held under 10x.
 #[test]
 fn min_max_over_a_text_source_never_recopy_the_best_part() {
-    let src = r#"
+    let s = Samples::run(
+        "text_min_max_scaling",
+        r#"
         fn keyed(s: String) -> Int {
             let w = std::str::words(s).max(len(it)) or "";
             return len(w);
@@ -404,45 +451,33 @@ fn min_max_over_a_text_source_never_recopy_the_best_part() {
             let w = std::str::words(s).max() or "";
             return len(w);
         }
-        fn best(s: String, kind: Int, label: String) {
-            let mut best = -1;
-            let mut got = 0;
-            let mut k = 0;
-            while k < 5 {
-                let t0 = std::time::monotonic_ns();
-                let c = if kind == 0 { keyed(s) } else { bare(s) };
-                let ns = std::time::monotonic_ns() - t0;
-                got = c;
-                if best < 0 || ns < best { best = ns; }
-                k = k + 1;
-            }
-            println(label, " len=", got, " ns=", best);
+        fn work(kind: Int, s: String, n: Int) -> Int {
+            return if kind == 0 { keyed(s) } else { bare(s) };
         }
         fn main() {
             let small = std::str::repeat("x", 131072) + " " + std::str::repeat("a ", 131072);
             let large = std::str::repeat("x", 524288) + " " + std::str::repeat("a ", 524288);
-            best(small, 0, "keyed1");
-            best(large, 0, "keyed4");
-            best(small, 1, "bare1");
-            best(large, 1, "bare4");
+            let mut k = 0;
+            while k < 9 {
+                let mut round = sample(0, small, 0, 1, "keyed1");
+                round = round + sample(0, large, 0, 1, "keyed4");
+                round = round + sample(1, small, 0, 1, "bare1");
+                round = round + sample(1, large, 0, 1, "bare4");
+                k = if round > 3000000000 { 9 } else { k + 1 };
+            }
         }
-    "#;
-    let (stdout, status) = build_and_run("text_min_max_scaling", src);
-    assert!(status.success(), "build/run failed: {:?}", stdout);
-    let read = |label: &str, key: &str| -> i64 {
-        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
-        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
-    };
-    assert_eq!(read("keyed1", "len="), 131072, "max(len(it)) picks the long word");
-    assert_eq!(read("keyed4", "len="), 524288, "max(len(it)) picks the long word");
-    assert_eq!(read("bare1", "len="), 131072, "max() picks the long word");
-    assert_eq!(read("bare4", "len="), 524288, "max() picks the long word");
+    "#,
+    );
+    assert_eq!(s.got("keyed1"), 131072, "max(len(it)) picks the long word");
+    assert_eq!(s.got("keyed4"), 524288, "max(len(it)) picks the long word");
+    assert_eq!(s.got("bare1"), 131072, "max() picks the long word");
+    assert_eq!(s.got("bare4"), 524288, "max() picks the long word");
     for label in ["keyed", "bare"] {
-        let (one, four) = (read(&format!("{label}1"), "ns="), read(&format!("{label}4"), "ns="));
-        let growth = four.max(1) as f64 / one.max(100_000) as f64;
-        println!("{label}: {one} ns, 4x the text {four} ns ({growth:.1}x)");
-        assert!(growth < 10.0, "`{label}` max over 4x the text took {growth:.1}x ({one} -> {four} ns): the best part is copied again per part");
+        let (small, large) = (format!("{label}1"), format!("{label}4"));
+        let (one, four) = (s.median(&small), s.median(&large));
+        let growth = s.growth(&small, &large);
+        println!("{label}: {one:.0} ns, 4x the text {four:.0} ns ({growth:.1}x)");
+        assert!(growth < 10.0, "`{label}` max over 4x the text took {growth:.1}x ({one:.0} -> {four:.0} ns): the best part is copied again per part");
     }
 }
 
@@ -454,19 +489,19 @@ fn min_max_over_a_text_source_never_recopy_the_best_part() {
 /// 1 MiB, spec/stdlib.md § Linear byte scanning), and so did `len(out)`
 /// over a text the appends had grown.
 ///
-/// Ratios, not absolute times, as `words_source_scales_linearly…` above:
-/// each loop runs at two sizes 4x apart, best of several runs, and its
-/// growth is held under 10x (4x is linear, 16x quadratic) and under the
-/// growth of a control measured beside it in the same process: the same
-/// byte loop over a String read from a record's field on every use, which
-/// keeps no length and still pays the walk. A run past half a second ends
-/// the repeats, so a regression costs seconds, not minutes. Measured on an
-/// M1: the byte loop 1.3 / 5.2 ms at 128 / 512 KiB (4.0x), the build loop
-/// 0.6 / 2.4 ms to 256 KiB / 1 MiB (4.0x), the control 9.5 / 150 ms at
-/// 16 / 64 KiB (15.8x).
+/// Ratios, not absolute times, timed as [`SAMPLE_HL`] says: each loop at
+/// two sizes 4x apart, its growth held under 10x (4x is linear, 16x
+/// quadratic) and under the growth of a control measured in the same
+/// rounds: the same byte loop over a String read from a record's field on
+/// every use, which keeps no length and still pays the walk. Measured on
+/// an M1, per call: the byte loop 1.5 / 6.1 ms at 128 / 512 KiB (4.1x),
+/// the build loop 0.29 / 1.1 ms to 256 KiB / 1 MiB (3.9x), the control
+/// 12 / 184 ms at 16 / 64 KiB (15.4x).
 #[test]
 fn len_and_slice_of_a_local_scale_linearly() {
-    let src = r#"
+    let s = Samples::run(
+        "len_slice_scaling",
+        r#"
         type Held { text: String; }
         fn scan(s: String) -> Int {
             let mut count = 0;
@@ -495,60 +530,47 @@ fn len_and_slice_of_a_local_scale_linearly() {
             }
             return len(out);
         }
-        fn best(kind: Int, s: String, n: Int, label: String) {
-            let mut best = -1;
-            let mut got = 0;
-            let mut k = 0;
-            while k < 7 {
-                let t0 = std::time::monotonic_ns();
-                let c = if kind == 0 { scan(s) } else if kind == 1 { scan_field(Held { text: s }) } else { grow(n) };
-                let ns = std::time::monotonic_ns() - t0;
-                got = c;
-                if best < 0 || ns < best { best = ns; }
-                if ns > 500000000 { k = 7; }
-                k = k + 1;
-            }
-            println(label, " got=", got, " ns=", best);
+        fn work(kind: Int, s: String, n: Int) -> Int {
+            return if kind == 0 { scan(s) } else if kind == 1 { scan_field(Held { text: s }) } else { grow(n) };
         }
         fn main() {
-            best(0, std::str::repeat("abcdefgh", 16384), 0, "scan128k");
-            best(0, std::str::repeat("abcdefgh", 65536), 0, "scan512k");
-            best(2, "", 262144, "grow256k");
-            best(2, "", 1048576, "grow1m");
-            best(1, std::str::repeat("abcdefgh", 2048), 0, "field16k");
-            best(1, std::str::repeat("abcdefgh", 8192), 0, "field64k");
+            let small = std::str::repeat("abcdefgh", 16384);
+            let large = std::str::repeat("abcdefgh", 65536);
+            let field_small = std::str::repeat("abcdefgh", 2048);
+            let field_large = std::str::repeat("abcdefgh", 8192);
+            let mut k = 0;
+            while k < 7 {
+                let mut round = sample(0, small, 0, 4, "scan128k");
+                round = round + sample(0, large, 0, 4, "scan512k");
+                round = round + sample(2, "", 262144, 16, "grow256k");
+                round = round + sample(2, "", 1048576, 16, "grow1m");
+                round = round + sample(1, field_small, 0, 1, "field16k");
+                round = round + sample(1, field_large, 0, 1, "field64k");
+                k = if round > 3000000000 { 7 } else { k + 1 };
+            }
         }
-    "#;
-    let (stdout, status) = build_and_run("len_slice_scaling", src);
-    assert!(status.success(), "build/run failed: {:?}", stdout);
-    let read = |label: &str, key: &str| -> i64 {
-        let line = stdout.lines().find(|l| l.starts_with(label)).unwrap_or_else(|| panic!("no {label} line in:\n{stdout}"));
-        line.split(key).nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("no {key} in {line:?}"))
-    };
-    assert_eq!(read("scan128k", "got="), 16384, "every byte of 128 KiB was read");
-    assert_eq!(read("scan512k", "got="), 65536, "every byte of 512 KiB was read");
-    assert_eq!(read("grow256k", "got="), 262144, "the build stopped at 256 KiB");
-    assert_eq!(read("grow1m", "got="), 1048576, "the build stopped at 1 MiB");
-    assert_eq!(read("field16k", "got="), 2048, "the control read every byte of 16 KiB");
-    assert_eq!(read("field64k", "got="), 8192, "the control read every byte of 64 KiB");
-    let growth = |small: &str, large: &str| {
-        let (a, b) = (read(small, "ns=").max(1), read(large, "ns=").max(1));
-        (a, b, b as f64 / a.max(100_000) as f64)
-    };
+    "#,
+    );
+    assert_eq!(s.got("scan128k"), 16384, "every byte of 128 KiB was read");
+    assert_eq!(s.got("scan512k"), 65536, "every byte of 512 KiB was read");
+    assert_eq!(s.got("grow256k"), 262144, "the build stopped at 256 KiB");
+    assert_eq!(s.got("grow1m"), 1048576, "the build stopped at 1 MiB");
+    assert_eq!(s.got("field16k"), 2048, "the control read every byte of 16 KiB");
+    assert_eq!(s.got("field64k"), 8192, "the control read every byte of 64 KiB");
+    let growth = |small: &str, large: &str| (s.median(small), s.median(large), s.growth(small, large));
     let (s1, s4, scan_growth) = growth("scan128k", "scan512k");
     let (g1, g4, grow_growth) = growth("grow256k", "grow1m");
     let (f1, f4, field_growth) = growth("field16k", "field64k");
     println!(
-        "scan {s1} -> {s4} ns ({scan_growth:.1}x); grow {g1} -> {g4} ns ({grow_growth:.1}x); \
-         control {f1} -> {f4} ns ({field_growth:.1}x)"
+        "scan {s1:.0} -> {s4:.0} ns ({scan_growth:.1}x); grow {g1:.0} -> {g4:.0} ns ({grow_growth:.1}x); \
+         control {f1:.0} -> {f4:.0} ns ({field_growth:.1}x)"
     );
-    assert!(scan_growth < 10.0, "4x the text took {scan_growth:.1}x the time in the byte loop ({s1} -> {s4} ns): not linear");
-    assert!(grow_growth < 10.0, "4x the text took {grow_growth:.1}x the time in the build loop ({g1} -> {g4} ns): not linear");
+    assert!(scan_growth < 10.0, "4x the text took {scan_growth:.1}x the time in the byte loop ({s1:.0} -> {s4:.0} ns): not linear");
+    assert!(grow_growth < 10.0, "4x the text took {grow_growth:.1}x the time in the build loop ({g1:.0} -> {g4:.0} ns): not linear");
     assert!(
         scan_growth < field_growth && grow_growth < field_growth,
         "the byte loop grew {scan_growth:.1}x and the build loop {grow_growth:.1}x, the control that measures on \
-         every use {field_growth:.1}x ({f1} -> {f4} ns): a local's length should be measured once"
+         every use {field_growth:.1}x ({f1:.0} -> {f4:.0} ns): a local's length should be measured once"
     );
 }
 
