@@ -36,6 +36,7 @@ Only portable ABI types may cross an `@ffi("c")` boundary:
 |---|---|---|
 | `Int` | `int64_t` | Signed 64-bit integer. |
 | `U64` | `uint64_t` | Unsigned 64-bit integer. |
+| `I32`, `U32`, `I16`, `U16`, `I8`, `U8` | `int32_t`, `uint32_t`, `int16_t`, `uint16_t`, `int8_t`, `uint8_t` | At their width; an 8- or 16-bit one is sign- or zero-extended to the register, as a C prototype's is. |
 | `Float` | `double` | IEEE-754 64-bit floating point. |
 | `Bool` | `int32_t` | `0` for `false`, `1` for `true`. |
 | `Duration` / `Time` | `int64_t` | Signed 64-bit nanoseconds. |

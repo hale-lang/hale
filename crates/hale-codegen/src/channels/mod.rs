@@ -1497,6 +1497,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     iface,
                 )?;
                 fat.into()
+            } else if ty != sig.params[i] && crate::stdlib::fixed::int_fits(&ty, &sig.params[i]) {
+                // GH #2132: a lossless widening (or a fixed-width integer's literal)
+                self.fit_int(v, &ty, &sig.params[i])?
             } else if sig.params[i] == CodegenTy::Float && ty == CodegenTy::Int {
                 let widened = self.coerce_to_float(
                     v,

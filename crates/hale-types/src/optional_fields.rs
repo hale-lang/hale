@@ -211,6 +211,8 @@ fn prim_zero(p: PrimType) -> Option<String> {
         match p {
             PrimType::Int => "0",
             PrimType::U64 => "std::u64::from_int(0)",
+            // GH #2132: a literal is typed from its place
+            PrimType::I32 | PrimType::U32 | PrimType::I16 | PrimType::U16 | PrimType::I8 | PrimType::U8 => "0",
             PrimType::Float => "0.0",
             PrimType::Bool => "false",
             PrimType::String => "\"\"",

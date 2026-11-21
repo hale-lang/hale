@@ -48,6 +48,9 @@ pub enum Scalar {
     Int64,
     /// GH #2121: a `U64`.
     Uint64,
+    /// GH #2132: a `U32`, `U16` or `U8` (a 16- or 8-bit one range-checked
+    /// on decode).
+    Uint32,
     Bool,
     String,
     Bytes,
@@ -60,6 +63,7 @@ impl Scalar {
             Scalar::Int32 => "int32",
             Scalar::Int64 => "int64",
             Scalar::Uint64 => "uint64",
+            Scalar::Uint32 => "uint32",
             Scalar::Bool => "bool",
             Scalar::String => "string",
             Scalar::Bytes => "bytes",
@@ -72,6 +76,7 @@ impl Scalar {
             Scalar::Int64 => 3,
             Scalar::Uint64 => 4,
             Scalar::Int32 => 5,
+            Scalar::Uint32 => 13,
             Scalar::Bool => 8,
             Scalar::String => 9,
             Scalar::Bytes => 12,
@@ -249,6 +254,11 @@ fn scalar_for(json: &str, hale_type: &Option<String>) -> Option<Scalar> {
         Some("U256" | "I256") => return Some(Scalar::String),
         // GH #2121: a `U64` is a JSON string and a protobuf `uint64`
         Some("U64") => return Some(Scalar::Uint64),
+        // GH #2132: a fixed-width integer narrower than 64 bits is a JSON
+        // number and a protobuf `int32` / `uint32`, its 16- and 8-bit ones
+        // range-checked on decode
+        Some("I32" | "I16" | "I8") => return Some(Scalar::Int32),
+        Some("U32" | "U16" | "U8") => return Some(Scalar::Uint32),
         Some("Int") => return Some(Scalar::Int64),
         _ => {}
     }

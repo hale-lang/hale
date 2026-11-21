@@ -1,0 +1,51 @@
+// GH #2132: the unit dialect's base integer is a parameter (GH #2131), so
+// a quantity, an identity and a range may count a fixed-width integer:
+// `quantity U32 in tick` is a quantity whose every value is a `U32`, its
+// arithmetic a `U32`'s (unsigned, an overflow a violation), its
+// conversions multiply and divide in it, and its storage the `U32`'s four
+// bytes. A range over a `U8` narrows from a `U8`, and an identity over a
+// `U16` is its `U16`.
+
+unit tick;
+unit frame = 16 tick;
+
+type Ticks = quantity U32 in tick;
+type Frames = Ticks in frame { round: floor; }
+type Level = U8 { range: 0..100; }
+type Port = distinct U16;
+
+type Sample { at: Ticks; level: Level; port: Port; }
+
+fn ticks(n: U32) -> Ticks {
+    return n * 1tick;
+}
+
+fn main() {
+    let a = ticks(100) + 28tick;
+    std::test::assert_eq_str(to_string(a), "128tick", "a sum, printed with its unit");
+    let f: Frames = a;
+    std::test::assert_eq_str(to_string(f), "8frame", "a narrowing by the target's round:");
+    std::test::assert(
+        a * 2 == 256tick && a / 1tick == 128,
+        "scaled by a literal, and its count a U32",
+    );
+    let big: U32 = 4000000000;
+    std::test::assert(ticks(big) > a, "a count past Int32's top compares unsigned");
+    let raw: U8 = 250;
+    std::test::assert((Level(raw) or clamp) == 99, "a range over a U8 clamps");
+    let l2: Level = 42;
+    let p = Port(8080);
+    std::test::assert(U16(p) == 8080, "an identity's U16");
+    let s = Sample { at: a, level: l2, port: p };
+    // a record's default rendering prints a quantity's count, as it does
+    // an `Int`'s
+    std::test::assert_eq_str(
+        "" + s,
+        "Sample { at: 128, level: 42, port: 8080 }",
+        "a record of each",
+    );
+    std::test::assert(
+        s.at == 128tick && s.level == 42 && s.port == Port(8080),
+        "and reads each back",
+    );
+}

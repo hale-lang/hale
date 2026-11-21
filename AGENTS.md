@@ -285,7 +285,12 @@ Filter these reflexes before they cost you time.
   integer literal is a `U64` where its place is one (`let n: U64 = 7;`,
   `x + 1`), and its overflow or division by zero stops the process
   (`U64::wrapping_*` wrap, `U64::checked_*` fail into an `or`). It never
-  mixes with `Int`: `U64::from_int(n)`, `U64::to_int(x) or ...`. A unit
+  mixes with `Int`: `U64::from_int(n)`, `U64::to_int(x) or ...`.
+  `I32`/`U32`/`I16`/`U16`/`I8`/`U8` are stored at their width (a
+  `bounded[U8; 1024]` is 1024 bytes) and checked the same way. They
+  widen implicitly where nothing is lost (`let n: Int = b;`, `U8` into
+  `U32`), never at an operator (`a + b` of a `U8` and a `U32` is
+  refused: `U32(a)`), and narrow with an `or`: `U8(n) or clamp`. A unit
   type may count one (`quantity U64 in wei`, `distinct U64`, `U64 {
   range: 1..65536; }`) and has its arithmetic (spec/units.md § The base).
   Immutable covers the value too: a field or element write through a

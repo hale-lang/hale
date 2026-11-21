@@ -70,6 +70,51 @@ fn ffi_int_arg_int_return_round_trips_through_c() {
     );
 }
 
+/// GH #2132: every fixed-width integer crosses as the C integer of its
+/// width, each end of its range, in both directions: the glue answers
+/// the argument it got and the argument one step toward zero, so a value
+/// the caller did not extend (or extended the wrong way) shows as a wrong
+/// number.
+#[test]
+fn ffi_fixed_width_integers_cross_as_their_c_types() {
+    let hale_src = r#"
+        @ffi("c") fn ffi_u8(x: U8) -> U8;
+        @ffi("c") fn ffi_i8(x: I8) -> I8;
+        @ffi("c") fn ffi_u16(x: U16) -> U16;
+        @ffi("c") fn ffi_i16(x: I16) -> I16;
+        @ffi("c") fn ffi_u32(x: U32) -> U32;
+        @ffi("c") fn ffi_i32(x: I32) -> I32;
+        @ffi("c") fn ffi_wide(a: U8, b: I8, c: U16, d: I16) -> Int;
+        fn main() {
+            println("u8=", ffi_u8(255), " ", ffi_u8(0));
+            println("i8=", ffi_i8(-128), " ", ffi_i8(127));
+            println("u16=", ffi_u16(65535), " i16=", ffi_i16(-32768));
+            println("u32=", ffi_u32(4294967295), " i32=", ffi_i32(-2147483648));
+            println("wide=", ffi_wide(255, -1, 65535, -1));
+        }
+    "#;
+    let csrc = r#"
+        #include <stdint.h>
+        uint8_t ffi_u8(uint8_t x) { return x == 0 ? 0 : x - 1; }
+        int8_t ffi_i8(int8_t x) { return x < 0 ? x + 1 : x - 1; }
+        uint16_t ffi_u16(uint16_t x) { return x - 1; }
+        int16_t ffi_i16(int16_t x) { return x + 1; }
+        uint32_t ffi_u32(uint32_t x) { return x - 1; }
+        int32_t ffi_i32(int32_t x) { return x + 1; }
+        int64_t ffi_wide(uint8_t a, int8_t b, uint16_t c, int16_t d) {
+            return (int64_t)a + (int64_t)b + (int64_t)c + (int64_t)d;
+        }
+    "#;
+    let bin = build_with_csrc("fixed_width", hale_src, csrc);
+    let out = Command::new(&bin).output().expect("run");
+    let _ = std::fs::remove_file(&bin);
+    assert!(out.status.success(), "non-zero: {:?}", out.status);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for want in ["u8=254 0", "i8=-127 126", "u16=65534 i16=-32767", "u32=4294967294 i32=-2147483647", "wide=65788"] {
+        assert!(stdout.contains(want), "expected `{want}` in stdout; got: {stdout:?}");
+    }
+}
+
 #[test]
 fn ffi_void_return_with_no_args_invokes_c_side_effect() {
     // Confirms the void-return path and the no-args path. The C

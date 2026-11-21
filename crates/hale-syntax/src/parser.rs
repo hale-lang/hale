@@ -10206,15 +10206,22 @@ fn starts_type_expr(k: &TokenKind) -> bool {
 /// Canonical primitive type names. Recognized in type position;
 /// unreserved elsewhere.
 pub const PRIMITIVE_TYPE_NAMES: &[&str] = &[
-    "Int", "U64", "Float", "Decimal", "U256", "I256", "String", "Bool", "Time",
-    "Duration", "Bytes", "BytesView", "StringView", "BytesMut",
+    "Int", "U64", "I32", "U32", "I16", "U16", "I8", "U8", "Float", "Decimal", "U256", "I256", "String",
+    "Bool", "Time", "Duration", "Bytes", "BytesView", "StringView", "BytesMut",
 ];
 
 /// GH #1934: the `std` namespace a `U256::f` / `I256::f` path names
-/// (and GH #2121's `U64::f`, `std::u64`).
+/// (and GH #2121's `U64::f`, `std::u64`; GH #2132's `I32::f` …
+/// `U8::f`, `std::i32` … `std::u8`).
 pub fn wide_namespace(type_name: &str) -> Option<&'static str> {
     match type_name {
         "U64" => Some("u64"),
+        "I32" => Some("i32"),
+        "U32" => Some("u32"),
+        "I16" => Some("i16"),
+        "U16" => Some("u16"),
+        "I8" => Some("i8"),
+        "U8" => Some("u8"),
         "U256" => Some("u256"),
         "I256" => Some("i256"),
         _ => None,
@@ -10227,6 +10234,12 @@ pub fn primitive_from_name(name: &str) -> Option<PrimType> {
     Some(match name {
         "Int" => PrimType::Int,
         "U64" => PrimType::U64,
+        "I32" => PrimType::I32,
+        "U32" => PrimType::U32,
+        "I16" => PrimType::I16,
+        "U16" => PrimType::U16,
+        "I8" => PrimType::I8,
+        "U8" => PrimType::U8,
         "Float" => PrimType::Float,
         "Decimal" => PrimType::DECIMAL,
         "U256" => PrimType::U256,

@@ -1916,6 +1916,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 self.context.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id(attr), 0),
             );
         }
+        // GH #2132: the fixed-width integers' violations.
+        // declare void @lotus_fixed_violation(i32 what, i32 bits, i32 signed) noreturn cold
+        let fixed_violation = self.module.add_function(
+            "lotus_fixed_violation",
+            self.context
+                .void_type()
+                .fn_type(&[i32_t_local.into(), i32_t_local.into(), i32_t_local.into()], false),
+            None,
+        );
+        for attr in ["noreturn", "cold"] {
+            fixed_violation.add_attribute(
+                inkwell::attributes::AttributeLoc::Function,
+                self.context.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id(attr), 0),
+            );
+        }
         // declare ptr @lotus_u64_to_string(ptr arena, i64 v)
         // declare ptr @lotus_u64_to_hex(ptr arena, i64 v)
         let u64_text_ty = ptr_t.fn_type(&[ptr_t.into(), i64_t.into()], false);

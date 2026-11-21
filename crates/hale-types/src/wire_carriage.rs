@@ -150,7 +150,7 @@ fn ty_shape(ty: &Ty, top: &TopScope) -> Result<Option<WireShape>, &'static str> 
     use hale_syntax::ast::PrimType as P;
     Ok(Some(match ty {
         Ty::Prim(p) => match p {
-            P::Int | P::U64 | P::Float | P::Bool | P::Decimal(_) | P::U256 | P::I256 | P::Duration | P::Time => {
+            P::Int | P::U64 | P::I32 | P::U32 | P::I16 | P::U16 | P::I8 | P::U8 | P::Float | P::Bool | P::Decimal(_) | P::U256 | P::I256 | P::Duration | P::Time => {
                 WireShape::Scalar
             }
             P::String => WireShape::String,
@@ -365,6 +365,12 @@ impl<'a> WireDecls<'a> {
                 TypeExpr::Primitive(
                     PrimType::Int
                     | PrimType::U64
+                    | PrimType::I32
+                    | PrimType::U32
+                    | PrimType::I16
+                    | PrimType::U16
+                    | PrimType::I8
+                    | PrimType::U8
                     | PrimType::Float
                     | PrimType::Bool
                     | PrimType::Time

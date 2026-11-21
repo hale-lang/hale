@@ -2510,7 +2510,7 @@ the subscriptions admitted and not ended, over every connection;
 
 A request, a response and an error cross under the exposure's codec
 (F.36). The JSON codec is generated from the type, as the GH #1106
-binding's was: `Int`, `U64`, `Float`, `Bool`, `String`, `Decimal<S>`,
+binding's was: `Int`, `U64`, `I32` … `U8`, `Float`, `Bool`, `String`, `Decimal<S>`,
 `U256`, `I256` and nested structs of the same, with a `json:"key"` tag renaming a
 key (the tag's text after a comma is its options: `json:"price,string"`
 and `json:"gasUsed,hex"`, below); a plain alias
@@ -2623,6 +2623,20 @@ schema is `{"type": "string", "x-hale-type": "U64"}`; protobuf carries
 it as a `uint64` (the varint of its 64 bits), and the generated Hale
 client declares the field `U64`, the TypeScript and JavaScript clients a
 `string`.
+
+**A fixed-width integer** (`I32`, `U32`, `I16`, `U16`, `I8`, `U8`, GH
+#2132) crosses JSON as a number, its value (`255`, `-32768`): every
+width is exact below `2^53`, so a JavaScript reader reads it whole. The
+decoder reads a JSON integer and holds it to the type's range: a value
+outside it, a fraction, an exponent, a string, a bool or an object is
+`wrong_type` for the field, as a range type's value outside its range
+is. Its schema is `{"type": "integer", "x-hale-type": "U8"}` (its
+name); protobuf carries a signed one as an `int32` and an unsigned one
+as a `uint32`, the varint of its value (a negative `int32`'s ten bytes,
+as protobuf writes one), and holds the decoded value to the type's
+range, so an 8- or 16-bit field never truncates a writer's larger
+value. The generated Hale client declares the field by its type, the
+TypeScript and JavaScript clients a `number`.
 
 **`json:",hex"` on an `Int`** (GH #1934, JSON-RPC's hex quantities,
 `"gasUsed":"0x4dc"`): the decoder reads, besides the JSON number any

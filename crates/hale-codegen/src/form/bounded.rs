@@ -584,7 +584,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     self.coerce_to_float(xv, &xty, "push element")?.into()
                 } else {
-                    xv
+                    // GH #2132: a lossless widening into the element
+                    // type, or a literal of it
+                    self.fit_int(xv, &xty, &elem)?
                 };
                 // Pointer-shaped elements (String/Bytes/TypeRef):
                 // the slot stores the POINTER, so the pointee must
@@ -782,7 +784,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 {
                     self.coerce_to_float(xv, &xty, "set element")?.into()
                 } else {
-                    xv
+                    // GH #2132: a lossless widening into the element
+                    // type, or a literal of it
+                    self.fit_int(xv, &xty, &elem)?
                 };
                 let neg = self
                     .builder

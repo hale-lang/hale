@@ -161,6 +161,27 @@ fn the_same_store_on_its_own_pool_runs() {
     assert!(!stderr.contains("violation"), "stderr: {stderr}");
 }
 
+/// GH #2132: an inline scalar slot is one plain store whatever its
+/// width: a narrower integer field is let through as an `Int` one is.
+#[test]
+fn a_narrow_integer_store_is_an_inline_scalar_store() {
+    let src = program_with(
+        false,
+        "fn touch(w: W) {
+    w.n = 7;
+}",
+        "let f: fn(W) = touch;
+        f(self.w);",
+    )
+    .replace("params { name: String = \"\"; }", "params { name: String = \"\"; n: U8 = 0; }");
+    assert!(src.contains("n: U8 = 0;"), "{src}");
+    let (status, stdout, stderr, line) = serve_one(&src, "hale_2132_backstop_narrow", false);
+    assert!(line.contains("200"), "the request is answered: {line:?}; stderr: {stderr}");
+    assert!(status.success(), "exit 0: {status:?}\nstderr: {stderr}");
+    assert!(stdout.contains("APP DONE"), "stdout: {stdout}");
+    assert!(!stderr.contains("violation"), "stderr: {stderr}");
+}
+
 #[test]
 fn a_call_through_an_interface_is_checked_on_the_locus_behind_it() {
     let src = iface_program(false);

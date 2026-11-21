@@ -2016,7 +2016,7 @@ fn complete_top_level(
         }
     }
     for prim in [
-        "Int", "U64", "Float", "Decimal", "U256", "I256", "String", "Bool", "Time",
+        "Int", "U64", "I32", "U32", "I16", "U16", "I8", "U8", "Float", "Decimal", "U256", "I256", "String", "Bool", "Time",
         "Duration", "Bytes",
     ] {
         if prim.starts_with(partial) {
@@ -2393,6 +2393,12 @@ pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> String {
     match t {
         Int => "Int".to_string(),
         U64 => "U64".to_string(),
+        I32 => "I32".to_string(),
+        U32 => "U32".to_string(),
+        I16 => "I16".to_string(),
+        U16 => "U16".to_string(),
+        I8 => "I8".to_string(),
+        U8 => "U8".to_string(),
         Float => "Float".to_string(),
         Bool => "Bool".to_string(),
         Str => "String".to_string(),

@@ -82,6 +82,13 @@ pub(crate) enum CodegenTy {
     /// overflow, a division by zero or a shift by 64 or more calls
     /// `lotus_u64_violation`.
     U64,
+    /// GH #2132 (F.64): a fixed-width integer narrower than 64 bits
+    /// (`I32`, `U32`, `I16`, `U16`, `I8`, `U8`, the primitive held here):
+    /// an LLVM `i32` / `i16` / `i8`, its declared width in every layout.
+    /// Its operators are checked (an overflow, a division by zero or a
+    /// shift by its width or more calls `lotus_fixed_violation`), signed or
+    /// unsigned as it is.
+    Narrow(PrimType),
     Float,
     Bool,
     String,
@@ -225,6 +232,46 @@ pub(crate) enum CodegenTy {
 /// open for further IR (Open) or close it with a terminator like
 /// `br` / `ret` / `unreachable` (Terminated)? Statements after a
 /// Terminated must not emit further IR into the same block.
+impl<'ctx, 'p> Cx<'ctx, 'p> {
+    /// GH #2132: the LLVM integer a fixed-width integer narrower than 64
+    /// bits is (`i32`, `i16`, `i8`).
+    pub(crate) fn narrow_int_type(&self, p: PrimType) -> inkwell::types::IntType<'ctx> {
+        let (bits, _) = p.machine_int().expect("a machine integer");
+        self.context.custom_width_int_type(bits)
+    }
+
+    /// GH #2132: `signext` (a signed one) or `zeroext` (an unsigned one) on
+    /// each 8- or 16-bit integer parameter and return of a C-ABI function,
+    /// as clang marks a prototype or a definition: the register holds the
+    /// value extended to 32 bits, whichever side the target's ABI makes
+    /// extend it. `shift` is the count of hidden parameters before the
+    /// first written one (an sret slot).
+    pub(crate) fn mark_c_int_extension(
+        &self,
+        func: inkwell::values::FunctionValue<'ctx>,
+        params: &[CodegenTy],
+        ret: Option<&CodegenTy>,
+        shift: u32,
+    ) {
+        let ext = |t: &CodegenTy| -> Option<&'static str> {
+            let CodegenTy::Narrow(p) = t else { return None };
+            let (bits, signed) = p.machine_int()?;
+            (bits < 32).then_some(if signed { "signext" } else { "zeroext" })
+        };
+        let attr = |name: &str| {
+            self.context.create_enum_attribute(inkwell::attributes::Attribute::get_named_enum_kind_id(name), 0)
+        };
+        for (i, t) in params.iter().enumerate() {
+            if let Some(name) = ext(t) {
+                func.add_attribute(inkwell::attributes::AttributeLoc::Param(i as u32 + shift), attr(name));
+            }
+        }
+        if let Some(name) = ret.and_then(ext) {
+            func.add_attribute(inkwell::attributes::AttributeLoc::Return, attr(name));
+        }
+    }
+}
+
 impl CodegenTy {
     /// A machine integer's width in bits and whether it is signed: an
     /// `Int` and a `U64` (and the `Duration` and `Time` counts, signed
@@ -236,6 +283,7 @@ impl CodegenTy {
         match self {
             CodegenTy::Int | CodegenTy::Duration | CodegenTy::Time => Some((64, true)),
             CodegenTy::U64 => Some((64, false)),
+            CodegenTy::Narrow(p) => p.machine_int(),
             _ => None,
         }
     }
@@ -250,6 +298,7 @@ impl std::fmt::Display for CodegenTy {
         match self {
             CodegenTy::Int => f.write_str("Int"),
             CodegenTy::U64 => f.write_str("U64"),
+            CodegenTy::Narrow(p) => f.write_str(hale_types::ty::prim_name(*p)),
             CodegenTy::Float => f.write_str("Float"),
             CodegenTy::Bool => f.write_str("Bool"),
             CodegenTy::String => f.write_str("String"),
@@ -15219,6 +15268,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .context
                     .i64_type()
                     .fn_type(&llvm_param_tys, false),
+                // GH #2132: its own width
+                Some(CodegenTy::Narrow(p)) => self.narrow_int_type(*p).fn_type(&llvm_param_tys, false),
                 Some(CodegenTy::Float) => {
                     self.context.f64_type().fn_type(&llvm_param_tys, false)
                 }
@@ -15390,6 +15441,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 None => void_t.fn_type(&wparam_tys, false),
             };
             let wrapper = self.module.add_function(name, wrapper_ty, None);
+            self.mark_c_int_extension(wrapper, &sig.params, sig.ret.as_ref(), 0);
             self.native_exports.push(name.clone());
             let wentry = self.context.append_basic_block(wrapper, "entry");
             self.builder.position_at_end(wentry);
@@ -15820,6 +15872,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         };
         let func = self.module.add_function(&f.name.name, fn_ty, None);
+        // GH #2132: an `int8_t` … `uint16_t` is extended to the register
+        // by the side the C ABI says (the caller for an argument on
+        // aarch64 Darwin and in clang's x86-64 convention), so the
+        // declaration says how, as clang marks the prototype
+        if !ffi_js {
+            self.mark_c_int_extension(func, &param_tys, if struct_return { None } else { ret_ty.as_ref() }, u32::from(struct_return));
+        }
         self.user_fns.insert(
             f.name.name.clone(),
             FnSig {
@@ -15862,9 +15921,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // not i64 (BigInt). The call site sitofp's before the call.
             // GH #2121: a `U64` crosses as a JS number too, `uitofp` /
             // `fptoui` at the call
-            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration if is_js => {
+            // GH #2132: a fixed-width integer crosses as a JS number too
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Narrow(_) | CodegenTy::Duration if is_js => {
                 Ok(self.context.f64_type().into())
             }
+            // GH #2132: an `int8_t` … `uint32_t`, its own width
+            CodegenTy::Narrow(p) => Ok(self.narrow_int_type(*p).into()),
             // GH #2121: a `U64` is a C `uint64_t`, the same register
             CodegenTy::Int
             | CodegenTy::U64
@@ -15942,9 +16004,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // the call site fptosi's the result back to i64.
             // GH #2121: a `U64` crosses as a JS number too, `uitofp` /
             // `fptoui` at the call
-            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration if is_js => {
+            // GH #2132: a fixed-width integer crosses as a JS number too
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Narrow(_) | CodegenTy::Duration if is_js => {
                 Ok(self.context.f64_type().into())
             }
+            // GH #2132: an `int8_t` … `uint32_t`, its own width
+            CodegenTy::Narrow(p) => Ok(self.narrow_int_type(*p).into()),
             // GH #2121: a `U64` is a C `uint64_t`, the same register
             CodegenTy::Int
             | CodegenTy::U64
@@ -16580,7 +16645,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // live in the source's storage directly; no separate
             // heap-pointer to anchor.
             CodegenTy::Int
-            | CodegenTy::U64
+            | CodegenTy::U64 | CodegenTy::Narrow(_)
             | CodegenTy::Float
             | CodegenTy::Bool
             | CodegenTy::Decimal(_)
@@ -16810,7 +16875,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         !matches!(
             ty,
             CodegenTy::Int
-                | CodegenTy::U64
+                | CodegenTy::U64 | CodegenTy::Narrow(_)
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Decimal(_)
@@ -17222,6 +17287,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (i, arg) in args.iter().enumerate() {
             let (val, val_ty) = self.lower_expr(arg, scope)?;
             let expected = &sig.params[i];
+            let val = self.fit_int(val, &val_ty, expected)?;
             if &val_ty != expected && !int_literal_as_u64(&val_ty, expected) {
                 return Err(CodegenError::Unsupported(format!(
                     "@ffi fn `{}` arg {}: expected {}, got {}",
@@ -17233,6 +17299,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // GH #2121: a `U64` as the JS number of its unsigned
                     // value (exact through 2^53, as an `Int`'s is)
                     CodegenTy::U64 if sig.ffi_js => self.u64_to_float(val.into_int_value())?,
+                    // GH #2132: a fixed-width integer as the JS number of
+                    // its value
+                    CodegenTy::Narrow(p) if sig.ffi_js => {
+                        let w = self.narrow_to_i64(val.into_int_value(), *p)?;
+                        self.builder
+                            .build_signed_int_to_float(w, self.context.f64_type(), "ffi.js.fixed.to_f64")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                            .into()
+                    }
                     CodegenTy::Int | CodegenTy::Duration if sig.ffi_js => {
                         // `@ffi("js")`: marshal the i64 as f64 (JS
                         // number) so the host handler doesn't receive
@@ -17333,6 +17408,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_float_to_unsigned_int(raw.into_float_value(), self.context.i64_type(), "ffi.js.f64.to_u64")
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                         .into(),
+                    // GH #2132: the host's number toward zero, at the width
+                    CodegenTy::Narrow(p) if sig.ffi_js => {
+                        let n = self
+                            .builder
+                            .build_float_to_signed_int(raw.into_float_value(), self.context.i64_type(), "ffi.js.f64.to_int")
+                            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                        self.resize_int(n, PrimType::Int, *p)?.into()
+                    }
                     CodegenTy::Int | CodegenTy::Duration if sig.ffi_js => {
                         // `@ffi("js")` returned an f64 (JS number);
                         // narrow back to i64 (round toward zero).
@@ -17500,6 +17583,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &format!("fn `{}` arg {}", name, i),
                 )?;
                 widened.into()
+            } else if ty != sig.params[i] && crate::stdlib::fixed::int_fits(&ty, &sig.params[i]) {
+                // GH #2132: a lossless widening (or a fixed-width
+                // integer's literal) at the argument
+                self.fit_int(v, &ty, &sig.params[i])?
             } else if view_coerces_to(&ty, &sig.params[i]) {
                 // F.30 / F.30b: BytesView → Bytes / StringView →
                 // String at read-position fn-arg sites. Emits a
@@ -17752,6 +17839,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (i, a) in args.iter().enumerate() {
             let want = self.type_expr_to_codegen_ty(&fd.params[i].ty)?;
             let (v, got) = self.lower_expr(a, scope)?;
+            let v = self.fit_int(v, &got, &want)?;
             let v = if got != want && !int_literal_as_u64(&got, &want) {
                 if view_coerces_to(&got, &want) {
                     self.unpack_view_if_needed(v, &got)?
@@ -18937,7 +19025,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let mappable = matches!(
                 fty,
                 CodegenTy::Int
-                    | CodegenTy::U64
+                    | CodegenTy::U64 | CodegenTy::Narrow(_)
                     | CodegenTy::Float
                     | CodegenTy::Bool
                     | CodegenTy::Decimal(_)
@@ -19916,6 +20004,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                             )?;
                             val = widened.into();
                             ty = CodegenTy::Float;
+                        } else if asc_ty != ty && crate::stdlib::fixed::int_fits(&ty, &asc_ty) {
+                            // GH #2132: a lossless widening into the
+                            // binding's integer (or a literal of it)
+                            val = self.fit_int(val, &ty, &asc_ty)?;
+                            ty = asc_ty;
                         } else if asc_ty != ty
                             && matches!(
                                 (&ty, &asc_ty),
@@ -20643,6 +20736,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     return Ok(end);
                 }
                 let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
+                // GH #2132: a lossless widening into the slot's integer
+                let (rhs, rhs_ty) = if rhs_ty != slot_ty && crate::stdlib::fixed::int_fits(&rhs_ty, &slot_ty) {
+                    (self.fit_int(rhs, &rhs_ty, &slot_ty)?, slot_ty.clone())
+                } else {
+                    (rhs, rhs_ty)
+                };
                 let new_val = if matches!(op, AssignOp::Eq) {
                     if rhs_ty != slot_ty {
                         return Err(CodegenError::Unsupported(format!(
@@ -21727,6 +21826,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let (v, ty) = self.lower_expr(&args[0], scope)?;
         match ty {
             CodegenTy::Int => Ok((v, self.call_result(call)?)),
+            // GH #2132: the `Int` that holds a narrower integer (a body the
+            // checker recorded no conversion row in, the stdlib's)
+            CodegenTy::Narrow(p) => Ok((self.narrow_to_i64(v.into_int_value(), p)?.into(), self.call_result(call)?)),
             CodegenTy::Float => {
                 let res = self
                     .builder
@@ -21787,6 +21889,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::U64 => {
                 let res = self.u64_to_float(v.into_int_value())?;
                 Ok((res, self.call_result(call)?))
+            }
+            // GH #2132: exact, `sitofp` or `uitofp` as it is signed
+            CodegenTy::Narrow(p) => {
+                let w = self.narrow_to_i64(v.into_int_value(), p)?;
+                let res = self
+                    .builder
+                    .build_signed_int_to_float(w, self.context.f64_type(), "Float.cast")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((res.into(), self.call_result(call)?))
             }
             other => Err(CodegenError::Unsupported(format!(
                 "`Float(...)` cast not supported for argument type \
@@ -21857,6 +21968,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #2121: an integer literal beside a `U64` is one (the checker
         // typed it so; the same i64 either way)
         let at = if at == CodegenTy::Int && bt == CodegenTy::U64 { CodegenTy::U64 } else { at };
+        // GH #2132: an integer literal beside a narrower integer is one, at
+        // its width
+        let (av, at, bv, bt) = match (&at, &bt) {
+            (CodegenTy::Int, CodegenTy::Narrow(_)) => (self.fit_int(av, &at, &bt)?, bt.clone(), bv, bt),
+            (CodegenTy::Narrow(_), CodegenTy::Int) => {
+                let bv = self.fit_int(bv, &bt, &at)?;
+                (av, at.clone(), bv, at)
+            }
+            _ => (av, at, bv, bt),
+        };
         if at != bt && !one_count && !(at == CodegenTy::U64 && bt == CodegenTy::Int) {
             return Err(CodegenError::Unsupported(format!(
                 "`{}`: operand types must match; got {} and {}",
@@ -21865,8 +21986,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
         match at {
             // GH #2121: a `U64` orders unsigned, as a `U256` does
-            CodegenTy::U64 | CodegenTy::U256 | CodegenTy::I256 => {
-                let signed = matches!(at, CodegenTy::I256);
+            CodegenTy::U64 | CodegenTy::U256 | CodegenTy::I256 | CodegenTy::Narrow(_) => {
+                let signed = matches!(at, CodegenTy::I256) || matches!(at.machine_int(), Some((bits, true)) if bits < 64);
                 let pred = match (name, signed) {
                     ("min", true) => inkwell::IntPredicate::SLT,
                     ("min", false) => inkwell::IntPredicate::ULT,
@@ -21940,6 +22061,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         match ty {
             // GH #2121: a `U64` is its own magnitude
             CodegenTy::U64 => Ok((v, ty.clone())),
+            // GH #2132: an unsigned one too; a signed one's is checked
+            CodegenTy::Narrow(_) => self.lower_narrow_abs(v.into_int_value(), ty),
             CodegenTy::U256 | CodegenTy::I256 => self.lower_wide_abs(v.into_int_value(), ty),
             CodegenTy::Int | CodegenTy::Duration | CodegenTy::Decimal(_) => {
                 // m48: Decimal lives in i128 so the int-abs path
@@ -22068,6 +22191,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::String => PrintShape::Prim(PrimType::String),
             CodegenTy::Int => PrintShape::Prim(PrimType::Int),
             CodegenTy::U64 => PrintShape::Prim(PrimType::U64),
+            CodegenTy::Narrow(p) => PrintShape::Prim(*p),
             CodegenTy::Bool => PrintShape::Prim(PrimType::Bool),
             CodegenTy::Float => PrintShape::Prim(PrimType::Float),
             CodegenTy::Decimal(s) => PrintShape::Prim(PrimType::Decimal(*s)),
@@ -22239,6 +22363,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::U256 | CodegenTy::I256 => self.wide_to_string(v.into_int_value(), matches!(ty, CodegenTy::I256)),
             // GH #2121: unsigned decimal digits
             CodegenTy::U64 => self.u64_to_string(v.into_int_value()),
+            // GH #2132: the `Int` that holds it
+            CodegenTy::Narrow(p) => {
+                let w = self.narrow_to_i64(v.into_int_value(), p)?;
+                self.value_to_string(w.into(), &CodegenTy::Int)
+            }
             CodegenTy::Decimal(dec_scale) => {
                 let arena_ptr = self.current_arena_ptr()?;
                 let i128_v = v.into_int_value();
@@ -22615,6 +22744,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             SpecKind::HexLower | SpecKind::HexUpper => {
                 let upper =
                     i32_t.const_int((spec.kind == SpecKind::HexUpper) as u64, false);
+                // GH #2132: a fixed-width integer's own width of bits,
+                // zero-extended (`-5` as an `I8` is `fb`)
+                let v: BasicValueEnum<'ctx> = match &ty {
+                    CodegenTy::Narrow(_) => self
+                        .builder
+                        .build_int_z_extend(v.into_int_value(), self.context.i64_type(), "fmt.hex.wide")
+                        .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+                        .into(),
+                    _ => v,
+                };
                 let f = self
                     .module
                     .get_function("lotus_fmt_int_hex")
@@ -22715,7 +22854,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let numeric = matches!(
                 ty,
                 CodegenTy::Int
-                    | CodegenTy::U64
+                    | CodegenTy::U64 | CodegenTy::Narrow(_)
                     | CodegenTy::Float
                     | CodegenTy::Decimal(_)
                     | CodegenTy::U256
@@ -23185,7 +23324,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         name: &str,
     ) -> Result<inkwell::values::IntValue<'ctx>, CodegenError> {
         match ty {
-            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal(_) => self
+            CodegenTy::Int | CodegenTy::U64 | CodegenTy::Narrow(_) | CodegenTy::Duration | CodegenTy::Time | CodegenTy::Bool | CodegenTy::Decimal(_) => self
                 .builder
                 .build_int_compare(
                     inkwell::IntPredicate::EQ,
@@ -25912,6 +26051,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 } else {
                     (v, got_ty)
                 };
+                let v = self.fit_int(v, &got_ty, &declared_ty)?;
                 if got_ty != declared_ty && !int_literal_as_u64(&got_ty, &declared_ty) {
                     return Err(CodegenError::Unsupported(format!(
                         "return type mismatch: declared {}, got {}",
@@ -25999,6 +26139,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenTy::Int | CodegenTy::U64 | CodegenTy::Duration | CodegenTy::Time => {
                 self.context.i64_type().into()
             }
+            CodegenTy::Narrow(p) => self.narrow_int_type(*p).into(),
             CodegenTy::Bounded(_, _) => {
                 // SSA repr is a pointer to the inline storage.
                 self.context.ptr_type(AddressSpace::default()).into()
@@ -26104,7 +26245,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         matches!(
             t,
             CodegenTy::Int
-                | CodegenTy::U64
+                | CodegenTy::U64 | CodegenTy::Narrow(_)
                 | CodegenTy::Float
                 | CodegenTy::Bool
                 | CodegenTy::Duration
@@ -26436,6 +26577,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // check held the pattern to the scrutinee's type)
         if let (Literal::Int(n), CodegenTy::U64) = (lit, want) {
             return Ok((self.context.i64_type().const_int(*n as u64, false).into(), CodegenTy::U64));
+        }
+        // GH #2132: and against a narrower integer, at its width
+        if let (Literal::Int(n), CodegenTy::Narrow(p)) = (lit, want) {
+            return Ok((self.narrow_int_type(*p).const_int(*n as u64, true).into(), want.clone()));
         }
         self.lower_expr(&Expr::Literal(lit.clone(), span), scope)
     }
@@ -26942,13 +27087,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
             Expr::Literal(Literal::Int(n), _) => {
-                let v = self.context.i64_type().const_int(*n as u64, true);
                 // GH #2121: a literal whose place is a `U64` is one, as
-                // the checker's row of it says
+                // the checker's row of it says; GH #2132: so is one whose
+                // place is a narrower integer, at its width (the check held
+                // it to the range)
                 let ty = match self.ty_or_fallback(e) {
-                    Some(CodegenTy::U64) => CodegenTy::U64,
+                    Some(t @ (CodegenTy::U64 | CodegenTy::Narrow(_))) => t,
                     _ => CodegenTy::Int,
                 };
+                let bits = ty.machine_int().map_or(64, |(b, _)| b);
+                let v = self.context.custom_width_int_type(bits).const_int(*n as u64, true);
                 Ok((v.into(), ty))
             }
             // GH #2121: past `Int`'s max, a `U64` by itself
@@ -27568,6 +27716,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     }
                 }
                 let (v, t) = self.lower_expr(operand, scope)?;
+                // GH #2132: a negated integer literal of a signed narrower
+                // integer (the literal lowered at its width) is its value
+                // (`-128` is an `I8`, though `128` is not), never the checked
+                // negation of the literal's bits
+                if let (UnaryOp::Neg, Expr::Literal(Literal::Int(n), _), CodegenTy::Narrow(p)) = (op, operand.as_ref(), &t) {
+                    let v = self.narrow_int_type(*p).const_int(n.wrapping_neg() as u64, true);
+                    return Ok((v.into(), t.clone()));
+                }
                 // GH #1076 (U4): the checker's refusal, where it is.
                 if *op == UnaryOp::Neg && t == CodegenTy::Time {
                     return Err(CodegenError::UnsupportedAt(
@@ -28332,6 +28488,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 for p in parts {
                     let (v, got) =
                         self.lower_expr_into(p, scope, Some(elem_hint.as_ref()))?;
+                    // GH #2132: a lossless widening into the element type
+                    let (v, got) = if crate::stdlib::fixed::int_fits(&got, elem_hint.as_ref()) {
+                        (self.fit_int(v, &got, elem_hint.as_ref())?, elem_hint.as_ref().clone())
+                    } else {
+                        (v, got)
+                    };
                     if &got != elem_hint.as_ref() {
                         return Err(CodegenError::Unsupported(format!(
                             "array literal element type {} doesn't match \
@@ -28387,6 +28549,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 );
                 let (v, got) =
                     self.lower_expr_into(val, scope, Some(elem_hint.as_ref()))?;
+                let (v, got) = if crate::stdlib::fixed::int_fits(&got, elem_hint.as_ref()) {
+                    (self.fit_int(v, &got, elem_hint.as_ref())?, elem_hint.as_ref().clone())
+                } else {
+                    (v, got)
+                };
                 if &got != elem_hint.as_ref() {
                     return Err(CodegenError::Unsupported(format!(
                         "array-repeat element type {} doesn't match \
@@ -28497,7 +28664,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let v = if *elem == CodegenTy::Float && got == CodegenTy::Int {
                 self.coerce_to_float(v, &got, "bounded literal element")?.into()
             } else {
-                v
+                // GH #2132: a lossless widening into the element type
+                self.fit_int(v, &got, elem)?
             };
             let v = if self.bounded_elem_is_ptr(elem) && !Self::expr_is_fresh_value(p) {
                 let dest = self.current_arena_ptr()?;
@@ -28952,6 +29120,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             && crate::conversion::is_quantity_repr(&rt)
             && lt != CodegenTy::U64
             && rt != CodegenTy::U64
+            && !matches!(lt, CodegenTy::Narrow(_))
+            && !matches!(rt, CodegenTy::Narrow(_))
         {
             return self.lower_binop(*op, lv, rv, &CodegenTy::Int);
         }
@@ -28989,6 +29159,24 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return self.lower_u64_binop(*op, lv.into_int_value(), rv.into_int_value());
             }
         }
+        // GH #2132: a narrower integer shifts by an `Int` count, and an
+        // integer literal beside one is one (the checker typed it so;
+        // where its row was not read, the `Int` is that literal, which
+        // `lower_narrow_binop` truncates)
+        if let Some(p) = match (&lt, &rt) {
+            (CodegenTy::Narrow(p), _) | (_, CodegenTy::Narrow(p)) => Some(*p),
+            _ => None,
+        } {
+            if matches!(op, BinOp::Shl | BinOp::Shr) && matches!(&lt, CodegenTy::Narrow(q) if *q == p) {
+                return self.lower_narrow_shift(*op, lv.into_int_value(), rv.into_int_value(), &lt);
+            }
+            // the narrower side's type is the operation's
+            let (narrow, other) = if matches!(lt, CodegenTy::Narrow(_)) { (&lt, &rt) } else { (&rt, &lt) };
+            if other == narrow || matches!(other, CodegenTy::Int) {
+                let ty = narrow.clone();
+                return self.lower_narrow_binop(*op, lv.into_int_value(), rv.into_int_value(), &ty);
+            }
+        }
         if lt != rt {
             return Err(CodegenError::Unsupported(format!(
                 "binary op operands of mixed types {} and {}",
@@ -29015,6 +29203,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #2121: a `U64`'s checked, unsigned operators.
         if *ty == CodegenTy::U64 {
             return self.lower_u64_binop(op, lv.into_int_value(), rv.into_int_value());
+        }
+        // GH #2132: a narrower integer's checked operators.
+        if let CodegenTy::Narrow(_) = ty {
+            return self.lower_narrow_binop(op, lv.into_int_value(), rv.into_int_value(), ty);
         }
         match (op, ty_owned) {
             (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod, CodegenTy::Int) => {
@@ -29467,6 +29659,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
             // GH #2121: `~` of a `U64` (it has no `-`)
             (UnaryOp::BitNot, CodegenTy::U64) => self.lower_u64_bitnot(v.into_int_value()),
+            // GH #2132: `~x` within the width; `-x` checked
+            (UnaryOp::BitNot, CodegenTy::Narrow(_)) => {
+                let n = self
+                    .builder
+                    .build_not(v.into_int_value(), "fixed.not")
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+                Ok((n.into(), ty.clone()))
+            }
+            (UnaryOp::Neg, CodegenTy::Narrow(_)) => self.lower_narrow_neg(v.into_int_value(), ty),
             (UnaryOp::Neg, t @ CodegenTy::Decimal(_)) => {
                 // m48: Decimal lives in i128; negate via subtract
                 // from i128 zero, mirroring Int's neg lowering.
@@ -29571,6 +29772,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     format.push_str("%lld");
                     printf_args.push(BasicMetadataValueEnum::IntValue(val.into_int_value()));
                     // GH #1076 (U3): a quantity's count, then its unit.
+                    if let Some(unit) = self.printed_unit(a) {
+                        format.push_str(&escape_format(&unit));
+                    }
+                }
+                // GH #2132: the `Int` that holds it
+                CodegenTy::Narrow(p) => {
+                    let w = self.narrow_to_i64(val.into_int_value(), *p)?;
+                    format.push_str("%lld");
+                    printf_args.push(BasicMetadataValueEnum::IntValue(w));
                     if let Some(unit) = self.printed_unit(a) {
                         format.push_str(&escape_format(&unit));
                     }
@@ -30007,6 +30217,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // takes the payload field's arguments.
                     let rewritten = self.rewrite_generic_literal(a, &variant.field_tys[j]);
                     let (v, ty) = self.lower_expr(rewritten.as_ref().unwrap_or(a), scope)?;
+                    // GH #2132: a lossless widening into the payload's type
+                    let (v, ty) = if ty != variant.field_tys[j] && crate::stdlib::fixed::int_fits(&ty, &variant.field_tys[j]) {
+                        (self.fit_int(v, &ty, &variant.field_tys[j])?, variant.field_tys[j].clone())
+                    } else {
+                        (v, ty)
+                    };
                     if ty != variant.field_tys[j] {
                         return Err(CodegenError::Unsupported(format!(
                             "{}::{} arg {}: expected type {}, got {}",
@@ -30676,6 +30892,49 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::U64WrappingShl
             | Id::U64WrappingShr
             | Id::U64WrappingSub => self.lower_std_u64(id, args, scope),
+            // GH #2132: the fixed-width integers' native functions.
+            Id::I32Max
+            | Id::I32Min
+            | Id::I32WrappingAdd
+            | Id::I32WrappingMul
+            | Id::I32WrappingShl
+            | Id::I32WrappingShr
+            | Id::I32WrappingSub
+            | Id::U32Max
+            | Id::U32Min
+            | Id::U32WrappingAdd
+            | Id::U32WrappingMul
+            | Id::U32WrappingShl
+            | Id::U32WrappingShr
+            | Id::U32WrappingSub
+            | Id::I16Max
+            | Id::I16Min
+            | Id::I16WrappingAdd
+            | Id::I16WrappingMul
+            | Id::I16WrappingShl
+            | Id::I16WrappingShr
+            | Id::I16WrappingSub
+            | Id::U16Max
+            | Id::U16Min
+            | Id::U16WrappingAdd
+            | Id::U16WrappingMul
+            | Id::U16WrappingShl
+            | Id::U16WrappingShr
+            | Id::U16WrappingSub
+            | Id::I8Max
+            | Id::I8Min
+            | Id::I8WrappingAdd
+            | Id::I8WrappingMul
+            | Id::I8WrappingShl
+            | Id::I8WrappingShr
+            | Id::I8WrappingSub
+            | Id::U8Max
+            | Id::U8Min
+            | Id::U8WrappingAdd
+            | Id::U8WrappingMul
+            | Id::U8WrappingShl
+            | Id::U8WrappingShr
+            | Id::U8WrappingSub => self.lower_std_fixed(id, args, scope),
             Id::DecimalFormat => self.lower_std_decimal_format(args, scope),
             Id::DecimalFromInt => self.lower_std_decimal_from_int(args, scope),
             // 2026-06-13 — test-time gate counters (#7): read-only
@@ -31644,7 +31903,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::StrRangeParseDecimal
             | Id::StrRangeParseInt
             | Id::TimeParseIso8601
-            | Id::TimeParseTime => return Err(bare_call_of_a_fallible_row(segs, at, pos)),
+            | Id::TimeParseTime
+            | Id::I32CheckedAdd
+            | Id::I32CheckedDiv
+            | Id::I32CheckedMul
+            | Id::I32CheckedSub
+            | Id::U32CheckedAdd
+            | Id::U32CheckedDiv
+            | Id::U32CheckedMul
+            | Id::U32CheckedSub
+            | Id::I16CheckedAdd
+            | Id::I16CheckedDiv
+            | Id::I16CheckedMul
+            | Id::I16CheckedSub
+            | Id::U16CheckedAdd
+            | Id::U16CheckedDiv
+            | Id::U16CheckedMul
+            | Id::U16CheckedSub
+            | Id::I8CheckedAdd
+            | Id::I8CheckedDiv
+            | Id::I8CheckedMul
+            | Id::I8CheckedSub
+            | Id::U8CheckedAdd
+            | Id::U8CheckedDiv
+            | Id::U8CheckedMul
+            | Id::U8CheckedSub => return Err(bare_call_of_a_fallible_row(segs, at, pos)),
         };
         value.map(Some)
     }
@@ -31691,6 +31974,31 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
         use IntrinsicId as Id;
         let lowered = match id {
+            // GH #2132: the fixed-width integers' checked operators.
+            Id::I32CheckedAdd
+            | Id::I32CheckedDiv
+            | Id::I32CheckedMul
+            | Id::I32CheckedSub
+            | Id::U32CheckedAdd
+            | Id::U32CheckedDiv
+            | Id::U32CheckedMul
+            | Id::U32CheckedSub
+            | Id::I16CheckedAdd
+            | Id::I16CheckedDiv
+            | Id::I16CheckedMul
+            | Id::I16CheckedSub
+            | Id::U16CheckedAdd
+            | Id::U16CheckedDiv
+            | Id::U16CheckedMul
+            | Id::U16CheckedSub
+            | Id::I8CheckedAdd
+            | Id::I8CheckedDiv
+            | Id::I8CheckedMul
+            | Id::I8CheckedSub
+            | Id::U8CheckedAdd
+            | Id::U8CheckedDiv
+            | Id::U8CheckedMul
+            | Id::U8CheckedSub => self.lower_std_fixed_checked(id, args, scope),
             // GH #254: std::tar (ustar) one-shot surface.
             Id::TarEntries => self.lower_std_tar_fallible(
                 "lotus_tar_entries", "std::tar::entries",
@@ -32082,6 +32390,48 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             | Id::U64WrappingShl
             | Id::U64WrappingShr
             | Id::U64WrappingSub
+            | Id::I32Max
+            | Id::I32Min
+            | Id::I32WrappingAdd
+            | Id::I32WrappingMul
+            | Id::I32WrappingShl
+            | Id::I32WrappingShr
+            | Id::I32WrappingSub
+            | Id::U32Max
+            | Id::U32Min
+            | Id::U32WrappingAdd
+            | Id::U32WrappingMul
+            | Id::U32WrappingShl
+            | Id::U32WrappingShr
+            | Id::U32WrappingSub
+            | Id::I16Max
+            | Id::I16Min
+            | Id::I16WrappingAdd
+            | Id::I16WrappingMul
+            | Id::I16WrappingShl
+            | Id::I16WrappingShr
+            | Id::I16WrappingSub
+            | Id::U16Max
+            | Id::U16Min
+            | Id::U16WrappingAdd
+            | Id::U16WrappingMul
+            | Id::U16WrappingShl
+            | Id::U16WrappingShr
+            | Id::U16WrappingSub
+            | Id::I8Max
+            | Id::I8Min
+            | Id::I8WrappingAdd
+            | Id::I8WrappingMul
+            | Id::I8WrappingShl
+            | Id::I8WrappingShr
+            | Id::I8WrappingSub
+            | Id::U8Max
+            | Id::U8Min
+            | Id::U8WrappingAdd
+            | Id::U8WrappingMul
+            | Id::U8WrappingShl
+            | Id::U8WrappingShr
+            | Id::U8WrappingSub
             | Id::DiagHeapAllocCount
             | Id::DiagSyscallCount
             | Id::EnvArg
@@ -33186,6 +33536,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // F.30b (5a): unpack view + epoch check at
                         // self.fnptr arg site.
                         self.unpack_view_if_needed(v, &vt)?
+                    } else if vt != arg_tys[i] && crate::stdlib::fixed::int_fits(&vt, &arg_tys[i]) {
+                        // GH #2132: a lossless widening (or a fixed-width integer's literal)
+                        self.fit_int(v, &vt, &arg_tys[i])?
                     } else if arg_tys[i] == CodegenTy::Float && vt == CodegenTy::Int {
                         // Int -> Float widening, as at a direct call
                         // (GH #1967).
@@ -33390,6 +33743,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     iface,
                 )?;
                 (fat.into(), want.clone())
+            } else if ty != want && crate::stdlib::fixed::int_fits(&ty, &want) {
+                // GH #2132: a lossless widening (or a fixed-width integer's literal)
+                (self.fit_int(v, &ty, &want)?, want.clone())
             } else if view_coerces_to(&ty, &want) {
                 // F.30 / F.30b (5a): BytesView → Bytes / StringView →
                 // String at self-method arg sites. Unpacks the view
@@ -33498,6 +33854,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // F.30b (5a): unpack view + epoch check at fn-pointer
                 // arg site.
                 self.unpack_view_if_needed(v, &vt)?
+            } else if vt != arg_tys[i] && crate::stdlib::fixed::int_fits(&vt, &arg_tys[i]) {
+                // GH #2132: a lossless widening (or a fixed-width integer's literal)
+                self.fit_int(v, &vt, &arg_tys[i])?
             } else if arg_tys[i] == CodegenTy::Float && vt == CodegenTy::Int {
                 // Int -> Float widening, as at a direct call: the check
                 // holds a call through a fn value to its type's
@@ -33896,6 +34255,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     iface,
                 )?;
                 (fat.into(), want.clone())
+            } else if ty != want && crate::stdlib::fixed::int_fits(&ty, &want) {
+                // GH #2132: a lossless widening (or a fixed-width integer's literal)
+                (self.fit_int(v, &ty, &want)?, want.clone())
             } else if view_coerces_to(&ty, &want) {
                 // F.30 / F.30b (5a): BytesView → Bytes / StringView →
                 // String at external locus-method arg sites
@@ -34547,6 +34909,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     iname,
                 )?;
                 (fat.into(), want.clone())
+            } else if ty != want && crate::stdlib::fixed::int_fits(&ty, &want) {
+                // GH #2132: a lossless widening (or a fixed-width integer's literal)
+                (self.fit_int(v, &ty, &want)?, want.clone())
             } else if view_coerces_to(&ty, &want) {
                 // F.30b (5a): unpack view + epoch check at interface-
                 // dispatch method arg site.
@@ -36506,6 +36871,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for (i, a) in args.iter().enumerate() {
             let want = self.type_expr_to_codegen_ty(&fd.params[i].ty)?;
             let (v, got) = self.lower_expr(a, scope)?;
+            let v = self.fit_int(v, &got, &want)?;
             let v = if got != want && !int_literal_as_u64(&got, &want) {
                 if view_coerces_to(&got, &want) {
                     self.unpack_view_if_needed(v, &got)?
@@ -37810,6 +38176,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     ) -> Result<BlockEnd, CodegenError> {
         let root_is_self = matches!(root, LvalueRoot::SelfLocus);
         let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
+        // GH #2132: a lossless widening into the slot's integer
+        let (rhs, rhs_ty) = if rhs_ty != slot_ty && crate::stdlib::fixed::int_fits(&rhs_ty, &slot_ty) {
+            (self.fit_int(rhs, &rhs_ty, &slot_ty)?, slot_ty.clone())
+        } else {
+            (rhs, rhs_ty)
+        };
         let new_val = if matches!(op, AssignOp::Eq) {
             if rhs_ty != slot_ty {
                 return Err(CodegenError::Unsupported(format!(
@@ -39324,7 +39696,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // and is let through, as the checker lets it through
         let scalar = match &slot_ty {
             CodegenTy::Int | CodegenTy::U64 | CodegenTy::Float | CodegenTy::Bool | CodegenTy::Duration | CodegenTy::Time => true,
-            CodegenTy::Decimal(_) | CodegenTy::U256 | CodegenTy::I256 => true,
+            // GH #2132: a narrower integer is an inline scalar too
+            CodegenTy::Decimal(_) | CodegenTy::U256 | CodegenTy::I256 | CodegenTy::Narrow(_) => true,
             CodegenTy::Enum(_) => !self.self_field_type_retires(&slot_ty),
             _ => false,
         };
@@ -39355,6 +39728,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             self.emit_cross_pool_check(owner.ptr, recv, &owner.locus.clone(), &shown, target.span, scope)?;
         }
         let (rhs, rhs_ty) = self.lower_expr(value, scope)?;
+        // GH #2132: a lossless widening into the slot's integer
+        let (rhs, rhs_ty) = if rhs_ty != slot_ty && crate::stdlib::fixed::int_fits(&rhs_ty, &slot_ty) {
+            (self.fit_int(rhs, &rhs_ty, &slot_ty)?, slot_ty.clone())
+        } else {
+            (rhs, rhs_ty)
+        };
         let new_val = if matches!(op, AssignOp::Eq) {
             if rhs_ty != slot_ty {
                 return Err(CodegenError::Unsupported(format!(
@@ -40654,8 +41033,11 @@ pub(crate) fn i128_const<'ctx>(
 /// integer literal the check typed a `U64` (it refuses every other `Int`
 /// there) where lowering read no row of it (a default lowered from its
 /// constant, a monomorph's walk). The same i64 either way.
+/// GH #2132: and a narrower integer's literal, or a lossless widening
+/// (`crate::stdlib::fixed::int_fits`), which the site fits first
+/// (`Cx::fit_int`).
 pub(crate) fn int_literal_as_u64(got: &CodegenTy, want: &CodegenTy) -> bool {
-    matches!((got, want), (CodegenTy::Int, CodegenTy::U64))
+    crate::stdlib::fixed::int_fits(got, want)
 }
 
 pub(crate) fn codegen_ty_size_bytes<'ctx>(
