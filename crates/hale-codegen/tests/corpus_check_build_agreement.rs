@@ -4757,3 +4757,26 @@ fn a_bounded_receiver_of_any_shape_the_checker_types_builds() {
         assert_eq!(out, *want, "what it computed:\n{src}");
     }
 }
+
+/// GH #2111: a builtin call the shadowing desugar leaves as written calls
+/// the builtin whatever binding of its name is in scope, and the check
+/// types it by the builtin's signature row there too. It left the call
+/// untyped beside such a binding, so `len(5)` beside `let len = 4`
+/// checked and the build refused it ("`len` not supported for argument
+/// type Int").
+#[test]
+fn a_builtin_call_beside_a_binding_of_its_name_is_checked() {
+    assert_refused_by_the_check(
+        &[(
+            "fn main() { let len = 4; println(len(5), \" \", len); }\n",
+            "len(5)",
+            "`len` does not apply to a value of type `Int`",
+        )],
+        "builtin_beside_binding",
+    );
+    assert_built(
+        "fn ts(n: Int) -> String { return \"c\"; }\n\
+         fn main() { let to_string = ts; let len = 4; let n = 7; println(f\"n={n}\", \" \", len(\"abc\") + len); }\n",
+        "hale_cb_builtin_beside_binding_built",
+    );
+}

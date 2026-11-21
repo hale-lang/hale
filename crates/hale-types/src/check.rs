@@ -21422,6 +21422,11 @@ impl<'a> Checker<'a> {
             for (_, site, injection) in self.typed.take_walk_injections() {
                 self.typed.injection(self.body, site, injection);
             }
+            // and its expression rows on the evaluation path (GH #2111),
+            // which lowering reads where it evaluates the default
+            for (body, scope, key, ty) in self.typed.take_walk_scoped_exprs() {
+                self.typed.scoped_key(body, &scope, key, ty);
+            }
             self.locals.closed = closed;
             if let (Some(seen), Some(at)) = (&mut self.expr_types, seen) {
                 seen.truncate(at);
@@ -22831,19 +22836,34 @@ impl<'a> Checker<'a> {
         }
         if self.records_views() {
             self.note_view_expr(expr, &ty);
-        } else if let Some(args) = &self.specializing {
-            // GH #2111: a monomorph's walk, outside every default, keeps
-            // what it typed each expression for lowering in the monomorph
-            if self.struct_defaults_typing.is_empty()
-                && self.default_invocations.is_empty()
-                && self.default_evaluation.is_empty()
-                && !matches!(expr, Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. })
-            {
-                let args = args.clone();
-                self.typed.specialized_expr(self.body, &args, expr, ty.clone());
+        } else if let Some(scope) = self.expr_scope() {
+            // GH #2111: a monomorph's walk and a default's evaluation keep
+            // what they typed each expression, for lowering in the
+            // monomorph and where it evaluates the default
+            if !matches!(expr, Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. }) {
+                self.typed.scoped_expr(self.body, &scope, expr, ty.clone());
             }
         }
         ty
+    }
+
+    /// GH #2111: the walk the expression rows of a walk that records no
+    /// `views` row are kept on: a monomorph's walk, by its type arguments,
+    /// and a default typed where it is evaluated, by the evaluation path
+    /// (the `conversions` column's key). `None` on the ordinary walk (the
+    /// `views` column's), and on a walk that is no evaluation: a default
+    /// typed where it is declared, and a type declaration's walk of its
+    /// fields' calls.
+    fn expr_scope(&self) -> Option<crate::typed_bodies::ExprScope> {
+        if self.records_views() || self.defaults_judged_at_literals {
+            return None;
+        }
+        if self.default_evaluation.is_empty()
+            && (self.specializing.is_none() || !self.struct_defaults_typing.is_empty() || !self.default_invocations.is_empty())
+        {
+            return None;
+        }
+        Some(crate::typed_bodies::ExprScope { args: self.specializing.clone(), path: self.default_evaluation.clone() })
     }
 
     /// Whether the walk records the `views` column (GH #1554): the
@@ -22879,15 +22899,9 @@ impl<'a> Checker<'a> {
     fn note_anchor_read(&mut self, receiver: &Expr, field: &str, ty: &Ty) {
         if self.records_views() {
             self.views.note_anchor(receiver, field, ty.clone());
-        } else if let Some(args) = &self.specializing {
-            if self.struct_defaults_typing.is_empty()
-                && self.default_invocations.is_empty()
-                && self.default_evaluation.is_empty()
-            {
-                let args = args.clone();
-                let key = crate::typed_bodies::anchor_key(receiver, field);
-                self.typed.specialized_key(self.body, &args, key, ty.clone());
-            }
+        } else if let Some(scope) = self.expr_scope() {
+            let key = crate::typed_bodies::anchor_key(receiver, field);
+            self.typed.scoped_key(self.body, &scope, key, ty.clone());
         }
     }
 
@@ -25143,10 +25157,15 @@ impl<'a> Checker<'a> {
                 };
                 // A bare builtin types by the signature table lowering
                 // reads (F.40 phase 3, E4), where lowering would lower
-                // it; anywhere else it stays Unknown, as before.
+                // it; anywhere else it stays Unknown, as before. A call
+                // the shadowing desugar left as written calls the builtin
+                // whatever binding of the name is in scope (the callee was
+                // typed so: `callee_unshadowed`), so a binding no longer
+                // leaves it untyped (GH #2111: an f-string's `to_string`
+                // beside a local `to_string`, `max(1, 2)` beside `let max`).
                 let base_ret = match (callee.as_ref(), base_ret) {
                     (Expr::Ident(id), Ty::Unknown)
-                        if self.locals.lookup(&id.name).is_none()
+                        if (self.locals.lookup(&id.name).is_none() || BARE_BUILTIN_CALLEES.contains(&id.name.as_str()))
                             && self.top.lookup(&id.name).is_none()
                             && !self.generic_fns.contains_key(id.name.as_str()) =>
                     {

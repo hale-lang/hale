@@ -5,8 +5,10 @@
 //!
 //! One table, two readers. The checker types a call by it, so
 //! `first(len(s))` binds `T` to `Int` instead of leaving the generic
-//! call a hole; lowering reads each builtin's arity and result from the
-//! same row. The table is lowering's inference written down, not a new
+//! call a hole; lowering reads each builtin's arity from the same row,
+//! and the call's result from the checker's row of the call (GH #2111),
+//! so the two cannot differ. The table is lowering's inference written
+//! down, not a new
 //! judgment: [`BuiltinSig::result`] answers a type only for the operand
 //! types lowering lowers, and `None` everywhere lowering refuses, so the
 //! checker keeps the call `Unknown` there and its diagnostics (or their
