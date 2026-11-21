@@ -2237,10 +2237,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         receiver: &Expr,
         method_name: &str,
         args: &[Expr],
-        scope: &Scope<'ctx>,
     ) -> Option<(Expr, &'static str)> {
         let anchor = hale_syntax::chains::cursor_anchor(args)?;
-        let field_ty = match self.static_expr_codegen_ty(receiver, scope)? {
+        let field_ty = match self.ty_at(receiver)? {
             CodegenTy::TypeRef(n) => self.user_types.get(&n)?.fields.get(anchor)?.1.clone(),
             CodegenTy::LocusRef(n) => {
                 let info = self.user_loci.get(&n)?;
@@ -2281,7 +2280,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // GH #1984: an element chain anchored on `.items` / `.entries`
         // over a receiver that is no form but has a real field of that
         // name walks the field, as the checker typed it.
-        if let Some((field, accessor)) = self.chain_anchor_field(receiver, method_name, args, scope) {
+        if let Some((field, accessor)) = self.chain_anchor_field(receiver, method_name, args) {
             return self.lower_fallible_method_call(&field, accessor, args, scope);
         }
         // `src.get(i)` where src is a type-level collection (a fixed

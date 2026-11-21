@@ -2221,6 +2221,25 @@ impl Snapshot {
                 view.lifecycle = Some(lifecycle);
                 view.entry = Some(entry);
                 view.owned_views = Some(owned_views.lowered(|id| view.correspondence.merged_stdlib_node(id)));
+                // GH #2111: the checker's expression types by body, the
+                // checked programs' under their own ids (the merged mint
+                // keeps them) and the stdlib copy's under the merged ids
+                let walked = self.walked().map_err(Clone::clone)?;
+                let mut expr_types = hale_types::typed_bodies::ExprTypes::default();
+                for (key, program) in &self.bundle().programs {
+                    if let Some(views) = walked.walk.record.views.get(key) {
+                        expr_types.add_program(program, views, &|id| Some(id));
+                    }
+                }
+                if let (Some(program), Some(views)) =
+                    (hale_types::stdlib_bodies::program(), hale_types::stdlib_bodies::view_types())
+                {
+                    let correspondence = &view.correspondence;
+                    expr_types.add_program(program, views, &|id| {
+                        correspondence.merged_stdlib_node(id.0).map(hale_syntax::ast::NodeId)
+                    });
+                }
+                view.expr_types = Some(expr_types);
                 Ok(view)
             })
             .as_ref()

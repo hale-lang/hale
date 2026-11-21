@@ -4665,3 +4665,95 @@ fn display_template_refusals_are_the_checks() {
         );
     }
 }
+
+/// GH #2111: `for x in s.items` (or `.entries`) over a locus with no form,
+/// whose `items` is a `bounded` param of its own, is a loop over the
+/// field, as an element chain anchored on it is (GH #1984). The check read
+/// the name as a form's pseudo-field and bound `x` `Unknown`, so a missing
+/// field read through it passed the check and the build refused it ("no
+/// field `nosuch` on type `Rec`"). A `@form(vec)`'s `items` stays the
+/// form's.
+#[test]
+fn a_loop_over_a_locus_field_named_items_is_typed_by_the_field() {
+    assert_refused_by_the_check(
+        &[
+            (
+                "type Rec { id: Int = 0; }\n\
+                 locus Store {\n\
+                 params { items: bounded[Rec; 4]; }\n\
+                 run() { for x in self.items { println(x.nosuch); } }\n\
+                 }\n\
+                 fn main() { Store { }; }\n",
+                "x.nosuch",
+                "no field `nosuch` on `Rec`",
+            ),
+            (
+                "type Rec { id: Int = 0; }\n\
+                 locus Store {\n\
+                 params { entries: bounded[Rec; 4]; }\n\
+                 fn total() -> Int { let mut n = 0; for e in self.entries { n = n + e.nosuch; } return n; }\n\
+                 }\n\
+                 fn main() { let s = Store { }; println(s.total()); }\n",
+                "e.nosuch",
+                "no field `nosuch` on `Rec`",
+            ),
+        ],
+        "locus_field_loop",
+    );
+    assert_built(
+        "type Rec { id: Int = 0; }\n\
+         locus Store {\n\
+         params { items: bounded[Rec; 4]; }\n\
+         run() { push(self.items, Rec { id: 7 }) or discard; for x in self.items { println(x.id + 1); } }\n\
+         }\n\
+         fn main() { Store { }; }\n",
+        "hale_cb_locus_field_loop_built",
+    );
+    assert_built(
+        "type Rec { id: Int = 0; }\n\
+         @form(vec)\n\
+         locus Recs { capacity { heap xs of Rec; } }\n\
+         fn main() { let v = Recs { }; v.push(Rec { id: 7 }); for x in v.items { println(x.id + 1); } }\n",
+        "hale_cb_form_items_loop_built",
+    );
+    // a quantity field read through the loop variable keeps its unit, as
+    // every other read of it does: this printed `125cent`
+    let src = "unit cent;\n\
+               type Money = quantity Int in cent;\n\
+               type Rec { amount: Money = 0cent; }\n\
+               locus Store {\n\
+               params { items: bounded[Rec; 4]; }\n\
+               run() { push(self.items, Rec { amount: 125cent }) or discard; for x in self.items { println(x.amount / 1cent, \" \", x.amount); } }\n\
+               }\n\
+               fn main() { Store { }; }\n";
+    let out = build_and_run_probe(src, "locus_field_loop_unit").unwrap_or_else(|e| panic!("{e}\n{src}"));
+    assert_eq!(out, "125 125cent\n", "what it computed:\n{src}");
+}
+
+/// GH #2111: a bounded intrinsic's receiver and a `for` iterand are the
+/// checker's type of the expression, whatever its shape. Lowering typed
+/// them with a walk of its own that stopped at an `if`, a `match` or a
+/// block, so these checked and the build refused them ("call to `count`:
+/// no free fn …", "for-loop iterator must be an array", "`or` over call
+/// to unknown fn `at`").
+#[test]
+fn a_bounded_receiver_of_any_shape_the_checker_types_builds() {
+    let pre = "type R { xs: bounded[Int; 4]; }\n\
+               fn main() {\n\
+               let mut a = R { };\n\
+               push(a.xs, 1) or discard;\n\
+               push(a.xs, 2) or discard;\n\
+               let b = R { };\n";
+    let cases: &[(&str, &str)] = &[
+        ("println(count(if true { a.xs } else { b.xs }));", "2\n"),
+        ("println(count({ a.xs }));", "2\n"),
+        ("println(count(match 1 { 1 -> b.xs, _ -> a.xs }));", "0\n"),
+        ("for x in (if false { b.xs } else { a.xs }) { println(x); }", "1\n2\n"),
+        ("println(at(if true { a.xs } else { b.xs }, 1) or 9);", "2\n"),
+    ];
+    for (i, (body, want)) in cases.iter().enumerate() {
+        let src = format!("{pre}{body}\n}}\n");
+        let out = build_and_run_probe(&src, &format!("receiver_shape_{i}")).unwrap_or_else(|e| panic!("{e}\n{src}"));
+        assert_eq!(out, *want, "what it computed:\n{src}");
+    }
+}

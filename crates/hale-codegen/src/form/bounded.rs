@@ -37,160 +37,16 @@ enum StoreCopy<'ctx> {
 }
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
-    /// Static (no-IR) type resolution for intrinsic dispatch —
-    /// enough of the expression grammar to type a bounded
-    /// receiver: locals, `self`, field chains through TypeRef /
-    /// LocusRef, a call's result (a free fn, a locus method on a
-    /// local or on `self`, the `at` intrinsic), an `or` expression
-    /// over one, an array element and a record literal.
-    ///
-    /// The intrinsics dispatch on their first argument's type
-    /// (`spec/types.md` § bounded[T; N]), and the checker types that
-    /// argument as any expression, so `count(s.plain().rows)` and
-    /// `at((s.keys() or Rows { }).rows, 0)` check. Until 2026-11-06
-    /// this walk stopped at a field chain rooted in a local or
-    /// `self`, so the same call reached the build untyped and was
-    /// refused as a call to an unknown free fn (downstream handoff).
-    /// Until 2026-11-14 it stopped at an array element
-    /// (`count(rows[0].inner.items)`), a record literal
-    /// (`count(lib::Outer { }.inner.items)`) and an `at` result
-    /// (`count((at(m.outs, 0) or d).inner.items)`) the same way, local
-    /// or imported records alike (downstream handoff).
-    pub(crate) fn static_expr_codegen_ty(
-        &self,
-        e: &Expr,
-        scope: &Scope<'ctx>,
-    ) -> Option<CodegenTy> {
-        match e {
-            Expr::Ident(id) => {
-                scope.locals.get(&id.name).map(|(_, t)| t.clone())
-            }
-            Expr::KwSelf(_) => self
-                .current_self
-                .as_ref()
-                .map(|cs| CodegenTy::LocusRef(cs.locus_name.clone())),
-            Expr::Field { receiver, name, .. } => {
-                match self.static_expr_codegen_ty(receiver, scope)? {
-                    CodegenTy::TypeRef(n) => self
-                        .user_types
-                        .get(&n)
-                        .and_then(|ti| ti.fields.get(&name.name))
-                        .map(|(_, t)| t.clone()),
-                    CodegenTy::LocusRef(n) => self
-                        .user_loci
-                        .get(&n)
-                        .and_then(|li| li.fields.get(&name.name))
-                        .map(|(_, t)| t.clone()),
-                    _ => None,
-                }
-            }
-            // An element of a fixed array: `rows[0].inner.items`.
-            Expr::Index { receiver, .. } => match self.static_expr_codegen_ty(receiver, scope)? {
-                CodegenTy::Array(elem, _) => Some(*elem),
-                _ => None,
-            },
-            // A record literal: `Outer { }.inner.items`, an imported
-            // seed's `lib::Outer { }` by its mangled name, as lowering
-            // resolves the literal.
-            Expr::Struct { path, .. } => {
-                let name = if path.segments.len() > 1 {
-                    let segs: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
-                    self.mangled_for_path(&segs)?
-                } else {
-                    path.segments.first()?.name.clone()
-                };
-                if self.user_types.contains_key(&name) {
-                    Some(CodegenTy::TypeRef(name))
-                } else if self.user_loci.contains_key(&name) {
-                    Some(CodegenTy::LocusRef(name))
-                } else {
-                    None
-                }
-            }
-            // `at(f, i)`, the intrinsic itself: its success type is the
-            // bounded's element, so `(at(m.outs, 0) or d).inner.items`
-            // types as the intrinsic lowers it (a declaration that
-            // shadows it answers by its own return).
-            Expr::Call { callee, args, .. }
-                if matches!(callee.as_ref(), Expr::Ident(i) if i.name == "at")
-                    && args.len() == 2
-                    && !self.user_fn_shadows_bounded_intrinsic("at", args, scope) =>
-            {
-                match self.bounded_recv_spec(args, scope) {
-                    Some((elem, _)) => Some(elem),
-                    None => self.call_returned_ty(callee, scope),
-                }
-            }
-            // A generic fn's call (GH #1966: `push(id(r).xs, 1) or …`):
-            // its specialization's return type, from the type arguments
-            // the call's row binds, as lowering specializes it.
-            Expr::Call { callee, id, .. }
-                if self.generic_template_of_callee(callee).is_some() =>
-            {
-                let name = self.generic_template_of_callee(callee)?;
-                let (type_args, _, _) = self.generic_call_instance(&name, *id, callee.span()).ok()?;
-                let template = self.generic_fn_templates.get(&name)?;
-                let subst: std::collections::BTreeMap<String, hale_syntax::ast::TypeExpr> =
-                    template.generics.iter().map(|g| g.name.name.clone()).zip(type_args).collect();
-                let ret = Self::substitute_type_expr(template.ret.as_ref()?, &subst);
-                self.type_expr_to_codegen_ty(&ret).ok()
-            }
-            // A call's success type: a locus method on a receiver the
-            // walk types, else a free fn, a fn-pointer local or a
-            // qualified path (`call_returned_ty`).
-            Expr::Call { callee, .. } => {
-                if let Expr::Field { receiver, name, .. } = callee.as_ref() {
-                    match self.static_expr_codegen_ty(receiver, scope) {
-                        Some(CodegenTy::LocusRef(locus)) => {
-                            return self.static_locus_method_ret(&locus, &name.name);
-                        }
-                        // A method through an interface: its declared
-                        // return (`count(s.names())`, GH #1951).
-                        Some(CodegenTy::Interface(iface)) => {
-                            return self
-                                .iface_method_sig(&iface, &name.name)
-                                .and_then(|m| m.ret)
-                                .and_then(|t| self.type_expr_to_codegen_ty(&t).ok());
-                        }
-                        _ => {}
-                    }
-                }
-                self.call_returned_ty(callee, scope)
-            }
-            // `inner or <disposition>` is the success type of `inner`
-            // on every disposition but `discard`, which is Unit.
-            Expr::Or { inner, disposition, .. } => match disposition {
-                hale_syntax::ast::OrDisposition::Discard(_) => None,
-                _ => self.static_expr_codegen_ty(inner, scope),
-            },
-            _ => None,
-        }
-    }
-
-    /// The declared return type of `locus.method`, as the static walk
-    /// needs it: `None` for a method with no return, a synthesized
-    /// form method, or a locus with no declaration in the program.
-    fn static_locus_method_ret(
-        &self,
-        locus: &str,
-        method: &str,
-    ) -> Option<CodegenTy> {
-        let decl = self.locus_declaration(locus)?;
-        decl.members.iter().find_map(|m| match m {
-            hale_syntax::ast::LocusMember::Fn(fd) if fd.name.name == method => {
-                fd.ret.as_ref().and_then(|t| self.type_expr_to_codegen_ty(t).ok())
-            }
-            _ => None,
-        })
-    }
-
-    /// Elem + cap when args[0] statically types as bounded[T; N].
-    pub(crate) fn bounded_recv_spec(
-        &self,
-        args: &[Expr],
-        scope: &Scope<'ctx>,
-    ) -> Option<(CodegenTy, u64)> {
-        match self.static_expr_codegen_ty(args.first()?, scope)? {
+    /// Elem + cap when `args[0]` is a `bounded[T; N]`, by the checker's
+    /// type of it (`Cx::ty_at`). The intrinsics dispatch on their first
+    /// argument's type (`spec/types.md` § bounded[T; N]), and the checker
+    /// types that argument as any expression: a field chain, a call's
+    /// result, an `or`, an array element, a record literal. Until GH #2111
+    /// lowering typed it again with a walk of its own over a subset of
+    /// that grammar, which grew a shape at a time as programs reached the
+    /// build untyped (downstream handoffs, 2026-11-06 and 2026-11-14).
+    pub(crate) fn bounded_recv_spec(&self, args: &[Expr]) -> Option<(CodegenTy, u64)> {
+        match self.ty_at(args.first()?)? {
             CodegenTy::Bounded(elem, cap) => Some((*elem, cap)),
             _ => None,
         }
@@ -238,7 +94,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         &self,
         name: &str,
         args: &[Expr],
-        scope: &Scope<'ctx>,
     ) -> bool {
         let Some(sig) = self.user_fns.get(name) else {
             return false;
@@ -256,7 +111,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return false;
         }
         matches!(
-            self.bounded_recv_spec(args, scope),
+            self.bounded_recv_spec(args),
             Some((elem, cap))
                 if elem == **param_elem && cap == *param_cap
         )
@@ -536,7 +391,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if method_name != "get" || args.len() != 1 {
             return Ok(None);
         }
-        let recv_ty = match self.static_expr_codegen_ty(receiver, scope) {
+        let recv_ty = match self.ty_at(receiver) {
             Some(t) => t,
             None => return Ok(None),
         };
@@ -655,7 +510,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
         call: NodeId,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
-        if self.user_fn_shadows_bounded_intrinsic(name, args, scope) {
+        if self.user_fn_shadows_bounded_intrinsic(name, args) {
             return Ok(None);
         }
         let r = self.lower_bounded_fallible_intrinsic(name, args, scope, call)?;
@@ -695,7 +550,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if args.len() != want_args {
             return Ok(None);
         }
-        let Some((elem, cap)) = self.bounded_recv_spec(args, scope)
+        let Some((elem, cap)) = self.bounded_recv_spec(args)
         else {
             return Ok(None);
         };
