@@ -1416,6 +1416,8 @@ fn walk_bundle(
         decimal_literals: Vec::new(),
         decimal_scales: std::collections::HashMap::new(),
         u64_negations: std::collections::HashSet::new(),
+        met_rows: Default::default(),
+        met_scoped_rows: Vec::new(),
     };
     let mut reported: std::collections::BTreeSet<(usize, usize, String)> = std::collections::BTreeSet::new();
     for (key, program) in &bundle.programs {
@@ -11684,6 +11686,12 @@ struct Checker<'a> {
     /// GH #2121: the negations refused as a `U64`, by span: a value is
     /// walked more than once, and each is refused once.
     u64_negations: std::collections::HashSet<(usize, usize)>,
+    /// GH #2111 (phase 1, family 7): the expressions whose row a place
+    /// decided (`meet_row`): by node in the `views` column, by body, scope
+    /// and key in a monomorph's or a default's walk. Another walk of one
+    /// types it as it stands alone, which is not a second answer.
+    met_rows: std::collections::HashSet<usize>,
+    met_scoped_rows: Vec<(NodeId, crate::typed_bodies::ExprScope, (u32, u32, u8, u64))>,
 }
 
 /// A Decimal literal awaiting its scale's judgment (`Decimal<S>`).
@@ -23337,15 +23345,16 @@ impl<'a> Checker<'a> {
         if let Some(seen) = &mut self.expr_types {
             seen.push((expr as *const Expr, ty.clone()));
         }
+        if self.met_row(expr) {
+            return ty;
+        }
         if self.records_views() {
             self.note_view_expr(expr, &ty);
         } else if let Some(scope) = self.expr_scope() {
             // GH #2111: a monomorph's walk and a default's evaluation keep
             // what they typed each expression, for lowering in the
             // monomorph and where it evaluates the default
-            if !matches!(expr, Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. }) {
-                self.typed.scoped_expr(self.body, &scope, expr, ty.clone());
-            }
+            self.typed.scoped_expr(self.body, &scope, expr, ty.clone());
         }
         ty
     }
@@ -23357,6 +23366,39 @@ impl<'a> Checker<'a> {
     /// `views` column's), and on a walk that is no evaluation: a default
     /// typed where it is declared, and a type declaration's walk of its
     /// fields' calls.
+    /// GH #2111 (phase 1, family 7): the place `e` flows into decides its
+    /// type, `ty` (an integer literal into a `U64` is one): its row in this
+    /// walk says so, whatever the walk that typed it alone said, and no
+    /// later walk of it alone undoes that.
+    fn meet_row(&mut self, e: &Expr, ty: Ty) {
+        if self.records_views() {
+            self.met_rows.insert(e as *const Expr as usize);
+            self.views.meet_expr(e, ty);
+        } else if let Some(scope) = self.expr_scope() {
+            let key = Self::row_key(e);
+            if !self.met_scoped_rows.iter().any(|(b, s, k)| *b == self.body && *s == scope && *k == key) {
+                self.met_scoped_rows.push((self.body, scope.clone(), key));
+            }
+            self.typed.scoped_meet(self.body, &scope, key, ty);
+        }
+    }
+
+    /// Whether this walk's row of `e` is one a place decided
+    /// ([`Self::meet_row`]).
+    fn met_row(&self, e: &Expr) -> bool {
+        if self.records_views() {
+            return self.met_rows.contains(&(e as *const Expr as usize));
+        }
+        let Some(scope) = self.expr_scope() else { return false };
+        let key = Self::row_key(e);
+        self.met_scoped_rows.iter().any(|(b, s, k)| *b == self.body && *s == scope && *k == key)
+    }
+
+    fn row_key(e: &Expr) -> (u32, u32, u8, u64) {
+        let sp = e.span();
+        (sp.start.0, sp.end.0, crate::typed_bodies::expr_kind(e), crate::typed_bodies::expr_name(e))
+    }
+
     fn expr_scope(&self) -> Option<crate::typed_bodies::ExprScope> {
         if self.records_views() || self.defaults_judged_at_literals {
             return None;
@@ -23434,10 +23476,12 @@ impl<'a> Checker<'a> {
     /// (a field written as an interface is that interface, as a binding
     /// is), and a call's callee.
     fn note_view_expr(&mut self, expr: &Expr, ty: &Ty) {
-        // The pass reads a literal and an operator by their shape, and a
-        // local's read by its binding's row: no row of their own.
+        // A local's read is answered by its binding's row; the read's own
+        // row is kept apart, for lowering's per-body table. A literal and
+        // an operator have rows of their own since GH #2111 (phase 1,
+        // family 7): the pass still reads them by their shape, and
+        // lowering takes their types from them.
         match expr {
-            Expr::Literal(..) | Expr::Binary { .. } | Expr::Unary { .. } | Expr::Range { .. } => return,
             Expr::Ident(id) if self.locals.lookup(&id.name).is_some() => {
                 // GH #2111: the read's own row, for lowering's per-body table
                 self.views.note_read(expr, ty.clone());
@@ -24204,14 +24248,13 @@ impl<'a> Checker<'a> {
     /// into a `U64` place is a check error at the literal, never a wrap.
     fn adopt_u64(&mut self, e: &Expr) {
         let u64_ty = Ty::Prim(PrimType::U64);
+        // GH #2111 (family 7): an operator, a block, an `if` or a `match`
+        // over adopted literals is a `U64` too, and its row says so
+        if !matches!(e, Expr::Literal(..)) && Self::u64_adoptable(e) {
+            self.meet_row(e, u64_ty.clone());
+        }
         match e {
-            Expr::Literal(Literal::Int(_), _) => {
-                if self.records_views() {
-                    self.views.note_expr(e, u64_ty);
-                } else if let Some(scope) = self.expr_scope() {
-                    self.typed.scoped_expr(self.body, &scope, e, u64_ty);
-                }
-            }
+            Expr::Literal(Literal::Int(_), _) => self.meet_row(e, u64_ty),
             Expr::Unary { op: UnaryOp::Neg, operand, span } => {
                 let judged = (span.start.as_usize(), span.end.as_usize());
                 if self.u64_negations.insert(judged) {
