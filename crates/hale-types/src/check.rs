@@ -18257,8 +18257,10 @@ impl<'a> Checker<'a> {
         }
         // GH #2121: a match whose arms are `U64`s and integer literals is a
         // `U64`; an `Int` arm that is no literal is the mismatch.
+        // Adopted on the arms as written (`written`): a literal's row is keyed
+        // by its node, and `stmt` is a copy when an arm writes `.Variant`.
         if as_expr && !mismatched && joined == Some(Ty::Prim(PrimType::U64)) {
-            for (arm, t) in stmt.arms.iter().zip(&arm_tys) {
+            for (arm, t) in written.arms.iter().zip(&arm_tys) {
                 if *t != Ty::Prim(PrimType::Int) {
                     continue;
                 }

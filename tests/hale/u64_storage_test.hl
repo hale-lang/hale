@@ -67,6 +67,17 @@ fn exact_of(a: Amount) -> U64 {
     };
 }
 
+// a match's literal arm beside a `U64` one, bound before it is returned
+// (the parity gate's `.Variant` and `let` mutations of `exact_of`)
+fn pair_of(a: Amount) -> U64 {
+    let mut r = match a {
+        .Pair(_, v) -> v,
+        _ -> 0,
+    };
+    let s = if r > 0 { r } else { 7 };
+    return s;
+}
+
 fn top(n: U64) -> U64 {
     return U64::max() - n;
 }
@@ -89,6 +100,11 @@ fn main() {
         exact_of(Amount::Pair(7, U64::max() - 2)) == U64::max() - 2,
         "a payload after an Int",
     );
+    std::test::assert(
+        pair_of(Amount::Pair(7, U64::max())) == U64::max(),
+        "a let-bound match over `.Pair`",
+    );
+    std::test::assert(pair_of(Amount::Nothing) == 7, "and its literal arms");
 
     // a bounded buffer and a fixed array
     let bag = Bag { };
