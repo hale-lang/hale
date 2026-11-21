@@ -112,6 +112,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Err(CodegenError::MissingRows(rows))
     }
 
+    /// GH #2111: the checker's type of the assignment target `target`, a
+    /// place of the body being lowered: its head's place, or its last
+    /// segment's (a field by its name, an element by its index). `None`
+    /// where the checker recorded none, or for a type with no layout.
+    pub(crate) fn place_ty(&self, target: &hale_syntax::ast::LValue) -> Option<CodegenTy> {
+        let body = self.current_body?;
+        let key = match target.tail.last() {
+            None => hale_types::typed_bodies::place_name_key(&target.head),
+            Some(hale_syntax::ast::LValueSeg::Field(f)) => hale_types::typed_bodies::place_name_key(f),
+            Some(hale_syntax::ast::LValueSeg::Index(ix)) => hale_types::typed_bodies::place_index_key(ix),
+        };
+        self.layout_of(self.expr_types.place_at(body, key)?)
+    }
+
     /// The checker's type of the call `call`, the value its lowering
     /// hands back, where lowering has no signature of its own to read
     /// (a bare builtin's result: `len`, `to_string`, `min` over its

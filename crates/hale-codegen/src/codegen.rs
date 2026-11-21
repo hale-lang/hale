@@ -19530,11 +19530,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // A bounded local bound from a place: the place evaluated
                 // once, its owner kept for the view's arena below.
                 let mut bounded_owner: Option<Option<LvalueOwner<'ctx>>> = None;
+                if std::env::var_os("TEMP_SEAM_PROBE").is_some() {
+                    if let Some(lv) = Self::expr_place_lvalue(value_to_lower) {
+                        let old = self.place_declared_ty_old(&lv, scope);
+                        let new = self.ty_at(value_to_lower);
+                        let tag = if old == new { "SAME" } else { "DIFF" };
+                        eprintln!("PLACEV\t{tag}\told={old:?}\tnew={new:?}\thead={}\tfn={:?}", lv.head.name, self.current_fn.map(|f| f.get_name().to_string_lossy().into_owned()));
+                    }
+                }
                 let bounded_place = Self::expr_place_lvalue(value_to_lower)
-                    .is_some_and(|lv| matches!(self.place_declared_ty(&lv, scope), Some(CodegenTy::Bounded(_, _))));
+                    .is_some_and(|lv| matches!(self.place_declared_ty_old(&lv, scope), Some(CodegenTy::Bounded(_, _))));
                 let lower_result = if bounded_place {
                     let ty = self
-                        .place_declared_ty(&Self::expr_place_lvalue(value_to_lower).expect("a place"), scope)
+                        .place_declared_ty_old(&Self::expr_place_lvalue(value_to_lower).expect("a place"), scope)
                         .expect("a bounded place");
                     self.bounded_place(value_to_lower, scope).map(|(storage, owner)| {
                         bounded_owner = owner;
@@ -36419,6 +36427,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// a local's), then each field's or element's in turn. `None`
     /// where a step is not a record's, a locus's or an array's.
     fn place_declared_ty(&self, target: &LValue, scope: &Scope<'ctx>) -> Option<CodegenTy> {
+        let old = self.place_declared_ty_old(target, scope);
+        if std::env::var_os("TEMP_SEAM_PROBE").is_some() {
+            let new = self.place_ty(target);
+            let tag = if old == new { "SAME" } else { "DIFF" };
+            eprintln!("PLACE\t{tag}\told={old:?}\tnew={new:?}\thead={}\tsegs={}\tspan={}..{}\tfn={:?}\tspec={}", target.head.name, target.tail.len(), target.span.start.0, target.span.end.0, self.current_fn.map(|f| f.get_name().to_string_lossy().into_owned()), self.current_specialization.is_some());
+        }
+        old
+    }
+
+    fn place_declared_ty_old(&self, target: &LValue, scope: &Scope<'ctx>) -> Option<CodegenTy> {
         let mut segs = target.tail.iter();
         let mut ty = if target.head.name == "self" {
             let LValueSeg::Field(f) = segs.next()? else { return None };
