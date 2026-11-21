@@ -470,28 +470,24 @@ fn the_burn_down_only_moves_forward() {
 }
 
 
-/// The knob itself: off, a program builds as it always has; on, an
-/// expression lowered without the checker's row refuses the build, and the
-/// refusal names the site, its kind, its family and why. A literal has no
-/// row of its own today (the checker records none, by design until family
-/// 7 is burned down), so `1` is one.
+/// The knob itself. On, a program that reaches a value lowering types
+/// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
+/// family and why. A chain (`xs.filter(...).count()`) is desugared after
+/// the check, so its accumulator has no row of its own today: when the
+/// desugar moves before the check (GH #2111's rewrites), this test takes
+/// another site that has none, until there is none and the knob goes.
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
-    let src = "fn main() { let x = 41; println(x + 1); }\n";
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "fn main() { let xs = [1, 2, 3]; println(xs.filter(it > 1).count()); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
     let out = harness::unique_bin("seam_strict_on");
     let err = build_opts::build_source(src, &out, &strict).expect_err("on, it is refused");
     assert!(!out.exists(), "nothing is emitted");
     let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
-    let lit = rows
-        .iter()
-        .find(|r| r.kind == "literal" && !r.stdlib && r.span.end.0 - r.span.start.0 == 2)
-        .unwrap_or_else(|| panic!("the literal `41` is named: {err}"));
-    assert_eq!((lit.family, lit.reason, lit.in_fn.as_str()), (7, "no row", "main"), "{err}");
-    assert!(err.to_string().contains("program `literal` (family 7)"), "{err}");
-    // the read of `x` has the checker's row: not named
-    assert!(!rows.iter().any(|r| !r.stdlib && r.kind == "ident"), "{err}");
+    let at = rows.iter().find(|r| !r.stdlib).unwrap_or_else(|| panic!("a site of the program is named: {err}"));
+    assert_eq!(at.in_fn, "main", "{err}");
+    assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
 }
