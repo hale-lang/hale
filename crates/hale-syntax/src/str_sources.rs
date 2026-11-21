@@ -109,9 +109,18 @@ pub fn receiver_source_shape(e: &Expr) -> bool {
         && SOURCES.iter().any(|(n, arity)| *n == name.name && args.len() + 1 == *arity)
 }
 
-/// GH #2068: where the snapshot's second desugar of the text sources
-/// numbers its scans from, past every number the first one gave.
+/// GH #2068: where the snapshot's later desugars of the text sources
+/// number their scans and a chain's temporaries from, past every number
+/// the first one gave.
 pub const SETTLED_BASE: usize = 1 << 32;
+
+/// GH #2068: where the snapshot's desugar in its settling round `round`
+/// numbers from: past the first pass's and every earlier round's, so a
+/// loop a round exposes (one over a part of a loop an earlier round
+/// desugared) never reuses a name.
+pub fn settled_base(round: usize) -> usize {
+    SETTLED_BASE + (round << 24)
+}
 
 /// The checker's refusal of a source left as written: a call used as a
 /// value, or one with the wrong number of arguments.

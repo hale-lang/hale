@@ -1103,9 +1103,14 @@ fn own_entries_run_to_exit_programs() {
             "tests/hale/string_append_test.hl: Doc::build StringConcat #1 InUnboundedLoop",
             // `tests/hale/text_receiver_calls_test.hl`: the arrays the locus
             // `Source`'s methods named like the text sources build, each
-            // called in a loop, and `main`'s loop appending the String a
-            // receiver call repeats
+            // called in a loop, `main`'s loop appending the String a
+            // receiver call repeats, and `nested_words`' appends in its
+            // loops over a text and each of its lines
             "tests/hale/text_receiver_calls_test.hl: main StringConcat #3 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: nested_words StringConcat #1 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: nested_words StringConcat #2 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: nested_words StringConcat #3 InUnboundedLoop",
+            "tests/hale/text_receiver_calls_test.hl: nested_words StringConcat #4 InUnboundedLoop",
             "tests/hale/text_receiver_calls_test.hl: Source::lines ArrayLit #1 InvokedUnboundedly",
             "tests/hale/text_receiver_calls_test.hl: Source::split ArrayLit #1 InvokedUnboundedly",
             "tests/hale/text_receiver_calls_test.hl: Source::words ArrayLit #1 InvokedUnboundedly",

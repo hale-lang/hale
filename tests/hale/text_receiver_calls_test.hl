@@ -87,6 +87,19 @@ fn source_field(sh: Shelf) -> Int {
     return t + sh.src.lines().filter(it > 1).count();
 }
 
+// a text source over a part of another: the inner loop is typed only once
+// the outer one is
+fn nested_words(text: String) -> String {
+    let mut out = "";
+    for line in text.lines() {
+        for w in line.words() {
+            out = out + w.upper() + ".";
+        }
+        out = out + to_string(line.words().count()) + ";";
+    }
+    return out;
+}
+
 fn kind(s: String) -> String {
     return match s {
         _ if s.starts_with("GET ") -> "read",
@@ -148,6 +161,8 @@ fn main() {
         ws = ws + w.upper();
     }
     std::test::assert_eq_str(ws, "ONETWO", "words, a for");
+
+    std::test::assert_eq_str(nested_words("a b\nc"), "A.B.2;C.1;", "nested text sources");
 
     // a locus's methods named like the text sources
     let src = Source { };

@@ -139,10 +139,11 @@ pub fn desugar_chains(program: &mut Program) {
 /// the snapshot has written the receiver calls the check resolved as
 /// their path calls: a chain over `std::str::words(s)` is a text source's,
 /// one over a locus's method `src.words()` an indexed loop, as before.
-/// Its temporaries are numbered past the first pass's, and its nodes,
-/// minted once already, are made new sites (the lowering copies some).
-pub fn desugar_deferred_chains(program: &mut Program) {
-    desugar_chains_from(program, crate::str_sources::SETTLED_BASE);
+/// Its temporaries are numbered past the first pass's and each earlier
+/// round's (`round`), and its nodes, minted once already, are made new
+/// sites (the lowering copies some).
+pub fn desugar_deferred_chains(program: &mut Program, round: usize) {
+    desugar_chains_from(program, crate::str_sources::settled_base(round));
 }
 
 fn desugar_chains_from(program: &mut Program, start: usize) {
@@ -195,6 +196,10 @@ fn stmt(s: &mut Stmt, n: &mut usize) {
         Stmt::Expr(e) => expr(e, n),
         Stmt::While { body, .. } => block(body, n),
         Stmt::For { body, .. } => block(body, n),
+        // a block statement: a user's, or a `for` over a text source the
+        // desugar sequence has written as its scan by the time the
+        // snapshot's later pass runs (GH #2068)
+        Stmt::Block(b) => block(b, n),
         Stmt::If(i) => if_stmt(i, n),
         Stmt::Return(Some(e), _) => expr(e, n),
         _ => {}
