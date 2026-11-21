@@ -1,4 +1,4 @@
-//! The `tooling_build` integration-test binary: 20 test files of this area, kept
+//! The `tooling_build` integration-test binary: 21 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -39,6 +39,8 @@ mod target_model;
 mod target_precedence;
 #[path = "test_ffi_pickup.rs"]
 mod test_ffi_pickup;
+#[path = "vectorize_build.rs"]
+mod vectorize_build;
 #[path = "verify.rs"]
 mod verify;
 #[path = "wasm_link_is_quiet.rs"]

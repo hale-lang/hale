@@ -190,6 +190,38 @@ fn on_tick(a: Int, b: Int) -> Int { ... }
 
 If any callee in the transitive call graph violates an effect contract or exceeds the allocation budget, `hale check` fails and prints the exact offending call chain. See [Effects & Contracts](../effects.md) for the full effect system, including `@phase_effects(birth: {alloc}, run: {})` on a locus.
 
+### Loops That Must Vectorize (`@vectorize`)
+
+A kernel that silently stops vectorizing still computes the right answer, several times slower, and no test notices. `@vectorize` on a fn makes that a build failure: every innermost loop written in its body (an element chain's loop included) must be vectorized by the build's optimizer on the build's target. `@vectorize(min_width: N)` also asks for at least `N` lanes.
+
+```hale
+@vectorize
+fn total(xs: bounded[Int; 1024]) -> Int {
+    let mut s = 0;
+    for x in xs {
+        s = s + x;
+    }
+    return s;
+}
+```
+
+It asks the optimizer for nothing and changes nothing the program computes; it reads what LLVM's loop vectorizer reported about each loop and fails the build at the loop that was not vectorized, with the target and the reason:
+
+```text
+main.hl:5:5: codegen error: `@vectorize` on `until`: this loop does not vectorize on arm64-apple-darwin (apple-m1): its trip count is not known when the loop starts (an exit that depends on what the loop computes) (LLVM: could not determine number of loop iterations)
+```
+
+What no target vectorizes, `hale check` refuses first, at the place that stops the loop: a `break` or `return` beside the loop's own exit, a call to a fn with effects (printing, I/O, time, an allocating fn), an allocation or a locus built in the loop, a publish or send, and a call to a fn that loops itself.
+
+Points to know:
+
+- **The verdict is the target's.** A `Float` sum keeps its written order, so it vectorizes on aarch64 (which has an in-order vector reduction) and not on x86-64. A 64-bit integer multiply has no fast vector form on NEON. Mark the kernels that are meant to vectorize on the targets you ship, and build for those targets.
+- **Only innermost loops are held.** An outer loop is never vectorized, so it may do anything between its inner loops.
+- **It is checked where the pipeline vectorizes.** A dev build (`--dev`, `HALE_DEV`), `hale test` (both O1), an AddressSanitizer build and a wasm build do not check it; `hale build` prints a note when it skipped.
+- **The optimized program is what is judged.** An inlined `@vectorize` fn is judged in every copy; a loop the optimizer removed entirely passes.
+
+See spec/semantics.md § Vectorized loops for the full rules.
+
 ### Locality & Allocation Reports
 
 Use compiler reporting flags to inspect memory layout and working-set sizes at build time:

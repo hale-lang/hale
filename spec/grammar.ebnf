@@ -1265,6 +1265,12 @@ function_decl     = [ ffi_annotation | export_annotation
    locus method); `hot` is contextual, recognized only after `@`.
    See `spec/verification.md`.
 
+   `vectorize_annotation` (GH #2134, F.63): every innermost loop of
+   the fn must be vectorized by the build's optimizer on the build's
+   target, at least `min_width` lanes wide when given (an integer
+   literal from 2 to 1024). fn-only. See spec/semantics.md §
+   Vectorized loops.
+
    `effect_annotation` is the #265 categoric assertion surface: the
    general `@effects(...)` and its `@no_*` sugar. See
    `spec/verification.md` § Effect assertions for the clause forms
@@ -1272,7 +1278,8 @@ function_decl     = [ ffi_annotation | export_annotation
 contract_decorator = unbounded_annotation | bounded_by_annotation
                    | budget_annotation
                    | hot_annotation | effect_annotation
-                   | rpc_annotation | raise_annotation ;
+                   | rpc_annotation | raise_annotation
+                   | vectorize_annotation ;
 ffi_annotation    = "@" , "ffi" , "(" , STRING_LIT , ")" ;
 export_annotation = "@" , "export" ;
 unbounded_annotation = "@" , "unbounded" ;
@@ -1281,6 +1288,8 @@ bounded_by_annotation = "@" , "bounded_by" , "(" , IDENTIFIER ,
 budget_annotation = "@" , "budget" , "(" , "alloc_per_call" ,
                     "=" , INT_LIT , ")" ;
 hot_annotation    = "@" , "hot" ;
+vectorize_annotation = "@" , "vectorize" ,
+                       [ "(" , "min_width" , ":" , INT_LIT , ")" ] ;
 (* GH #1951 (item 2) — on a free fn of one parameter: the conversion an
    `or raise` applies from the parameter's type to the result's
    (spec/semantics.md § `or` disposition). *)

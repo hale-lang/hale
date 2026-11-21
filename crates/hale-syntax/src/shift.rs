@@ -708,6 +708,7 @@ shift_struct!(FnDecl {
     effects,
     quantities,
     rpc,
+    vectorize,
     decorators,
     body,
     span,
@@ -715,6 +716,7 @@ shift_struct!(FnDecl {
     doc,
 });
 shift_struct!(RpcAttr { requires, span });
+shift_struct!(VectorizeAttr { min_width, span });
 shift_struct!(GenericParam { name, bound, span });
 shift_struct!(Param { name, ty, default, secret, span, doc });
 

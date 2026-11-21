@@ -398,6 +398,9 @@ pub(crate) fn run_build(target: &Path, flags: &[String]) -> ExitCode {
     match hale_codegen::build_resolved(view, &output, &options) {
         Ok(()) => {
             eprintln!("built: {}{}", output.display(), tuned_for(&options));
+            if let Some(note) = vectorize_skipped_note(&snap, &options) {
+                eprintln!("{note}");
+            }
             if let Some(warning) = shipped_native_warning(&options) {
                 eprintln!("{warning}");
             }
@@ -588,6 +591,27 @@ fn shipped_native_warning(options: &hale_codegen::BuildOptions) -> Option<String
 /// travels), the portable baseline, or the CPU named. A cross build
 /// at the default is generic (GH #970); a wasm32 module is always
 /// generic and says nothing.
+/// GH #2134 (F.63): a build that does not check the program's
+/// `@vectorize` fns says so, and why.
+fn vectorize_skipped_note(
+    snap: &hale_frontend::snapshot::Snapshot,
+    options: &hale_codegen::BuildOptions,
+) -> Option<String> {
+    let wasm = matches!(options.target, hale_codegen::CompileTarget::Wasm32);
+    let why = hale_codegen::vectorize::skipped(options.dev_profile, options.asan, wasm)?;
+    let declares = |f: &hale_syntax::ast::FnDecl| f.vectorize.is_some();
+    let any = snap.programs().values().any(|p| {
+        p.items.iter().any(|item| match item {
+            hale_syntax::ast::TopDecl::Fn(f) => declares(f),
+            hale_syntax::ast::TopDecl::Locus(l) => {
+                l.members.iter().any(|m| matches!(m, hale_syntax::ast::LocusMember::Fn(f) if declares(f)))
+            }
+            _ => false,
+        })
+    });
+    any.then(|| format!("note: `@vectorize` was not checked: {why}"))
+}
+
 fn tuned_for(options: &hale_codegen::BuildOptions) -> String {
     use hale_codegen::{CompileTarget, TargetCpu};
     match (&options.target, &options.target_cpu) {

@@ -72,6 +72,14 @@
 //! delta-debugged down to the lines the divergence needs
 //! (`parity/minimize.rs`).
 //!
+//! One refusal is not a divergence: a loop of a `@vectorize` fn the
+//! build's optimizer did not vectorize on this target (GH #2134, F.63).
+//! `hale check` refuses what no target vectorizes; what is left is a
+//! target-dependent build assertion by design (spec/semantics.md §
+//! Vectorized loops), so the gate counts it apart
+//! (`Verdict::TargetAssertion`, `target_assertions` in the run's
+//! report) and never lists it.
+//!
 //! ## The ratchet
 //!
 //! `tests/fixtures/parity/divergences.txt` lists the divergences known
@@ -432,6 +440,9 @@ struct Report {
     candidates: usize,
     clean: usize,
     built: usize,
+    /// GH #2134: candidates the build refused only by a target-dependent
+    /// `@vectorize` assertion ([`Verdict::TargetAssertion`]).
+    target_assertions: usize,
     /// By signature, in signature order.
     found: BTreeMap<String, Found>,
     /// Divergences the unmutated seed already has (the agreement
@@ -449,6 +460,7 @@ fn run(seeds: &[Seed], draw: Draw) -> Report {
         candidates: candidates.len(),
         clean: 0,
         built: 0,
+        target_assertions: 0,
         found: BTreeMap::new(),
         seed_owned: BTreeSet::new(),
         stats: BTreeMap::new(),
@@ -470,6 +482,12 @@ fn run(seeds: &[Seed], draw: Draw) -> Report {
         st.applied += 1;
         match v {
             Verdict::CheckRejects => {}
+            // GH #2134: a target-dependent build assertion, counted apart.
+            Verdict::TargetAssertion(_) => {
+                st.clean += 1;
+                report.clean += 1;
+                report.target_assertions += 1;
+            }
             Verdict::Built => {
                 st.clean += 1;
                 st.built += 1;
@@ -620,10 +638,12 @@ fn judge(report: &Report, minimize_budget: usize) -> Result<(), String> {
 
 fn print_summary(what: &str, report: &Report, took: std::time::Duration) {
     eprintln!(
-        "{what}: {} candidates, {} checked clean, {} built, {} divergence signature(s), {} seed-owned, in {:.1?}",
+        "{what}: {} candidates, {} checked clean, {} built, {} target-dependent `@vectorize` refusal(s), \
+         {} divergence signature(s), {} seed-owned, in {:.1?}",
         report.candidates,
         report.clean,
         report.built,
+        report.target_assertions,
         report.found.len(),
         report.seed_owned.len(),
         took
@@ -694,6 +714,10 @@ fn listed_divergences_still_reproduce() {
                 gate::signature(&m),
                 l.signature
             )),
+            Verdict::TargetAssertion(m) => wrong.push(format!(
+                "{} ({}): a target-dependent `@vectorize` refusal, not the listed divergence: {m}",
+                l.repro, l.issue
+            )),
             Verdict::Built => wrong.push(format!(
                 "{} ({}): BUILDS now — the gap is closed; delete its line from divergences.txt and the reproducer",
                 l.repro, l.issue
@@ -743,6 +767,21 @@ fn mutators_reach_check_clean_programs() {
     });
     let dead: Vec<&&str> = names.iter().zip(&reached).filter(|(_, r)| r.is_none()).map(|(n, _)| n).collect();
     assert!(dead.is_empty(), "mutators that produced no check-clean program over {} seeds: {dead:?}", seeds.len());
+}
+
+/// GH #2134 (F.63): a check-clean program whose `@vectorize` loop the
+/// build's optimizer does not vectorize is the target's answer, counted
+/// as a target assertion, never a divergence.
+#[test]
+fn a_vectorize_refusal_is_a_target_assertion_not_a_divergence() {
+    let src = "@vectorize\nfn until(xs: [Int; 64], limit: Int) -> Int {\n    let mut s = 0;\n    let mut i = 0;\n    \
+               while s < limit {\n        s = s + xs[i % 64];\n        i = i + 1;\n    }\n    return i;\n}\n\n\
+               fn main() {\n    println(until([3; 64], 500));\n}\n";
+    let files: Files = std::iter::once(("main/main.hl".to_string(), src.to_string())).collect();
+    match gate::verdict(&files, "pg_vectorize") {
+        Verdict::TargetAssertion(m) => assert!(m.contains("this loop does not vectorize on"), "{m}"),
+        other => panic!("expected a target assertion, got {other:?}"),
+    }
 }
 
 /// GH #2108: `entry_shape`'s two shapes over a seed whose `main locus` its

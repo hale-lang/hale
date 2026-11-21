@@ -86,6 +86,9 @@ struct FnDecorators {
     budget: Option<u32>,
     /// GH #1417: `@rpc` / `@rpc(requires: [R, …])`.
     rpc: Option<RpcAttr>,
+    /// GH #2134: `@vectorize` / `@vectorize(min_width: N)`, the first one
+    /// written; a second is kept in `written` for the duplicate rule.
+    vectorize: Option<VectorizeAttr>,
     quantities: Vec<(QuantDim, u64)>,
     effects: Vec<EffectAssert>,
     /// Every decorator as written, in source order — the record the
@@ -146,6 +149,9 @@ impl FnDecorators {
         }
         if self.rpc.is_some() {
             fn_decl.rpc = self.rpc;
+        }
+        if self.vectorize.is_some() {
+            fn_decl.vectorize = self.vectorize;
         }
         fn_decl.quantities.extend(self.quantities);
         fn_decl.effects.extend(self.effects);
@@ -3646,6 +3652,7 @@ impl Parser {
             || name == "idempotent"
             || name == "not_idempotent"
             || name == "raise"
+            || name == "vectorize"
             || Self::effect_assert_for(name).is_some()
             || Self::is_effects_form(name)
     }
@@ -3691,6 +3698,14 @@ impl Parser {
                 }
                 out.note("rpc", attr.span);
                 out.rpc = Some(attr);
+                continue;
+            }
+            if name == "vectorize" {
+                let attr = self.parse_vectorize_annotation()?;
+                out.note("vectorize", attr.span);
+                if out.vectorize.is_none() {
+                    out.vectorize = Some(attr);
+                }
                 continue;
             }
             if name == "bounded_by" {
@@ -3755,6 +3770,43 @@ impl Parser {
             out.note(&name, at.span);
         }
         Ok(out)
+    }
+
+    /// GH #2134 (F.63): `@vectorize` or `@vectorize(min_width: N)`, N a
+    /// positive integer literal.
+    fn parse_vectorize_annotation(&mut self) -> Result<VectorizeAttr, Diag> {
+        let at = self.expect(TokenKind::At, "@")?;
+        let word = self.bump(); // `vectorize`
+        let mut span = at.span.merge(word.span);
+        let mut min_width = None;
+        if self.eat(&TokenKind::LParen) {
+            let key = self.expect_ident("`min_width`")?;
+            if key.name != "min_width" {
+                return Err(Diag::parse(
+                    key.span,
+                    format!(
+                        "`@vectorize` takes one argument, `min_width: N` (the \
+                         narrowest vector, in lanes); `{}` is not one",
+                        key.name
+                    ),
+                ));
+            }
+            self.expect(TokenKind::Colon, ":")?;
+            let tok = self.bump();
+            let n = match tok.kind {
+                TokenKind::IntLit(n) if n >= 2 && n <= 1024 => n as u32,
+                _ => {
+                    return Err(Diag::parse(
+                        tok.span,
+                        "`min_width:` is a lane count, an integer literal from 2 to 1024",
+                    ))
+                }
+            };
+            min_width = Some(n);
+            let close = self.expect(TokenKind::RParen, ")")?;
+            span = span.merge(close.span);
+        }
+        Ok(VectorizeAttr { min_width, span })
     }
 
     /// GH #1490: `@bounded_by(<name>)` — the input that bounds a fn's or
@@ -7490,6 +7542,7 @@ impl Parser {
                 unbounded: false,
                 bounded_by: None,
                                 rpc: None,
+                vectorize: None,
                 budget: None,
                 hot: false,
                 effects: Vec::new(),
@@ -7519,6 +7572,7 @@ impl Parser {
             unbounded: false,
             bounded_by: None,
                         rpc: None,
+            vectorize: None,
             budget: None,
             hot: false,
             effects: Vec::new(),
