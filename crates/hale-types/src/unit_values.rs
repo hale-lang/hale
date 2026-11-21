@@ -4,16 +4,18 @@
 //! Int { range: 0..256; }`) are named types the checker knows by their
 //! scope entry ([`crate::symbol::TypeKind::Scalar`]) and their row of the
 //! `unit_declarations` family ([`crate::units::ScalarRow`]), by name.
-//! Both are represented as an `Int`. This module states the rules the
+//! Both are represented as the integer they count, their base (`Int`, or
+//! a `U64`: GH #2131, `ScalarRow::int`). This module states the rules the
 //! checker applies to their values, once:
 //!
 //! - an integer literal where one is expected is a value of it, inside
-//!   its range ([`ScalarTypes::literal`]);
-//! - a range widens to its parent, and an `Int`-rooted range to `Int`,
-//!   for free; an identity widens to nothing ([`ScalarTypes::widens`]);
+//!   its range and its integer's ([`ScalarTypes::literal`]);
+//! - a range widens to its parent, and a range rooted at its integer to
+//!   that integer, for free; an identity widens to nothing
+//!   ([`ScalarTypes::widens`]);
 //! - equality and ordering hold within one type and along a widening;
 //!   arithmetic on an identity is refused, and arithmetic on a range is
-//!   arithmetic on its `Int` ([`ScalarTypes::binop`]);
+//!   arithmetic on its integer ([`ScalarTypes::binop`]);
 //! - a cast `T(x)` is total, a widening, or a narrowing a policy has to
 //!   discharge ([`ScalarTypes::cast`]).
 //!
@@ -46,7 +48,7 @@ pub struct ScalarTypes<'r> {
 enum Up {
     /// The scalar it refines (a range of a range, of an identity).
     Scalar(usize),
-    /// `Int`: a range written over `Int`.
+    /// Its integer: a range written over `Int` (or `U64`, GH #2131).
     Int,
     /// Nothing: an identity, which widens to nothing.
     Nothing,
@@ -86,6 +88,8 @@ fn range_text((lo, hi): (i128, i128)) -> String {
 pub fn int_literal(e: &Expr) -> Option<i128> {
     match e {
         Expr::Literal(Literal::Int(n), _) => Some(i128::from(*n)),
+        // GH #2131: past `Int`'s max, a `U64`'s.
+        Expr::Literal(Literal::U64(n), _) => Some(i128::from(*n)),
         Expr::Unary { op: UnaryOp::Neg, operand, .. } => match operand.as_ref() {
             Expr::Literal(Literal::Int(n), _) => Some(-i128::from(*n)),
             _ => None,
@@ -166,7 +170,7 @@ impl<'r> ScalarTypes<'r> {
             ScalarKindRow::Identity => Up::Nothing,
             _ => match (row.parent, &row.written.base) {
                 (Some(p), _) if self.by_name.contains_key(self.rows.scalars[p].name.as_str()) => Up::Scalar(p),
-                (None, Base::Int) => Up::Int,
+                (None, Base::Integer(_)) => Up::Int,
                 _ => Up::Nothing,
             },
         }
@@ -189,8 +193,27 @@ impl<'r> ScalarTypes<'r> {
         None
     }
 
+    /// GH #2131: the values of `i`: its range, or its nearest ancestor's;
+    /// with none, every value of the integer it counts. Half-open.
+    pub fn bounds(&self, i: usize) -> (i128, i128) {
+        self.range(i).unwrap_or_else(|| {
+            let (lo, hi) = crate::units::int_bounds(self.rows.scalars[i].int);
+            (lo, hi + 1)
+        })
+    }
+
+    /// GH #2131: the integer a value of `ty` counts, when `ty` is a
+    /// scalar of the unit dialect (an identity, a range, a quantity or a
+    /// point, declared or synthesized): `Int`, or a `U64`.
+    pub fn int_of(&self, ty: &Ty) -> Option<PrimType> {
+        if let Some(i) = self.index(ty) {
+            return Some(self.rows.scalars[i].int);
+        }
+        self.quantity(ty).map(|q| self.rows.scalars[q.row].int)
+    }
+
     /// The identity `i` is, or is a range of; `None` for a range rooted
-    /// at `Int`.
+    /// at its integer.
     pub fn identity_root(&self, i: usize) -> Option<usize> {
         let mut at = i;
         for _ in 0..=self.rows.scalars.len() {
@@ -204,22 +227,23 @@ impl<'r> ScalarTypes<'r> {
     }
 
     /// `ty` as it is laid out: an identity, a range, a quantity or a
-    /// point is its `Int`, every other type itself.
+    /// point is the integer it counts (`Int`, a `U64`: GH #2131), every
+    /// other type itself.
     pub fn representation(&self, ty: &Ty) -> Ty {
         // The stdlib's `Duration` and `Time` (U4) are their primitives'
         // class: an FFI cell, a payload field, a key reads them as it did.
         if matches!(ty, Ty::Prim(_)) {
             return ty.clone();
         }
-        if self.index(ty).is_some() || self.quantity(ty).is_some() {
-            crate::symbol::TypeKind::scalar_representation()
-        } else {
-            ty.clone()
+        match self.int_of(ty) {
+            Some(p) => Ty::Prim(p),
+            None => ty.clone(),
         }
     }
 
     /// Whether a value of `from` is a value of `to` for free: `to` is an
-    /// ancestor of the scalar `from`, or `Int` above a range rooted there.
+    /// ancestor of the scalar `from`, or its integer above a range rooted
+    /// there.
     pub fn widens(&self, from: &Ty, to: &Ty) -> bool {
         let Some(mut at) = self.index(from) else { return false };
         for _ in 0..=self.rows.scalars.len() {
@@ -230,30 +254,44 @@ impl<'r> ScalarTypes<'r> {
                     }
                     at = p;
                 }
-                Up::Int => return matches!(to, Ty::Prim(PrimType::Int)),
+                Up::Int => return *to == Ty::Prim(self.rows.scalars[at].int),
                 Up::Nothing => return false,
             }
         }
         false
     }
 
-    /// Whether `t` is an `Int` or a scalar, the two sides the scalar rules
-    /// speak about.
+    /// Whether `t` is a machine integer (`Int`, `U64`) or a scalar, the
+    /// two sides the scalar rules speak about.
     fn int_or_scalar(&self, t: &Ty) -> bool {
-        matches!(t, Ty::Prim(PrimType::Int)) || self.index(t).is_some()
+        matches!(t, Ty::Prim(p) if p.machine_int().is_some()) || self.index(t).is_some()
     }
 
     /// The literal `value` where a value of `to` is expected: `None` when
     /// `to` is no identity or range; `Some(Err)` when it is outside `to`'s
-    /// range, at `span`.
+    /// range, or (GH #2131) is no value of the integer `to` counts, at
+    /// `span`.
     pub fn literal(&self, to: &Ty, value: i128, span: Span) -> Option<Result<(), Diag>> {
         let i = self.index(to)?;
+        let note = |d: Diag| d.with_related(self.row(i).name_span, format!("`{}` is declared here", self.name(i)));
         Some(match self.range(i) {
             Some((lo, hi)) if value < lo || value >= hi => {
-                Err(Diag::ty(span, format!("`{value}` is outside `{}`'s range `{}`", self.name(i), range_text((lo, hi))))
-                    .with_related(self.row(i).name_span, format!("`{}` is declared here", self.name(i))))
+                Err(note(Diag::ty(span, format!("`{value}` is outside `{}`'s range `{}`", self.name(i), range_text((lo, hi))))))
             }
-            _ => Ok(()),
+            Some(_) => Ok(()),
+            None => {
+                let int = self.rows.scalars[i].int;
+                let (lo, hi) = crate::units::int_bounds(int);
+                if value < lo || value > hi {
+                    let base = crate::ty::prim_name(int);
+                    Err(note(Diag::ty(
+                        span,
+                        format!("`{value}` is no `{}`: it counts a `{base}`, which is {lo} through {hi}", self.name(i)),
+                    )))
+                } else {
+                    Ok(())
+                }
+            }
         })
     }
 
@@ -283,11 +321,14 @@ impl<'r> ScalarTypes<'r> {
                 self.name(w),
                 self.range(w).map(range_text).unwrap_or_default()
             ),
-            (None, Ok(_)) => format!(
-                "`{}` is an identity and widens to nothing: write `Int(…)` for its `Int`",
-                self.display(got)
-            ),
-            (_, Ok(CastKind::Widening)) | (_, Err(_)) => self.distinct(want, got),
+            (None, Ok(_)) => {
+                let base = g.map_or("Int", |g| crate::ty::prim_name(self.rows.scalars[g].int));
+                format!("`{}` is an identity and widens to nothing: write `{base}(…)` for its `{base}`", self.display(got))
+            }
+            (_, Ok(CastKind::Widening)) => self.distinct(want, got),
+            // GH #2131: a scalar and an integer it does not count.
+            (_, Err(why)) if self.int_mismatch(want, got).is_some() => why,
+            (_, Err(_)) => self.distinct(want, got),
         };
         let mut d = Diag::ty(span, message);
         for i in [w, g].into_iter().flatten() {
@@ -338,9 +379,9 @@ impl<'r> ScalarTypes<'r> {
         if li.is_none() && ri.is_none() {
             return None;
         }
-        // An `Int`-rooted range stands for its `Int`.
+        // A range rooted at its integer stands for that integer.
         let as_int = |t: &Ty| match self.index(t) {
-            Some(i) if self.identity_root(i).is_none() => Ty::Prim(PrimType::Int),
+            Some(i) if self.identity_root(i).is_none() => Ty::Prim(self.rows.scalars[i].int),
             _ => t.clone(),
         };
         Some(match op {
@@ -351,10 +392,12 @@ impl<'r> ScalarTypes<'r> {
                 }
             }
             Eq | NotEq | Lt | Gt | LtEq | GtEq => {
-                // A literal facing an identity is a value of it.
+                // A literal facing an identity is a value of it, and so is
+                // one facing a range of an integer other than `Int` (GH
+                // #2131: a `U64`'s, where no `Int` widens).
                 for (lit, other) in [(l, rt), (r, lt)] {
                     if let (Some(v), Some(i)) = (int_literal(lit), self.index(other)) {
-                        if self.identity_root(i).is_some() {
+                        if self.identity_root(i).is_some() || self.rows.scalars[i].int != PrimType::Int {
                             return Some(match self.literal(other, v, lit.span()) {
                                 Some(Err(d)) => BinopRule::Refused(d.message),
                                 _ => BinopRule::Compared,
@@ -383,32 +426,86 @@ impl<'r> ScalarTypes<'r> {
     }
 
     /// A unary operator over `t`: `None` when `t` is no scalar; the refusal
-    /// for arithmetic on an identity; else the result, `Int`.
+    /// for arithmetic on an identity, and for `-` of a range of an unsigned
+    /// integer (GH #2131); else the result, its integer.
     pub fn unary(&self, op: UnaryOp, t: &Ty) -> Option<Result<Ty, String>> {
-        self.index(t)?;
+        let i = self.index(t)?;
+        let int = self.rows.scalars[i].int;
         Some(match op {
             UnaryOp::Not => Ok(Ty::Prim(PrimType::Bool)),
             UnaryOp::Neg | UnaryOp::BitNot => match self.no_arithmetic(t) {
                 Some(why) => Err(why),
-                None => Ok(Ty::Prim(PrimType::Int)),
+                None if op == UnaryOp::Neg && int.machine_int().is_some_and(|(_, signed)| !signed) => Err(format!(
+                    "`-` of `{}`, which counts a `{}`: a `{}` is never negative and has no unary `-`",
+                    self.name(i),
+                    crate::ty::prim_name(int),
+                    crate::ty::prim_name(int)
+                )),
+                None => Ok(Ty::Prim(int)),
             },
         })
     }
 
+    /// GH #2131: why a value of `got` is no value of `want` when one is an
+    /// identity or a range and the other a machine integer it does not
+    /// count: the integers never convert implicitly, and the message names
+    /// the conversion. `None` for every other pair.
+    pub fn int_mismatch(&self, want: &Ty, got: &Ty) -> Option<String> {
+        let int = |t: &Ty| match t {
+            Ty::Prim(p) if p.machine_int().is_some() => Some(*p),
+            _ => None,
+        };
+        let (scalar, other, into_scalar) = match (self.index(want), self.index(got), int(want), int(got)) {
+            (Some(w), None, _, Some(g)) => (w, g, true),
+            (None, Some(g), Some(w), _) => (g, w, false),
+            _ => return None,
+        };
+        let base = self.rows.scalars[scalar].int;
+        if base == other {
+            return None;
+        }
+        let (b, o, name) = (crate::ty::prim_name(base), crate::ty::prim_name(other), self.name(scalar));
+        let a = |n: &str| crate::units::article_int(n);
+        Some(if into_scalar {
+            format!(
+                "`{o}` is not `{name}`: `{name}` counts {}, and {} never converts implicitly to one: write \
+                 `{name}({})`",
+                a(b),
+                a(o),
+                crate::units::int_conversion(other, base)
+            )
+        } else {
+            format!(
+                "`{name}` is not {}: it counts {}, and the two never convert implicitly: write `{b}(…)` for its `{b}`, \
+                 then `{}`",
+                a(o),
+                a(b),
+                crate::units::int_conversion(base, other)
+            )
+        })
+    }
+
     /// The cast `to(x)` of a value of `from`: what it is, or why it is
-    /// refused. `to` is `Int` (the `Int(…)` conversion) or a scalar.
+    /// refused. `to` is an integer (the `Int(…)` and `U64(…)` conversions,
+    /// GH #2131) or a scalar.
     pub fn cast(&self, to: &Ty, from: &Ty) -> Result<CastKind, String> {
         let f = self.index(from);
-        let from_int = matches!(from, Ty::Prim(PrimType::Int) | Ty::Unknown);
         match self.index(to) {
             None => match f {
+                Some(i) if *to != Ty::Prim(self.rows.scalars[i].int) => Err(self
+                    .int_mismatch(to, from)
+                    .unwrap_or_else(|| format!("`{}(…)` of `{}` is no unit-dialect conversion", to.display(), self.name(i)))),
                 Some(i) if self.identity_root(i).is_some() => Ok(CastKind::Total),
                 Some(_) => Ok(CastKind::Widening),
-                None => Err(format!("`Int(…)` of a `{}` is no unit-dialect conversion", from.display())),
+                None => Err(format!("`{}(…)` of a `{}` is no unit-dialect conversion", to.display(), from.display())),
             },
             Some(t) => {
+                let from_int = *from == Ty::Prim(self.rows.scalars[t].int) || matches!(from, Ty::Unknown);
                 if from_int {
                     return Ok(if self.range(t).is_some() { CastKind::Narrowing } else { CastKind::Total });
+                }
+                if let Some(why) = self.int_mismatch(to, from) {
+                    return Err(why);
                 }
                 let Some(i) = f else {
                     return Err(format!(
@@ -422,8 +519,9 @@ impl<'r> ScalarTypes<'r> {
                 } else if self.widens(to, from) {
                     Ok(if self.range(t) == self.range(i) { CastKind::Widening } else { CastKind::Narrowing })
                 } else {
+                    let base = crate::ty::prim_name(self.rows.scalars[t].int);
                     Err(format!(
-                        "{}; a conversion between them goes through `Int`: `{}(Int(…))`",
+                        "{}; a conversion between them goes through `{base}`: `{}({base}(…))`",
                         self.distinct_pair(to, from),
                         self.name(t)
                     ))

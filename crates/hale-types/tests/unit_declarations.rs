@@ -353,7 +353,7 @@ fn a_quantity_of_no_int_or_no_denomination_says_what_to_write() {
     let src = "unit g;\ntype F = quantity Float in g;\ntype N = quantity Int;\ntype I = Int in g;\n";
     let all = diags(src);
     let d = the_error(&all, "type `F`");
-    assert_eq!(d.message, "type `F`: a quantity counts an `Int`, and `Float` is not one: write `quantity Int in g`");
+    assert_eq!(d.message, "type `F`: a quantity counts an integer (`Int`, `U64`), and `Float` is not one: write `quantity Int in g`");
     assert_eq!(at(src, d.span), "Float");
     let d = the_error(&all, "type `N`");
     assert_eq!(
@@ -477,14 +477,14 @@ fn an_identity_over_no_int_and_a_range_over_no_int_are_refused() {
           = Int;` for another name of `Int`"]
     );
     let d = the_error(&all, "type `F`");
-    assert_eq!(d.message, "type `F`: an identity is `distinct Int`, and `Float` is not `Int`: write `distinct Int`");
+    assert_eq!(d.message, "type `F`: an identity is `distinct` over an integer (`distinct Int`, `distinct U64`), and `Float` is not one: write `distinct Int`");
     assert_eq!(at(src, d.span), "Float");
     let d = the_error(&all, "type `G`");
     assert_eq!(d.message, "type `G`: an identity counts nothing, so it has no denomination: remove `in g`");
     let d = the_error(&all, "type `R`");
     assert_eq!(
         d.message,
-        "type `R`: a range type refines `Int`, an identity or another range, and `Float` is none of them"
+        "type `R`: a range type refines an integer (`Int`, `U64`), an identity or another range, and `Float` is none of them"
     );
     assert_eq!(at(src, d.span), "Float");
     let d = the_error(&all, "type `S`");

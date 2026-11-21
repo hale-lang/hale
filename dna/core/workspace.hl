@@ -421,6 +421,20 @@ fn free_port(index: Int) -> Int {
     return -1;
 }
 
+// ---- the images a fixture starts (GH #2141) ---------------------------
+
+// A fixture names an image by the repository's mirror on ghcr.io
+// (`.github/workflows/mirror-images.yml` copies each from Docker Hub),
+// never by its Docker Hub name. Docker Hub's anonymous pull limit is
+// counted per address, and a CI runner's address is shared with every
+// other runner's, so a fixture that pulled `busybox:1.36` from it failed
+// at random. `dna_fixture_images_are_mirrored` refuses a Docker Hub or
+// bare name in a fixture's compose `image:`, Dockerfile `FROM` or
+// `docker run`. A production image (teardown's busybox) runs on the
+// user's machine and keeps its Docker Hub name.
+const TEST_BUSYBOX: String = "ghcr.io/hale-lang/ci-busybox:1.36";
+const TEST_ALPINE: String = "ghcr.io/hale-lang/ci-alpine:3.20";
+
 // ---- where a fixture works (GH #909) ---------------------------------
 
 // A fixture's scratch root: `/tmp/dna-<what>-<pid>`, empty, and its

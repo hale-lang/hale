@@ -4,9 +4,8 @@
 //! literal takes the type of its place, and one that no `U64` holds (a
 //! negative one, or past `Int`'s max in a place that is no `U64`) is
 //! refused where it is written; a shift's count is an `Int`; a `U64` has
-//! no unary `-`; the unit dialect's scalars count an `Int`, so a quantity,
-//! an identity or a range over a `U64` is refused at the type. What the
-//! programs compute is `tests/hale/u64_*_test.hl`'s.
+//! no unary `-`; a quantity, an identity or a range may count a `U64`
+//! (GH #2131). What the programs compute is `tests/hale/u64_*_test.hl`'s.
 
 #[path = "support/entries.rs"]
 mod entries;
@@ -127,19 +126,12 @@ fn a_shift_counts_in_int_and_a_u64_has_no_sign() {
 }
 
 #[test]
-fn a_scalar_of_the_unit_dialect_counts_an_int_not_a_u64() {
-    let (at, msg) = one("unit cent;\ntype Money = quantity U64 in cent;\nfn main() {}\n");
-    assert_eq!(at, "U64");
-    assert_eq!(msg, "type `Money`: a quantity counts an `Int`, and `U64` is not one: write `quantity Int in cent`");
-    let (at, msg) = one("type Id = distinct U64;\nfn main() {}\n");
-    assert_eq!(at, "U64");
-    assert!(msg.starts_with("type `Id`: an identity is `distinct Int`"), "{msg}");
-    let (_, msg) = one("type Small = U64 { range: 0..10; };\nfn main() {}\n");
-    assert!(msg.starts_with("type `Small`: a range type refines `Int`"), "{msg}");
-}
-
-#[test]
-fn a_u64_crosses_the_ffi_as_a_uint64_t() {
-    let errs = located("@ffi(\"c\")\nfn take(x: U64) -> U64;\nfn main() {}\n");
+fn a_scalar_of_the_unit_dialect_may_count_a_u64() {
+    // GH #2131: the unit dialect's base is a parameter; what a scalar over
+    // a `U64` may and may not do is `unit_u64_diagnostics.rs`'s.
+    let errs = located(
+        "unit cent;\ntype Money = quantity U64 in cent;\ntype Id = distinct U64;\n\
+         type Small = U64 { range: 0..10; };\nfn main() {}\n",
+    );
     assert!(errs.is_empty(), "{errs:?}");
 }

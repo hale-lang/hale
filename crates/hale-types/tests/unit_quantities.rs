@@ -125,8 +125,8 @@ struct Row {
     factor: String,
     offset: i64,
     policy: Option<Discharge>,
-    count: Option<i64>,
-    split: Option<i64>,
+    count: Option<i128>,
+    split: Option<i128>,
     printed: Option<String>,
 }
 
@@ -517,7 +517,7 @@ fn a_literal_in_a_default_has_a_row_per_evaluation() {
         }
     });
     let [plain, other] = literals[..] else { panic!("two literals: {literals:?}") };
-    let mut found: Vec<(ConversionSite, Option<i64>)> = table
+    let mut found: Vec<(ConversionSite, Option<i128>)> = table
         .conversion_sites()
         .filter(|(s, r)| matches!(s.kind, SiteKind::Value { .. }) && r.span.slice(src) == "2000msec")
         .map(|(s, r)| (s, r.count))
@@ -555,13 +555,13 @@ fn an_array_defaults_elements_convert_on_the_evaluation_path() {
         _ => {}
     });
     let (literal, call) = (literal.expect("`S {}`"), call.expect("`take()`"));
-    let mut found: Vec<(String, Vec<u32>, String, Option<i64>)> = table
+    let mut found: Vec<(String, Vec<u32>, String, Option<i128>)> = table
         .conversion_sites()
         .filter(|(s, r)| matches!(s.kind, SiteKind::Value { .. }) && r.span.slice(src).ends_with("USD"))
         .map(|(s, r)| (r.span.slice(src).to_string(), s.path, r.target.clone(), r.count))
         .collect();
     found.sort();
-    let element = |at: &str, path: u32, count: i64| (at.to_string(), vec![path], "Money".to_string(), Some(count));
+    let element = |at: &str, path: u32, count: i128| (at.to_string(), vec![path], "Money".to_string(), Some(count));
     assert_eq!(
         found,
         [element("2USD", literal, 200), element("3USD", literal, 300), element("4USD", call, 400), element("5USD", call, 500)],
@@ -616,11 +616,11 @@ fn a_default_is_refused_where_the_same_binding_is() {
 
 /// An array literal's elements, read as (the text at the row's site, the
 /// type it converts from, its target, its factor, a literal's count).
-fn element_rows(body: &str) -> Vec<(String, String, String, String, Option<i64>)> {
+fn element_rows(body: &str) -> Vec<(String, String, String, String, Option<i128>)> {
     rows(body).into_iter().map(|r| (r.at, r.from, r.to, r.factor, r.count)).collect()
 }
 
-fn element(at: &str, from: &str, to: &str, factor: &str, count: Option<i64>) -> (String, String, String, String, Option<i64>) {
+fn element(at: &str, from: &str, to: &str, factor: &str, count: Option<i128>) -> (String, String, String, String, Option<i128>) {
     (at.into(), from.into(), to.into(), factor.into(), count)
 }
 
@@ -1059,7 +1059,7 @@ fn a_negated_literal_converts_at_compile_time() {
     );
     // The row at the negation carries the converted count, and the
     // literal inside it its own.
-    let found: Vec<(String, Option<i64>, ConversionKind, String)> =
+    let found: Vec<(String, Option<i128>, ConversionKind, String)> =
         rows("    let s: Seconds = -2000msec;\n").into_iter().map(|r| (r.at, r.count, r.kind, r.to)).collect();
     assert_eq!(
         found,

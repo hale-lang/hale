@@ -1,0 +1,110 @@
+// GH #2131: a quantity, an identity or a range counting a `U64` has a
+// `U64`'s arithmetic, which never wraps. A sum past `2^64 - 1`, a
+// difference below zero, a product or a widening's multiplication past the
+// top, and a division by zero are each a violation where they happen: the
+// process prints what happened and exits 1, and nothing after it runs.
+// One program, built once, runs each case by name.
+
+fn app_source() -> String {
+    return """
+        unit wei;
+        unit gwei = 1_000_000_000 wei;
+
+        type Wei = quantity U64 in wei;
+        type Gwei = Wei in gwei { round: floor; }
+        type Port = U64 { range: 1..65536; }
+
+        fn ask(w: Wei) -> Wei {
+            return w;
+        }
+
+        fn many(g: Gwei) -> Gwei {
+            return g;
+        }
+
+        fn wei_of(g: Gwei) -> Wei {
+            return g;
+        }
+
+        fn main() {
+            let what = std::env::arg_or(1, "");
+            let top = ask(U64::max() * 1wei);
+            let none = ask(0wei);
+            let zero: U64 = U64::from_int(std::env::args_count() - 2);
+            println("before");
+            if what == "add" {
+                println(top + 1wei);
+            } else if what == "sub" {
+                println(none - 1wei);
+            } else if what == "mul" {
+                println(top * 2);
+            } else if what == "widen" {
+                // the top's gwei, rounded up: one more than a `Wei` holds
+                let up = top.in(gwei) or ceil;
+                println(wei_of(many(up)));
+            } else if what == "div" {
+                println(top / zero);
+            } else if what == "quotient" {
+                println(top / none);
+            } else if what == "range" {
+                let p: Port = 65535;
+                let u: U64 = p + U64::max();
+                println(u);
+            } else if what == "fine" {
+                println(top - 1wei + 1wei);
+                println(wei_of(many(18_000_000_000gwei)));
+            }
+            println("after");
+        }
+        """;
+}
+
+fn expect(bin: String, what: String, want: String) {
+    let out = std::process::run(bin + "\n" + what)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    std::test::assert_eq_int(out.code, 1, what + " exits 1: " + out.stderr);
+    std::test::assert(std::str::contains(out.stdout, "before"), what + " ran up to the operator");
+    std::test::assert(
+        !std::str::contains(out.stdout, "after"),
+        what + " ran nothing after it: " + out.stdout,
+    );
+    std::test::assert(
+        std::str::contains(out.stderr, want),
+        what + " says `" + want + "`: " + out.stderr,
+    );
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let src = std::io::fs::mktemp("/tmp/hale-2131-", ".hl") or "";
+    std::test::assert(src != "", "a scratch source path");
+    std::io::fs::write_file(src, app_source()) or discard;
+    let built = std::process::run(hale + "\nbuild\n" + src)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    std::test::assert_eq_int(built.code, 0, "the program builds: " + built.stderr);
+    let bin = src[0..(len(src) - 3)];
+
+    expect(bin, "add", "violation: U64 `+` overflows");
+    expect(bin, "sub", "violation: U64 `-` overflows");
+    expect(bin, "mul", "violation: U64 `*` overflows");
+    expect(bin, "widen", "violation: U64 `*` overflows");
+    expect(bin, "div", "violation: U64 division by zero");
+    expect(bin, "quotient", "violation: U64 division by zero");
+    expect(bin, "range", "violation: U64 `+` overflows");
+
+    let fine = std::process::run(bin + "\nfine")
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    std::test::assert_eq_int(fine.code, 0, "an operator in range runs on: " + fine.stderr);
+    std::test::assert(
+        std::str::contains(fine.stdout, "18446744073709551615wei"),
+        "top - 1 + 1: " + fine.stdout,
+    );
+    std::test::assert(
+        std::str::contains(fine.stdout, "18000000000000000000wei"),
+        "a widening below the top: " + fine.stdout,
+    );
+    std::test::assert(std::str::contains(fine.stdout, "after"), "and what follows runs");
+
+    std::io::fs::unlink(src) or discard;
+    std::io::fs::unlink(bin) or discard;
+}

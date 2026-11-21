@@ -77,7 +77,7 @@ pub enum TokenKind {
     /// magnitude and the unit's name as written. Which unit the name is
     /// (the stdlib's time catalogue's `ms`, a program's `bp`) is the
     /// catalogue's to say, not the lexer's (U4).
-    QuantityLit(i64, String),
+    QuantityLit(u64, String),
     /// Time literal carries the raw ISO-8601 text (without backticks).
     TimeLit(String),
 
@@ -593,10 +593,19 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
             }
             let span = Span::new(start, self.pos);
-            let v: i64 = num_text.parse().map_err(|_| {
-                Diag::lex(span, format!("invalid integer literal: {}", num_text))
-            })?;
             let unit = self.source[unit_start..self.pos].to_string();
+            // GH #2131: a quantity literal's magnitude is a `U64`'s, so a
+            // count of a quantity counting one may be past `Int`'s max;
+            // the check holds the count to the integer it flows into
+            let v: u64 = num_text.parse().map_err(|_| {
+                Diag::lex(
+                    span,
+                    format!(
+                        "quantity literal {num_text}{unit}: its magnitude is past the largest integer, 2^64 - 1 \
+                         (18446744073709551615, a `U64`'s max)"
+                    ),
+                )
+            })?;
             return Ok(Token::new(TokenKind::QuantityLit(v, unit), span));
         }
 

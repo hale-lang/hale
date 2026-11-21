@@ -1,0 +1,103 @@
+// GH #2131: a quantity and a point may count a `U64`. The unit dialect's
+// base integer is a parameter: `quantity U64 in wei` is a quantity whose
+// every value is a `U64`, so its arithmetic is a `U64`'s (unsigned, an
+// overflow a violation: `units_u64_violation_test.hl`), its conversions
+// multiply and divide in it, and a literal's count may be past `Int`'s
+// max. Every component counts one integer: `Gwei` and `Fee` are
+// denominations of `Wei` and count a `U64` too.
+
+unit wei;
+unit gwei = 1_000_000_000 wei;
+unit eth = 1_000_000_000 gwei;
+unit slot;
+unit epoch = 32 slot;
+
+type Wei = quantity U64 in wei;
+type Gwei = Wei in gwei { round: floor; }
+type Fee = quantity U64 in gwei { round: half_even; }
+
+type Slots = quantity U64 in slot;
+type SlotAt = point Slots;
+type Genesis = point Slots { origin: 64 slot; }
+
+fn balance(n: U64) -> Wei {
+    return n * 1wei;
+}
+
+fn wei_of(g: Gwei) -> Wei {
+    return g;
+}
+
+fn main() {
+    // a literal's count is a `U64`'s, past `Int`'s max where it is
+    let big: Wei = 18eth;
+    std::test::assert_eq_str(to_string(big), "18000000000000000000wei", "18 eth, past Int's max");
+    std::test::assert(big / 1wei == 18_000_000_000_000_000_000, "its count, a U64");
+    let top: Wei = 18_446_744_073_709_551_615wei;
+    std::test::assert(top == balance(U64::max()), "a literal's magnitude is a U64's");
+
+    // arithmetic is the U64's
+    let a = balance(3_000_000_000) + 500wei;
+    std::test::assert(a == 3_000_000_500wei, "a sum");
+    std::test::assert(a - 500wei == 3gwei, "a difference at the meet");
+    let doubled = a * 2;
+    std::test::assert(doubled == 6_000_001_000wei, "scaled by a literal, a U64");
+    let n: U64 = 3;
+    std::test::assert(n * a == 9_000_001_500wei, "scaled by a U64");
+    std::test::assert(a / n == 1_000_000_166wei, "divided by a U64, unsigned");
+    let ratio = big / 1gwei;
+    std::test::assert(ratio == 18_000_000_000, "a quotient of two counts is a U64");
+    std::test::assert(min(a, big) == a && max(a, big) == big, "min and max order unsigned");
+    std::test::assert(big > a, "a comparison past Int's max orders unsigned");
+    let mut acc: Wei = 0;
+    acc += 7wei;
+    acc *= 3;
+    std::test::assert(acc == 21wei, "compound assignment");
+
+    // a widening multiplies, in the U64
+    let g: Gwei = 5gwei;
+    let w = wei_of(g);
+    std::test::assert(w == 5_000_000_000wei, "gwei into wei, implicit");
+    std::test::assert_eq_str(to_string(Wei(g)), "5000000000wei", "the cast, the same");
+
+    // a narrowing says what becomes of the remainder
+    let odd = 2_500_000_001wei;
+    std::test::assert((odd.in(gwei) or floor) == 2gwei, "floor");
+    std::test::assert((odd.in(gwei) or ceil) == 3gwei, "ceil");
+    std::test::assert((odd.in(gwei) or trunc) == 2gwei, "trunc");
+    std::test::assert((odd.in(gwei) or half_up) == 3gwei, "half_up past half");
+    std::test::assert((2_500_000_000wei.in(gwei) or half_up) == 3gwei, "half_up at half");
+    std::test::assert(
+        (2_500_000_000wei.in(gwei) or half_even) == 2gwei,
+        "half_even at half, to even",
+    );
+    std::test::assert(
+        (3_500_000_000wei.in(gwei) or half_even) == 4gwei,
+        "half_even at half, to even",
+    );
+    std::test::assert((odd.in(gwei) or 0gwei) == 0gwei, "inexact: the substitute");
+    std::test::assert((4gwei.in(gwei) or 0gwei) == 4gwei, "exact: the value");
+    let floored: Gwei = odd;
+    std::test::assert_eq_str(to_string(floored), "2gwei", "Gwei's floor, from the type");
+    let fee: Fee = 2_500_000_000wei;
+    std::test::assert_eq_str(to_string(fee), "2gwei", "Fee's half_even at compile time");
+    let top = balance(U64::max()).in(gwei) or ceil;
+    std::test::assert_eq_str(to_string(top), "18446744074gwei", "ceil at the top, no overflow");
+    let (whole, rest) = odd.split(gwei);
+    std::test::assert(whole == 2, "split: the whole count, a U64");
+    std::test::assert_eq_str(to_string(rest), "500000001wei", "and the rest");
+    std::test::assert_eq_str(f"{whole} {rest}", "2 500000001wei", "in an f-string");
+    let half = a / 2 or floor;
+    std::test::assert(half == 1_500_000_250wei, "divided by a literal: a narrowing");
+    let odd_half = 3wei / 2 or ceil;
+    std::test::assert(odd_half == 2wei, "rounded up");
+
+    // a point over a quantity counting a U64
+    let now = SlotAt(100slot);
+    let later = now + 1epoch;
+    std::test::assert(later - now == 32slot, "a point minus a point: the quantity");
+    // `Genesis`'s zero is 64 slots past `SlotAt`'s: slot 100 is 36 of it
+    let g0 = Genesis(now);
+    std::test::assert(g0 - Genesis(0slot) == 36slot, "shifted by the origins");
+    std::test::assert(SlotAt(g0) == now, "a shift by the origins, back");
+}

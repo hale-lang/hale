@@ -250,7 +250,9 @@ fn main() {
         let scratch = dna::scratch_root("provider-profiles");
         std::io::fs::write_file(
             scratch + "/compose.yaml",
-            "services:\n  app:\n    image: busybox:1.36\n  db:\n    image: busybox:1.36\n    profiles: [\"database\"]\n  nats:\n    image: busybox:1.36\n    profiles: [\"broker\"]\n",
+            "services:\n  app:\n    image: " + dna::TEST_BUSYBOX + "\n  db:\n    image: "
+                + dna::TEST_BUSYBOX + "\n    profiles: [\"database\"]\n  nats:\n    image: "
+                + dna::TEST_BUSYBOX + "\n    profiles: [\"broker\"]\n",
         ) or discard;
         std::io::fs::write_file(scratch + "/.env", "COMPOSE_PROFILES=database,broker\n") or discard;
         std::test::assert_eq_str(

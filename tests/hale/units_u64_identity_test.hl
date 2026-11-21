@@ -1,0 +1,78 @@
+// GH #2131: an identity and a range may count a `U64`. `distinct U64` is
+// a `U64` that never mixes, and `U64 { range: … }` a `U64` with bounds:
+// an integer literal where one is expected is a value of it (past `Int`'s
+// max too, never negative), a range's arithmetic is its `U64`'s, it
+// widens to its parent and to `U64` for free, and narrowing into it says
+// what becomes of a value outside, compared unsigned.
+
+type Nonce = distinct U64;
+type Port = U64 { range: 1..65536; }
+type Ephemeral = Port { range: 49152..65536; }
+type Shard = distinct U64 { range: 0..16; }
+
+fn next(n: Nonce) -> Nonce {
+    return Nonce(U64(n) + 1);
+}
+
+fn wide(p: Port) -> U64 {
+    return p;
+}
+
+fn to_shard(e: RangeError) -> Shard {
+    return 15;
+}
+
+fn checked(x: U64) -> Port fallible(RangeError) {
+    let p = Port(x) or raise;
+    return p;
+}
+
+fn main() {
+    // an identity: a literal is one, past `Int`'s max too
+    let top: Nonce = 18446744073709551615;
+    let zero = Nonce(0);
+    std::test::assert(top != zero, "two identities compare");
+    std::test::assert(next(zero) == Nonce(1), "its U64, then back");
+    std::test::assert(U64(top) == U64::max(), "`U64(…)` is its U64");
+    std::test::assert_eq_str(to_string(U64(top)), "18446744073709551615", "printed unsigned");
+    std::test::assert(top > zero, "ordered unsigned");
+
+    // a range: its arithmetic is a U64's
+    let p: Port = 443;
+    let q = p + 1;
+    let r: U64 = q;
+    std::test::assert(r == 444, "a range's sum is a U64");
+    std::test::assert(wide(p) == 443, "a range widens to its U64");
+    let e: Ephemeral = 50000;
+    let as_port: Port = e;
+    std::test::assert(as_port == 50000, "a sub-range widens to its parent");
+    std::test::assert(e > p, "along a widening, compared unsigned");
+    std::test::assert_eq_str(f"{p}", "443", "printed as its U64");
+
+    // narrowing: each policy, compared unsigned
+    let huge = U64::max();
+    std::test::assert((Port(huge) or clamp) == 65535, "clamp at the top");
+    std::test::assert((Port(U64::from_int(0)) or clamp) == 1, "clamp at the bottom");
+    std::test::assert((Port(huge) or 80) == 80, "the substitute");
+    std::test::assert((Port(U64::from_int(8080)) or 80) == 8080, "inside: the value");
+    // 2^64 - 1 is 65535 past 1 modulo 65535, and 0 one below 1
+    std::test::assert((Port(huge) or wrap) == 65535, "wrap from the top");
+    std::test::assert((Port(U64::from_int(0)) or wrap) == 65535, "wrap from below");
+    std::test::assert((Port(U64::from_int(65537)) or wrap) == 2, "wrap past the top");
+    let s = Shard(U64::from_int(99)) or to_shard(err);
+    std::test::assert(U64(s) == 15, "a handler of the RangeError");
+    let fine = checked(22) or p;
+    std::test::assert(fine == 22, "raised: nothing to raise");
+    let refused = checked(huge) or {
+        std::test::assert_eq_str(err.kind, "Port", "the RangeError names the type");
+        std::test::assert_eq_int(err.low, 1, "its low bound");
+        std::test::assert_eq_int(err.high, 65536, "its high bound");
+        std::test::assert_eq_int(
+            err.value,
+            9223372036854775807,
+            "a value past Int's max is Int's max",
+        );
+        p
+    };
+    std::test::assert(refused == 443, "raised to the caller");
+}

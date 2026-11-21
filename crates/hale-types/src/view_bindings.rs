@@ -1423,7 +1423,7 @@ fn analyze(programs: &[Analyzed<'_>], top: &TopScope, monos: &MonoShapes) -> Res
     };
     p.body_locus.resize(p.bodies.len(), None);
     let scalars: BTreeMap<&str, &ScalarDecl> = p.scalar_decls.iter().copied().collect();
-    p.int_scalars = crate::units::typed_scalar_names(&scalars).into_iter().map(str::to_string).collect();
+    p.int_scalars = crate::units::typed_scalar_names(&scalars).into_keys().map(str::to_string).collect();
     p.param_classes = p
         .bodies
         .iter()
