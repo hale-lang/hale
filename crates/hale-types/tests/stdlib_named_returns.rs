@@ -357,8 +357,14 @@ fn every_named_sig_type_is_the_rename_target_users_can_spell() {
         .iter()
         .map(|(_, target)| *target)
         .collect();
+    // A `__` primitive's record (`std::process::__wait_pid`'s
+    // `__StdProcessWaitOutcome`) is bound only by the stdlib's own seeds,
+    // which annotate nothing, and has no public spelling to unify with: its
+    // name is held to the stdlib's declarations alone (the test above), so a
+    // typo there still fails (GH #2111).
     let orphans: Vec<String> = named_in_sigs()
         .into_iter()
+        .filter(|(p, _)| !p.rsplit("::").next().is_some_and(|f| f.starts_with("__")))
         .filter(|(_, n)| !targets.contains(*n))
         .map(|(p, n)| format!("{p} -> {n}"))
         .collect();

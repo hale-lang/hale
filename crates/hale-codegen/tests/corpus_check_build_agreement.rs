@@ -4780,3 +4780,37 @@ fn a_builtin_call_beside_a_binding_of_its_name_is_checked() {
         "hale_cb_builtin_beside_binding_built",
     );
 }
+
+/// GH #2111: a subscription's `where key == EXPR` was never typed by the
+/// check. The build lowered it where the locus is born and refused a field
+/// the locus does not have. The check types it in the locus's body now, as
+/// it types the locus's `birth_check`.
+#[test]
+fn a_subscription_s_key_filter_is_checked() {
+    assert_refused_by_the_check(
+        &[(
+            "type Tick { lane: Int = 0; }\n\
+             topic Ticks { payload: Tick; subject: \"t.ticks\"; keyed_by lane; }\n\
+             locus Lane {\n\
+             params { lane: Int = 0; }\n\
+             bus { subscribe Ticks as on_tick where key == self.nosuch; }\n\
+             fn on_tick(t: Tick) { println(t.lane); }\n\
+             }\n\
+             fn main() { Lane { lane: 1 }; }\n",
+            "self.nosuch",
+            "no field `nosuch` on `Lane`",
+        )],
+        "key_filter",
+    );
+    assert_built(
+        "type Tick { lane: Int = 0; }\n\
+         topic Ticks { payload: Tick; subject: \"t.ticks\"; keyed_by lane; }\n\
+         locus Lane {\n\
+         params { lane: Int = 0; }\n\
+         bus { subscribe Ticks as on_tick where key == self.lane; }\n\
+         fn on_tick(t: Tick) { println(t.lane); }\n\
+         }\n\
+         fn main() { Lane { lane: 1 }; }\n",
+        "hale_cb_key_filter_built",
+    );
+}

@@ -137,7 +137,14 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                 // fields are visible).
                 let _ = self_ptr;
                 let scope = Scope::default();
-                let (val, ty) = self.lower_expr(expr, &scope)?;
+                // GH #2111: the filter is the subscribing locus's own
+                // text, typed in its body on no evaluation path, whatever
+                // body the instantiation is lowered in
+                let decl = self.current_self.as_ref().and_then(|cs| self.user_loci.get(&cs.locus_name)).map(|i| i.decl);
+                let (val, ty) = match decl {
+                    Some(decl) => self.in_const_body(decl, |cx| cx.lower_expr(expr, &scope))?,
+                    None => self.lower_expr(expr, &scope)?,
+                };
                 // Gap B: String key — hand the pointer to the
                 // runtime, which owns a copy + its hash.
                 // (StringView is NOT accepted: its data pointer

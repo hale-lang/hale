@@ -73,6 +73,8 @@ fn sig_ty(t: &SigTy) -> String {
         SigTy::I256 => "I256".into(),
         SigTy::Duration => "Duration".into(),
         SigTy::Time => "Time".into(),
+        SigTy::StrView => "StrView".into(),
+        SigTy::BytesView => "BytesView".into(),
         SigTy::Unit => "Unit".into(),
         SigTy::Any => "Any".into(),
         SigTy::Named(n) => format!("Named({n})"),

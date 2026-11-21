@@ -681,11 +681,11 @@ std::api::ws::Listener | lookup=- | locus=false | effects=- | sig=- | parks=fals
 std::bus::Adapter | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bus::UnixTransport | lookup=bus@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bus::__binding_fai | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fai` | suggest=-
-std::bus::__binding_fail | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fail` | suggest=-
+std::bus::__binding_fail | lookup=bus@2 | locus=false | effects=- | sig=(Str, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__binding_fail` | suggest=-
 std::bus::__local_dispatch | lookup=bus@2 | locus=false | effects=publish | sig=(Str, Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__local_dispatch
-std::bus::__transport_realize | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_realize` | suggest=-
-std::bus::__transport_reclaim | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_reclaim` | suggest=-
-std::bus::__transport_spawn_server | lookup=bus@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_spawn_server` | suggest=-
+std::bus::__transport_realize | lookup=bus@2 | locus=false | effects=- | sig=(Str, Str, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_realize` | suggest=-
+std::bus::__transport_reclaim | lookup=bus@2 | locus=false | effects=- | sig=(Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_reclaim` | suggest=-
+std::bus::__transport_spawn_server | lookup=bus@2 | locus=false | effects=- | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::bus::__transport_spawn_server` | suggest=-
 std::bytes::BytesBuilder | lookup=bytes@2 | locus=true | effects=- | sig=- | parks=false | holds=false | unknown=- | suggest=-
 std::bytes::__is_alloc_fail | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__is_alloc_fail
 std::bytes::at | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes, Int) -> Int ! IndexError | ret_ty=? | or=(Int, IndexError) | parks=false | holds=false | unknown=- | suggest=-
@@ -704,8 +704,8 @@ std::bytes::builder::__len | lookup=bytes::builder@3 | locus=false | effects=pur
 std::bytes::builder::__new | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__new
 std::bytes::builder::__shift_front | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__shift_front
 std::bytes::builder::__snapshot | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=__snapshot
-std::bytes::builder::__text_view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Any | ret_ty=? | or=- | parks=false | holds=false | unknown=- | suggest=__text_view
-std::bytes::builder::__view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> Any | ret_ty=? | or=- | parks=false | holds=false | unknown=- | suggest=__view
+std::bytes::builder::__text_view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> StrView | ret_ty=StringView | or=- | parks=false | holds=false | unknown=- | suggest=__text_view
+std::bytes::builder::__view | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int) -> BytesView | ret_ty=BytesView | or=- | parks=false | holds=false | unknown=- | suggest=__view
 std::bytes::builder::__xor_mask_into | lookup=bytes::builder@3 | locus=false | effects=pure | sig=(Int, Bytes, Int) -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__xor_mask_into
 std::bytes::clone | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=clone
 std::bytes::concat | lookup=bytes@2 | locus=false | effects=pure | sig=(Bytes, Bytes) -> Bytes | ret_ty=Bytes | or=- | parks=false | holds=false | unknown=- | suggest=concat
@@ -1180,14 +1180,14 @@ std::process::SpawnOptions | lookup=process@2 | locus=true | effects=- | sig=- |
 std::process::__kill_escalate | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__kill_escalate
 std::process::__pipe_read | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Str ! IoError | ret_ty=? | or=(String, IoError) | parks=false | holds=true | unknown=- | suggest=__pipe_read
 std::process::__pipe_write | lookup=process@2 | locus=false | effects=syscall | sig=(Int, Str) -> Int ! IoError | ret_ty=? | or=(Int, IoError) | parks=false | holds=false | unknown=- | suggest=__pipe_write
-std::process::__probes_start | lookup=process@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::process::__probes_start` | suggest=-
-std::process::__run_with | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__run_with
+std::process::__probes_start | lookup=process@2 | locus=false | effects=- | sig=(Int) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::process::__probes_start` | suggest=-
+std::process::__run_with | lookup=process@2 | locus=false | effects=syscall|block | sig=(Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int) -> Named(__StdProcessOutput) ! IoError | ret_ty=? | or=(__StdProcessOutput, IoError) | parks=false | holds=true | unknown=- | suggest=__run_with
 std::process::__signal_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int, Int) -> Unit ! IoError | ret_ty=? | or=((), IoError) | parks=false | holds=false | unknown=- | suggest=__signal_pid
-std::process::__spawn | lookup=process@2 | locus=false | effects=syscall | sig=(Str) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__spawn
-std::process::__spawn_with | lookup=process@2 | locus=false | effects=syscall | sig=(Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__spawn_with
-std::process::__try_wait_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=false | unknown=- | suggest=__try_wait_pid
-std::process::__wait_deadline | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int, Int, Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_deadline
-std::process::__wait_pid | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Any ! IoError | ret_ty=? | or=(?, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_pid
+std::process::__spawn | lookup=process@2 | locus=false | effects=syscall | sig=(Str) -> Named(__StdProcessSpawnHandle) ! IoError | ret_ty=? | or=(__StdProcessSpawnHandle, IoError) | parks=false | holds=false | unknown=- | suggest=__spawn
+std::process::__spawn_with | lookup=process@2 | locus=false | effects=syscall | sig=(Str, Str, Str, Str, Bool, Int, Int, Int, Int, Int) -> Named(__StdProcessSpawnHandle) ! IoError | ret_ty=? | or=(__StdProcessSpawnHandle, IoError) | parks=false | holds=false | unknown=- | suggest=__spawn_with
+std::process::__try_wait_pid | lookup=process@2 | locus=false | effects=syscall | sig=(Int) -> Named(__StdProcessWaitOutcome) ! IoError | ret_ty=? | or=(__StdProcessWaitOutcome, IoError) | parks=false | holds=false | unknown=- | suggest=__try_wait_pid
+std::process::__wait_deadline | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int, Int, Int) -> Named(__StdProcessWaitOutcome) ! IoError | ret_ty=? | or=(__StdProcessWaitOutcome, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_deadline
+std::process::__wait_pid | lookup=process@2 | locus=false | effects=syscall|block | sig=(Int) -> Named(__StdProcessWaitOutcome) ! IoError | ret_ty=? | or=(__StdProcessWaitOutcome, IoError) | parks=false | holds=true | unknown=- | suggest=__wait_pid
 std::process::adopt | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=adopt
 std::process::close_stdin | lookup=process@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=close_stdin
 std::process::dump_arena_residency | lookup=process@2 | locus=false | effects=syscall|stdio | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=dump_arena_residency
@@ -1307,11 +1307,11 @@ std::term::__raw_enable | lookup=term@2 | locus=false | effects=syscall | sig=()
 std::term::__size_packed | lookup=term@2 | locus=false | effects=syscall | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=- | suggest=__size_packed
 std::term::is_tty | lookup=term@2 | locus=false | effects=syscall | sig=(Int) -> Bool | ret_ty=Bool | or=- | parks=false | holds=false | unknown=- | suggest=is_tty
 std::term::size | lookup=term@2 | locus=false | effects=syscall | sig=- | parks=false | holds=false | unknown=- | suggest=size
-std::test::__failed | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__failed` | suggest=-
-std::test::__note_fail | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_fail` | suggest=-
+std::test::__failed | lookup=test@2 | locus=false | effects=- | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__failed` | suggest=-
+std::test::__note_fail | lookup=test@2 | locus=false | effects=- | sig=() -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_fail` | suggest=-
 std::test::__note_pas | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_pas` | suggest=-
-std::test::__note_pass | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_pass` | suggest=-
-std::test::__passes | lookup=test@2 | locus=false | effects=- | sig=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__passes` | suggest=-
+std::test::__note_pass | lookup=test@2 | locus=false | effects=- | sig=() -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__note_pass` | suggest=-
+std::test::__passes | lookup=test@2 | locus=false | effects=- | sig=() -> Int | ret_ty=Int | or=- | parks=false | holds=false | unknown=unknown stdlib function `std::test::__passes` | suggest=-
 std::test::assert | lookup=test@2 | locus=false | effects=pure | sig=(Bool, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert
 std::test::assert_eq_int | lookup=test@2 | locus=false | effects=pure | sig=(Int, Int, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_int
 std::test::assert_eq_str | lookup=test@2 | locus=false | effects=pure | sig=(Str, Str, Str) -> Unit | ret_ty=() | or=- | parks=false | holds=false | unknown=- | suggest=assert_eq_str

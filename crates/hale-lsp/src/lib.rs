@@ -2403,6 +2403,8 @@ pub fn sig_ty_str(t: &hale_types::stdlib_surface::SigTy) -> String {
         I256 => "I256".to_string(),
         Duration => "Duration".to_string(),
         Time => "Time".to_string(),
+        StrView => "StringView".to_string(),
+        BytesView => "BytesView".to_string(),
         Unit => "()".to_string(),
         Any => "…".to_string(),
         // GH #771: a struct return/param carries the MANGLED name

@@ -106,7 +106,7 @@
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
-    Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, Ident, IfStmt, LValueSeg, LocusMember,
+    Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, Ident, IfStmt, KeyFilter, LValueSeg, LocusMember,
     MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, QualifiedName,
     RecoveryModifier, ScalarClause, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
@@ -1413,6 +1413,23 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
                         for p in &pb.params {
                             if let ParamInit::Value(init) = &p.init {
                                 expr(init, out);
+                            }
+                        }
+                    }
+                    // GH #2111: a `birth_check` and a subscription's key
+                    // filter, the locus's own text, lowered in its body
+                    LocusMember::BirthCheck(bc) => {
+                        out.body = l.id;
+                        expr(&bc.cond, out);
+                        if let Some(p) = &bc.payload {
+                            expr(p, out);
+                        }
+                    }
+                    LocusMember::Bus(bb) => {
+                        out.body = l.id;
+                        for bm in &bb.members {
+                            if let BusMember::Subscribe { key_filter: Some(KeyFilter::Specific { expr: e, .. }), .. } = bm {
+                                expr(e, out);
                             }
                         }
                     }
