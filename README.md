@@ -511,7 +511,7 @@ Platform-specific setup (Linux, macOS/Apple Silicon) is in
 
 ## Where the language stands
 
-Hale is at **v0.36.5** (2026-11-20) and pre-1.0. What a release may
+Hale is at **v0.37.0** (2026-11-21) and pre-1.0. What a release may
 change is written down in [`STABILITY.md`](./STABILITY.md): before 1.0
 any release may change the language or the stdlib, with no deprecation
 window. A break migrates the project's own Hale code in the same
