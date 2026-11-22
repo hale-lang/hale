@@ -92,6 +92,14 @@ env:
     --binaries-metadata target/nextest/binaries-metadata.json
     --cargo-metadata target/nextest/cargo-metadata.json
     --workspace-remap . --target-dir-remap target
+  # The cargo-nextest every job installs (GH #2172). A job restores the
+  # binary from the Actions cache under this version and downloads it
+  # only on a miss: the download is a GitHub release asset, fetched
+  # without a token, and shared runners' addresses get 403s for it when
+  # they exceed the rate limit (two jobs failed so, before running a
+  # test). Bump the version and `taiki-e/install-action`'s pin together;
+  # its manifest must list the version.
+  NEXTEST_VERSION: "0.9.152"
 
 jobs:
   # Which jobs this diff can possibly affect.
@@ -254,8 +262,32 @@ jobs:
           shared-key: quick-x86_64-linux
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+      - &nextest-cache
+        name: Restore cargo-nextest
+        id: nextest-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-nextest
+          key: cargo-nextest-${{ env.NEXTEST_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      - &install-nextest
+        name: Install cargo-nextest
+        id: nextest-install
+        if: steps.nextest-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
+        with:
+          tool: nextest@${{ env.NEXTEST_VERSION }}
+
+      # The release download refused (a 403 outlasts the action's ten
+      # retries): build the same version from crates.io instead, a few
+      # minutes, not the job.
+      - &install-nextest-fallback
+        name: Install cargo-nextest from crates.io
+        if: steps.nextest-cache.outputs.cache-hit != 'true' && steps.nextest-install.outcome == 'failure'
+        env:
+          RUSTC_WRAPPER: ""
+        run: cargo install cargo-nextest --locked --version "$NEXTEST_VERSION"
 
       - name: cargo nextest archive (LLVM-free crates)
         run: |
@@ -291,9 +323,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - &install-nextest
-        name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+      - *nextest-cache
+      - *install-nextest
+      - *install-nextest-fallback
 
       # A test job runs a build job's nextest archive (`env.ARCHIVE`
       # names which). The test binaries bake absolute paths in at compile
@@ -377,8 +409,9 @@ jobs:
             llvm-18-dev libpolly-18-dev libzstd-dev \
             clang-18 libclang-18-dev zlib1g-dev
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+      - *nextest-cache
+      - *install-nextest
+      - *install-nextest-fallback
 
       - name: cargo nextest run (hale mcp over the embedded spec)
         run: |
@@ -475,9 +508,9 @@ jobs:
             llvm-18-dev libpolly-18-dev libzstd-dev \
             clang-18 libclang-18-dev zlib1g-dev
 
-      - &build-nextest
-        name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+      - *nextest-cache
+      - *install-nextest
+      - *install-nextest-fallback
 
       - &build-workspace
         name: cargo build --release --workspace
@@ -547,7 +580,9 @@ jobs:
       - *sccache-health
       - *build-rust-cache
       - *build-llvm
-      - *build-nextest
+      - *nextest-cache
+      - *install-nextest
+      - *install-nextest-fallback
       - *build-workspace
       - name: hale fmt --check (canonical-form gate)
         # The styleguide's §5 fmt tier: the repo's own .hl surface must
@@ -675,7 +710,9 @@ jobs:
             llvm-18-dev libpolly-18-dev libzstd-dev \
             clang-18 libclang-18-dev lld-18 zlib1g-dev
 
+      - *nextest-cache
       - *install-nextest
+      - *install-nextest-fallback
       - *archive-download
       - *archive-extract
 
@@ -859,7 +896,9 @@ jobs:
         with:
           node-version: '22'
 
+      - *nextest-cache
       - *install-nextest
+      - *install-nextest-fallback
       - *archive-download
       - *archive-extract
 
@@ -943,7 +982,9 @@ jobs:
 
       # The fixtures run through the archive's `hale`.
       - *install-llvm-runtime
+      - *nextest-cache
       - *install-nextest
+      - *install-nextest-fallback
       - *archive-download
       - *archive-extract
 
