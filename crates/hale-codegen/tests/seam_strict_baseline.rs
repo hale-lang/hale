@@ -648,6 +648,66 @@ fn a_chain_s_operators_have_rows_of_their_own() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "9\n10\n4\n8\n");
 }
 
+/// A loop over a form's `entries` / `items`, or over `self.children`, is
+/// lowered by its receiver's row. The iterand itself is a form's
+/// pseudo-field, which the checker gives no type (it binds the loop
+/// variable to the form's cell), or the children, whose type has no
+/// layout. Lowering asked the iterand's row whether it was a `bounded`
+/// before it looked for either shape, so each loop was a missing row.
+#[test]
+fn a_loop_over_a_form_or_the_children_asks_its_receiver_s_row() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Cell { id: Int; n: Int; }\n\
+               @form(hashmap)\n\
+               locus Cells { capacity { pool cells of Cell indexed_by id; } }\n\
+               @form(vec)\n\
+               locus CellList { capacity { heap cells of Cell; } }\n\
+               locus Leaf { params { value: Int = 0; } contract { expose value: Int; } }\n\
+               locus Sum {\n\
+                   contract { consume value: Int; }\n\
+                   accept(c: Leaf) { }\n\
+                   fn total() -> Int {\n\
+                       let mut t = 0;\n\
+                       for child in self.children { t = t + child.value; }\n\
+                       return t;\n\
+                   }\n\
+                   run() {\n\
+                       let _a = Leaf { value: 10 };\n\
+                       let _b = Leaf { value: 20 };\n\
+                       println(self.total());\n\
+                   }\n\
+               }\n\
+               fn main() {\n\
+                   let m = Cells { };\n\
+                   m.set(Cell { id: 1, n: 3 });\n\
+                   m.set(Cell { id: 2, n: 4 });\n\
+                   let mut a = 0;\n\
+                   for e in m.entries { a = a + e.n; }\n\
+                   println(a);\n\
+                   let v = CellList { };\n\
+                   v.push(Cell { id: 1, n: 5 });\n\
+                   v.push(Cell { id: 2, n: 6 });\n\
+                   let mut b = 0;\n\
+                   for x in v.items { b = b + x.n; }\n\
+                   println(b);\n\
+                   Sum { };\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_form_loops");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n11\n30\n");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)
