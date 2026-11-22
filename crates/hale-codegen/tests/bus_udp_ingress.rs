@@ -25,8 +25,9 @@
 //! shorter than its type's minimum is refused before any read, and the
 //! reader counts the refusal (`dropped_decode` in the counters dump).
 //! Held here on Linux: the review's sequence (empty, a valid frame, empty,
-//! one byte) delivers exactly the valid frame; a String payload whose
-//! length lies is dropped; then SIGTERM ends the program promptly.
+//! one byte) delivers exactly the valid frame, and a valid frame sent
+//! after it is delivered too; a String payload whose length lies is
+//! dropped; then SIGTERM ends the program promptly.
 
 use std::io::{BufRead, BufReader, Read};
 use std::net::UdpSocket;
@@ -240,7 +241,17 @@ fn an_empty_or_short_datagram_is_dropped_and_counted_and_sigterm_ends_the_progra
     // with its first byte replaced: `n=4103`)
     l.send(&probe, &[]);
     l.send(&probe, &[0x07]);
-    std::thread::sleep(Duration::from_millis(100));
+    // then a valid frame, the sentinel: one socket and one reader, and
+    // loopback keeps the probe's order, so once it is delivered the reader
+    // has read (and counted) every datagram before it. A fixed sleep here
+    // let SIGTERM's quiesce stop the reader with the one-byte datagram
+    // still unread on a loaded runner (GH #2168)
+    l.send(&probe, &4243i64.to_le_bytes());
+    assert!(
+        wait_for_line(&l.lines, "got n=4243", Duration::from_secs(10)),
+        "the frame after the bad datagrams was not delivered\nstdout:\n{}",
+        l.lines.lock().unwrap().join("\n")
+    );
 
     // SIGTERM: main's run() sees the drain, the quiesce stops the reader
     // (the stop pipe, not a shutdown() of the socket), the program ends
@@ -252,10 +263,10 @@ fn an_empty_or_short_datagram_is_dropped_and_counted_and_sigterm_ends_the_progra
     assert!(!stderr.contains("still draining"), "the quiesce waited out its budget:\n{stderr}");
     assert!(took < Duration::from_secs(2), "the program took {took:?} to end after SIGTERM:\n{stderr}");
     assert!(out.lines().any(|l| l == "main run done"), "stdout:\n{out}");
-    // exactly the valid frame reached the handler: nothing invented from
+    // exactly the valid frames reached the handler: nothing invented from
     // the empty datagrams, nothing replayed from the stale buffer
-    assert_eq!(got(&out), vec!["got n=4242"], "stdout:\n{out}\nstderr:\n{stderr}");
-    assert_eq!(counter(&stderr, "delivered"), 1, "{stderr}");
+    assert_eq!(got(&out), vec!["got n=4242", "got n=4243"], "stdout:\n{out}\nstderr:\n{stderr}");
+    assert_eq!(counter(&stderr, "delivered"), 2, "{stderr}");
     assert_eq!(counter(&stderr, "dropped_decode"), 3, "two empty datagrams and a one-byte one:\n{stderr}");
 }
 
