@@ -33,9 +33,16 @@
 //!     --config 'env.HALE_SEAM_BASELINE_REGEN="1"'
 //! ```
 //!
-//! Phase 1 is finished when the file's total is zero. To see the sites
-//! themselves (a slice's plan), name a file in `HALE_SEAM_REPORT`: every
-//! site is written there, with its place and its row.
+//! A total of zero is not the end of phase 1, only what makes its end
+//! possible. Phase 1 ends with deletion (#2111):
+//!
+//! - strict is the only mode, and `BuildOptions::seam_strict` is gone;
+//! - every fallback path, where lowering types a value itself, is gone;
+//! - a missing row is a located internal compiler error.
+//!
+//! This test and its baseline go with them. To see the sites themselves
+//! (a slice's plan), name a file in `HALE_SEAM_REPORT`: every site is
+//! written there, with its place and its row.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -310,7 +317,9 @@ fn render(measures: &[(&'static str, usize, bool)], counts: &BTreeMap<Bucket, us
          # `total` and the rows below it: expressions lowering types without the checker's row\n\
          # (strict mode) over the corpus, tests/hale and dna/tests, as\n\
          # family<TAB>kind<TAB>where<TAB>reason<TAB>count. A site counts once however many programs\n\
-         # reach it; `generated` is a node with no place in any file (code a rewrite generated).\n",
+         # reach it; `generated` is a node with no place in any file (code a rewrite generated).\n\
+         # A total of zero is not the end of phase 1: it ends with strict the only mode, the knob\n\
+         # and every fallback path deleted, and a missing row a located internal error (GH #2111).\n",
     );
     for (name, n, _) in measures {
         s.push_str(&format!("measure\t{name}\t{n}\n"));
@@ -604,4 +613,42 @@ fn a_chain_s_nodes_have_rows_of_their_own() {
         .expect("it builds");
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "3\n20\ntrue\n3\n");
+}
+
+/// A call of a method beside a param of its name, and of a generic enum's
+/// monomorph's variant spelled by its mangled name, have rows: the check
+/// typed both calls `Unknown` (the first's callee as the param, the
+/// second's as no enum it knew), and lowering typed them itself.
+#[test]
+fn a_method_and_a_monomorph_s_variant_have_call_rows() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Value<T> = enum { Some(T), None };\n\
+               locus Sub {\n\
+                   params { hits: Int = 4; }\n\
+                   fn hits() -> Int { return self.hits + 1; }\n\
+               }\n\
+               locus Pub {\n\
+                   params { sub: Sub = Sub { }; }\n\
+                   fn total() -> Int { return self.sub.hits(); }\n\
+               }\n\
+               fn main() {\n\
+                   let p = Pub { };\n\
+                   println(p.total());\n\
+                   let a: Value<Int> = Value_Int::Some(1);\n\
+                   println(a == Value_Int::Some(1));\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_call_rows");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "5\ntrue\n");
 }
