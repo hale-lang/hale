@@ -429,7 +429,9 @@ vectorized (a sum, a dot product, an element-wise map over a
 reason, when it stops vectorizing on the target you build for. Keep
 the kernel's loop free of calls with effects, allocations and early
 exits (the check refuses those), and remember a `Float` sum
-vectorizes on aarch64 but not x86-64. It is not checked in dev builds
+vectorizes on aarch64 but not x86-64. A checked sum of `U32`, `I16`,
+… over a `bounded` (`.map(it * 3).sum(U32(0))`) vectorizes: it is summed
+wide and its overflow reported when the loop ends. It is not checked in dev builds
 or `hale test` (O1).
 
 ## Binding an external C library

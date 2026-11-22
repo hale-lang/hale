@@ -5345,7 +5345,12 @@ sum or product keeps its written order (Hale does not reassociate
 floating-point arithmetic), so it vectorizes only where the target has
 an in-order vector reduction (aarch64) and not where it has none
 (x86-64). The cost model decides as well: a 64-bit integer multiply has
-no fast vector form on NEON. The assertion holds on the target the
+no fast vector form on NEON. A checked sum of a fixed-width integer
+narrower than 64 bits over a `bounded` or an array vectorizes, being
+summed in 64 bits and checked once after the loop (spec/types.md §
+Fixed-width integers, *Checked sums*; F.65); a checked product, or a sum
+that lowering does not take, branches to its overflow violation at each
+element and does not. The assertion holds on the target the
 build is for — the host's CPU by default, `--target-cpu`, or a cross
 target's (generic) CPU — and a build for another target is judged on
 its own.
