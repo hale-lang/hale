@@ -1487,7 +1487,8 @@ pub fn anchor_key(receiver: &Expr, field: &str) -> (u32, u32, u8, u64) {
 /// [`ExprTypes`] key: generated code (a chain's loop, a test's assertion)
 /// gives many nodes one span, and the names tell them apart (`xs` from
 /// `__n`, `b.items` from `b.items.len`). A local's, a field's, a path's
-/// last segment, a call's callee's; nothing for the rest.
+/// last segment, a call's callee's, an operator's own with its operands'
+/// kinds; nothing for the rest.
 pub fn expr_name(e: &Expr) -> u64 {
     match e {
         Expr::Ident(i) => fnv(&i.name),
@@ -1513,6 +1514,12 @@ pub fn expr_name(e: &Expr) -> u64 {
             Literal::Nil => 4,
         },
         Expr::Block(b) => u64::from(b.tail.is_some()),
+        // an operator by itself and its operands' kinds: an element
+        // chain's counter step `ctr + 1`, its bound `ctr >= lim` and its
+        // sum's `acc + fin` are all at the chain's span, of three types
+        Expr::Binary { op, left, right, .. } => {
+            (*op as u64) << 16 | u64::from(expr_kind(left)) << 8 | u64::from(expr_kind(right))
+        }
         _ => 0,
     }
 }

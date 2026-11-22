@@ -615,6 +615,39 @@ fn a_chain_s_nodes_have_rows_of_their_own() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "3\n20\ntrue\n3\n");
 }
 
+/// An element chain's operators have rows of their own. Its loop's counter
+/// step `ctr + 1` (an `Int`), its bound `ctr >= lim` (a `Bool`) and a
+/// sum's `acc + fin` (the sum's type) are all at the chain's span, and a
+/// row's key told an operator only by its span: one key with three
+/// answers, so `Unknown`. An operator is keyed by itself and its operands'
+/// kinds too (`hale_types::typed_bodies::expr_name`).
+#[test]
+fn a_chain_s_operators_have_rows_of_their_own() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "fn main() {\n\
+                   let v = [1, 2, 3, 4, 5, 6, 7, 8];\n\
+                   println(v.skip(1).take(3).sum());\n\
+                   println(v.filter(it % 2 == 0).skip(1).take(2).sum());\n\
+                   let f = [1.5, 2.5];\n\
+                   println(f.map(it).sum(0.0));\n\
+                   println(v.filter(it > 6).max() or 0);\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_chain_operators");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "9\n10\n4\n8\n");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)
