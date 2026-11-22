@@ -839,7 +839,7 @@ root	App
 row	App@literal1	App	main	default
 row	App@literal1.a	A	main	default
 
-== crates/hale-cli/tests/cross_seed_arity.rs#8810f010
+== crates/hale-cli/tests/cross_seed_arity.rs#f1ef8e0f
 
 == crates/hale-cli/tests/cross_seed_interface_fallible.rs#979cbb3d
 row	Good@main1	Good	main	default
