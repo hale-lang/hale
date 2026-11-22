@@ -166,7 +166,9 @@ foo<T>(x)                  // generic instantiation, not (foo < T) > (x)
   expression position**; v1 restricts their *use* to `for x in
   lo..hi` and a `String` slice (`s[lo..hi]`), so a range elsewhere
   is a typecheck error, not a parse error. `..` is exclusive, `..=`
-  inclusive. Inside an index's brackets either bound may be left
+  inclusive. A loop's range has `Int` bounds (another primitive is
+  refused: "a range loop's bounds are `Int`s; this one is `Float`"),
+  and its variable is an `Int`. Inside an index's brackets either bound may be left
   out (`s[lo..]`, `s[..hi]`, `s[..=hi]`, `s[..]`; GH #1995); a range
   missing a bound anywhere else (`3..`, `..3`) is a parse error
   (spec/semantics.md § String slicing).

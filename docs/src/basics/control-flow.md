@@ -30,7 +30,7 @@ fn main() {
 | One-pattern test | `if let P = expr { ... } else { ... }` | Yes (when `else` is present) | A two-arm `match`; `P`'s names are in scope in the first block only |
 | Bind or leave | `let P = expr else { ... };` | No | `P`'s names are bound after the statement; the `else` block must leave (`return`, `fail`, `break`, `continue`) |
 | Conditional loop | `while cond { ... }` | No (`()`) | Use `while true { ... }` for unbounded loops; exit with `break;` |
-| Iterator loop | `for x in 0..n { ... }` | No (`()`) | `a..b` is half-open (`[a, b)`); `a..=b` is inclusive (`[a, b]`) |
+| Iterator loop | `for x in 0..n { ... }` | No (`()`) | `a..b` is half-open (`[a, b)`); `a..=b` is inclusive (`[a, b]`); a range's bounds are `Int`s, and `x` is an `Int` |
 | Block expression | `{ stmt; expr }` | Yes (if final expression omits `;`) | Final expression without `;` becomes the block's value |
 
 ## `if` / `else`
