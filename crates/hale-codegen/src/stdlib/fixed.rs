@@ -25,8 +25,8 @@ fn emit<T>(r: Result<T, inkwell::builder::BuilderError>) -> Result<T, CodegenErr
 }
 
 /// What `lotus_fixed_violation` says happened (its `what` argument).
-#[derive(Clone, Copy)]
-enum Violation {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Violation {
     Add = 0,
     Sub = 1,
     Mul = 2,
@@ -110,7 +110,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// Branch to the violation when `bad` holds; continue after it
     /// otherwise.
-    fn fixed_violation_if(&mut self, bad: IntValue<'ctx>, what: Violation, p: PrimType) -> Result<(), CodegenError> {
+    pub(crate) fn fixed_violation_if(&mut self, bad: IntValue<'ctx>, what: Violation, p: PrimType) -> Result<(), CodegenError> {
         let func = self
             .builder
             .get_insert_block()

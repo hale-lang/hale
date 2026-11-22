@@ -216,6 +216,7 @@ What no target vectorizes, `hale check` refuses first, at the place that stops t
 Points to know:
 
 - **The verdict is the target's.** A `Float` sum keeps its written order, so it vectorizes on aarch64 (which has an in-order vector reduction) and not on x86-64. A 64-bit integer multiply has no fast vector form on NEON. Mark the kernels that are meant to vectorize on the targets you ship, and build for those targets.
+- **A checked sum of a fixed-width integer vectorizes.** `.map(it * 3).sum(U32(0))` or `for x in xs { s = s + x; }` over a `bounded[U32; N]` (or `I16`, `U8`, …) is summed in 64 bits and checked once when the loop ends, so it has no exit per element; an overflow is still a violation, reported after the loop (see [Fixed-width integers](../basics/math.md)). A product, or a sum over a `vec` or a range, keeps a check per element and stays scalar; `T::wrapping_*` vectorizes at the type's own width.
 - **Only innermost loops are held.** An outer loop is never vectorized, so it may do anything between its inner loops.
 - **It is checked where the pipeline vectorizes.** A dev build (`--dev`, `HALE_DEV`), `hale test` (both O1), an AddressSanitizer build and a wasm build do not check it; `hale build` prints a note when it skipped.
 - **The optimized program is what is judged.** An inlined `@vectorize` fn is judged in every copy; a loop the optimizer removed entirely passes.

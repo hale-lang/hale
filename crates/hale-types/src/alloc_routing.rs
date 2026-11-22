@@ -69,6 +69,10 @@ pub struct AllocRouting {
     /// the caller's arena to the caller-arena TLS
     /// ([`publishes_caller_arena`]).
     pub caller_arena_publish: BTreeMap<String, bool>,
+    /// GH #2163: the free fns a call of which leaves nothing in the arena
+    /// it is handed ([`caller_arena_untouched_free_fns`]), so a loop whose
+    /// body only calls them gains nothing from an iteration arena.
+    pub caller_arena_untouched: BTreeSet<String>,
     /// What [`AllocRouting::specialize`] reads beside the rows.
     types: TypeFacts,
 }
@@ -96,6 +100,12 @@ impl AllocRouting {
     /// Whether the free fn `name` allocates nothing.
     pub fn is_nonalloc(&self, name: &str) -> bool {
         self.nonalloc.contains(name)
+    }
+
+    /// Whether a call of the free fn `name` leaves nothing in the arena
+    /// it is handed (GH #2163).
+    pub fn leaves_caller_arena_untouched(&self, name: &str) -> bool {
+        self.caller_arena_untouched.contains(name)
     }
 
     /// The rows of a locus the view does not hold: a generic locus's
@@ -384,6 +394,7 @@ fn member_scratch_elidable(
         numeric_ret_self_methods: cx.numeric_ret_self_methods,
         param_field_numeric: &param_field_numeric,
         fnptr_numeric_ret: &fnptr_numeric_ret,
+        vec_locals: &BTreeMap::new(),
     };
     fn_body_definitely_non_allocating(&body.stmts, &ctx, &param_seed)
 }
@@ -502,6 +513,8 @@ pub fn derive_alloc_routing(
         .map(|(segs, mangled)| (segs.clone(), mangled.clone()))
         .collect();
     let (nonalloc, nonalloc_numeric_ret) = nonalloc_free_fns(&program.items);
+    let caller_arena_untouched =
+        caller_arena_untouched_free_fns(&program.items, &nonalloc, &nonalloc_numeric_ret);
     let elidable = elidable_methods(&program.items, &nonalloc, &nonalloc_numeric_ret);
     let mut aliases = BTreeMap::new();
     for item in program.items.iter() {
@@ -525,6 +538,7 @@ pub fn derive_alloc_routing(
         elidable_methods: elidable,
         loci: BTreeMap::new(),
         caller_arena_publish: BTreeMap::new(),
+        caller_arena_untouched,
         types,
     };
     rows.caller_arena_publish = program.items.iter()
@@ -1288,6 +1302,14 @@ struct AllocCtx<'a> {
     /// (`fn outer(x: Int, g: fn(Int) -> Int)`) stay elidable
     /// instead of paying subregion + drain per call.
     pub fnptr_numeric_ret: &'a BTreeSet<String>,
+    /// GH #2163, [`caller_arena_untouched_free_fns`] only: the locals the
+    /// fn binds to an empty literal of a scalar `@form(vec)` locus
+    /// ([`scalar_vec_loci`]), each mapped to that locus and whether its
+    /// elements are numeric. Such a local's arena is its own and its
+    /// buffer the system allocator's, so making it and calling its
+    /// synthesized `push`, `get`, `len` and the rest allocates nothing in
+    /// the arena the fn runs in. EMPTY everywhere else.
+    pub vec_locals: &'a BTreeMap<String, (String, bool)>,
 }
 
 /// `Int` / `U64` / `Float` / `Duration` — the scalar types whose `+` is
@@ -1443,6 +1465,7 @@ fn nonalloc_free_fns(
                     numeric_ret_self_methods: &empty_self,
                     param_field_numeric: &param_field_numeric,
                     fnptr_numeric_ret: &fnptr_numeric_ret,
+                    vec_locals: &BTreeMap::new(),
                 };
                 // Seed with the fn's numeric scalar params.
                 let seed: BTreeSet<String> = f
@@ -1461,6 +1484,274 @@ fn nonalloc_free_fns(
         }
         for n in demote {
             nonalloc.remove(&n);
+        }
+    }
+}
+
+/// GH #2163: the synthesized ops of a scalar `@form(vec)` a fn may call on
+/// a local of one without touching any arena: each reads or writes the
+/// vec's buffer, which the system allocator holds (grown by `realloc`,
+/// freed at the locus's dissolve), and nothing else. `sort` and its kin
+/// take a closure and stay out.
+const SCALAR_VEC_OPS: &[&str] = &["push", "get", "pop", "len", "is_empty", "clear", "truncate"];
+
+/// The locus `e` is an empty literal of (`IntVec { }`), by its bare name.
+fn empty_literal_of(e: &Expr) -> Option<&str> {
+    match e {
+        Expr::Struct { path, inits, .. } if inits.is_empty() && path.segments.len() == 1 => {
+            Some(path.segments[0].name.as_str())
+        }
+        _ => None,
+    }
+}
+
+/// Whether `e` names a scalar-vec local ([`AllocCtx::vec_locals`]), and if
+/// so whether its elements are numeric.
+fn vec_local(e: &Expr, ctx: &AllocCtx) -> Option<bool> {
+    match e {
+        Expr::Ident(id) => ctx.vec_locals.get(&id.name).map(|(_, numeric)| *numeric),
+        _ => None,
+    }
+}
+
+/// A call of a synthesized op on a scalar-vec local: the op's name, and
+/// whether the local's elements are numeric.
+fn scalar_vec_call<'e>(e: &'e Expr, ctx: &AllocCtx) -> Option<(&'e str, bool)> {
+    match e {
+        Expr::Call { callee, .. } => match callee.as_ref() {
+            Expr::Field { receiver, name, .. } if SCALAR_VEC_OPS.contains(&name.name.as_str()) => {
+                vec_local(receiver, ctx).map(|numeric| (name.name.as_str(), numeric))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// GH #2163: the scalar `@form(vec)` loci, by name, each mapped to whether
+/// its elements are numeric. A non-generic, unannotated `@form(vec)` whose
+/// every member is a capacity block of plain `heap` slots of a scalar (a
+/// numeric primitive or `Bool`): no params, hooks (but the empty `run` the
+/// desugar adds), methods, bus or closure, so making one runs no code of
+/// its own; a capacity slot keeps its arena its own
+/// ([`locus_arena_elidable`]); and its elements are copied by value into
+/// the buffer the system allocator holds.
+fn scalar_vec_loci(items: &[TopDecl]) -> BTreeMap<String, bool> {
+    items
+        .iter()
+        .filter_map(|it| match it {
+            TopDecl::Locus(l)
+                if l.generics.is_empty()
+                    && !l.is_main
+                    && !l.export
+                    && l.annotations.is_empty()
+                    && l.form.as_ref().is_some_and(|f| f.name.name == "vec" && f.args.is_empty()) =>
+            {
+                let mut numeric = true;
+                let mut slots = 0;
+                for m in &l.members {
+                    let c = match m {
+                        LocusMember::Capacity(c) => c,
+                        // The empty `run` desugar gives a locus that
+                        // declares none (GH #735): codegen elides it.
+                        LocusMember::Lifecycle(d)
+                            if d.synthesized
+                                && d.kind == LifecycleKind::Run
+                                && d.body.stmts.is_empty()
+                                && d.body.tail.is_none() =>
+                        {
+                            continue;
+                        }
+                        _ => return None,
+                    };
+                    slots += c.slots.len();
+                    for slot in &c.slots {
+                        let plain = matches!(slot.kind, CapacitySlotKind::Heap)
+                            && slot.as_parent_for.is_none()
+                            && slot.indexed_by.is_none()
+                            && slot.ordered_by.is_none();
+                        if !plain || !ret_is_scalar_or_unit(Some(&slot.elem_ty)) {
+                            return None;
+                        }
+                        numeric &= type_expr_is_numeric_scalar(&slot.elem_ty);
+                    }
+                }
+                (slots > 0).then(|| (l.name.name.clone(), numeric))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The locals `stmts` bind with `let` to an empty literal of a scalar vec
+/// (`vecs`), with the locus and its element flag: a name bound to two
+/// different loci, or named by a parameter, is left out, so its `let`s are
+/// then refused as the struct literals they are.
+fn scalar_vec_lets(stmts: &[Stmt], vecs: &BTreeMap<String, bool>, params: &[Param]) -> BTreeMap<String, (String, bool)> {
+    fn walk(stmts: &[Stmt], vecs: &BTreeMap<String, bool>, out: &mut BTreeMap<String, Option<(String, bool)>>) {
+        for s in stmts {
+            match s {
+                Stmt::Let { name, value, .. } => {
+                    if let Some((locus, numeric)) = empty_literal_of(value).and_then(|l| vecs.get_key_value(l)) {
+                        let seen = out.entry(name.name.clone()).or_insert_with(|| Some((locus.clone(), *numeric)));
+                        if seen.as_ref().is_some_and(|(l, _)| l != locus) {
+                            *seen = None;
+                        }
+                    }
+                }
+                Stmt::If(i) => walk_if(i, vecs, out),
+                Stmt::While { body, .. } => walk(&body.stmts, vecs, out),
+                Stmt::Block(b) => walk(&b.stmts, vecs, out),
+                _ => {}
+            }
+        }
+    }
+    fn walk_if(i: &IfStmt, vecs: &BTreeMap<String, bool>, out: &mut BTreeMap<String, Option<(String, bool)>>) {
+        walk(&i.then_block.stmts, vecs, out);
+        match i.else_block.as_deref() {
+            None => {}
+            Some(ElseBranch::Else(b)) => walk(&b.stmts, vecs, out),
+            Some(ElseBranch::ElseIf(inner)) => walk_if(inner, vecs, out),
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(stmts, vecs, &mut out);
+    out.into_iter()
+        .filter(|(name, _)| !params.iter().any(|p| p.name.name == *name))
+        .filter_map(|(name, v)| v.map(|v| (name, v)))
+        .collect()
+}
+
+/// Whether no block in `b` ends in a tail expression. The non-allocating
+/// walk reads a block's statements, so [`caller_arena_untouched_free_fns`]
+/// takes only bodies whose every value is a statement it reads.
+fn tailless(b: &Block) -> bool {
+    fn stmt(s: &Stmt) -> bool {
+        match s {
+            Stmt::Let { value, .. } | Stmt::Expr(value) => expr(value),
+            Stmt::Return(e, _) => e.as_ref().map_or(true, expr),
+            Stmt::Assign { value, .. } => expr(value),
+            Stmt::If(i) => if_(i),
+            Stmt::While { cond, body, .. } => expr(cond) && tailless(body),
+            Stmt::Block(b) => tailless(b),
+            _ => true,
+        }
+    }
+    fn if_(i: &IfStmt) -> bool {
+        expr(&i.cond)
+            && tailless(&i.then_block)
+            && match i.else_block.as_deref() {
+                None => true,
+                Some(ElseBranch::Else(b)) => tailless(b),
+                Some(ElseBranch::ElseIf(inner)) => if_(inner),
+            }
+    }
+    fn expr(e: &Expr) -> bool {
+        match e {
+            Expr::Block(b) => tailless(b),
+            Expr::If(i) => if_(i),
+            Expr::Field { receiver, .. } => expr(receiver),
+            Expr::Index { receiver, index, .. } => expr(receiver) && expr(index),
+            Expr::Unary { operand, .. } => expr(operand),
+            Expr::Binary { left, right, .. } => expr(left) && expr(right),
+            Expr::Call { callee, args, .. } => expr(callee) && args.iter().all(expr),
+            Expr::Tuple(parts, _) => parts.iter().all(expr),
+            Expr::Or { inner, .. } => expr(inner),
+            _ => true,
+        }
+    }
+    b.tail.is_none() && b.stmts.iter().all(stmt)
+}
+
+/// GH #2163: the free fns a call of which leaves nothing in the arena it
+/// is handed, so a loop whose body only calls them (`total = total +
+/// do_work(n)`) gains nothing from a per-iteration arena and opens none
+/// (`Cx::callee_arena` hands such a call the frame's arena instead).
+///
+/// A free fn that is not scratch-local allocates into its caller's arena,
+/// which is what lets a loop's iteration arena reclaim a helper's records
+/// (GH #2094). One whose body allocates nothing there leaves that arena
+/// as it found it: an infallible fn taking and returning only scalars,
+/// whose body passes the non-allocating walk once two things are admitted
+/// beside it. A local bound to an empty literal of a scalar `@form(vec)`
+/// ([`scalar_vec_loci`]) is made in an arena of its own, its buffer the
+/// system allocator's, and dissolved at return; and its synthesized ops
+/// ([`SCALAR_VEC_OPS`]), `or raise` included, whose error payload is made
+/// only on the way to the panic an infallible fn's raise is.
+///
+/// A greatest fixpoint over the calls between such fns, as the
+/// non-allocating set's, seeded with every candidate: a call of a member
+/// leaves nothing in the arena the caller runs in. Handing a callee the
+/// frame's arena is safe whatever the callee does (it outlives the
+/// iteration), so a wrong member costs reclaim, never a lifetime.
+fn caller_arena_untouched_free_fns(
+    items: &[TopDecl],
+    nonalloc: &BTreeSet<String>,
+    nonalloc_numeric_ret: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let vecs = scalar_vec_loci(items);
+    let fns: Vec<(&FnDecl, BTreeMap<String, (String, bool)>)> = items
+        .iter()
+        .filter_map(|it| match it {
+            TopDecl::Fn(f)
+                if f.fallible.is_none()
+                    && f.ffi.is_none()
+                    && !f.export
+                    && f.generics.is_empty()
+                    && ret_is_scalar_or_unit(f.ret.as_ref())
+                    && f.params.iter().all(|p| ret_is_scalar_or_unit(Some(&p.ty)))
+                    && tailless(&f.body) =>
+            {
+                Some((f, scalar_vec_lets(&f.body.stmts, &vecs, &f.params)))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut set: BTreeSet<String> = fns.iter().map(|(f, _)| f.name.name.clone()).collect();
+    let empty = BTreeSet::new();
+    let empty_pf = BTreeMap::new();
+    loop {
+        let calls: BTreeSet<String> = nonalloc.union(&set).cloned().collect();
+        let numeric_ret: BTreeSet<String> = nonalloc_numeric_ret
+            .iter()
+            .cloned()
+            .chain(
+                fns.iter()
+                    .filter(|(f, _)| set.contains(&f.name.name))
+                    .filter(|(f, _)| f.ret.as_ref().is_some_and(type_expr_is_numeric_scalar))
+                    .map(|(f, _)| f.name.name.clone()),
+            )
+            .collect();
+        let demote: Vec<String> = fns
+            .iter()
+            .filter(|(f, _)| set.contains(&f.name.name))
+            .filter(|(f, vec_locals)| {
+                let ctx = AllocCtx {
+                    nonalloc: &calls,
+                    numeric_ret: &numeric_ret,
+                    numeric_self_fields: &empty,
+                    scalar_self_fields: &empty,
+                    elidable_self_methods: &empty,
+                    numeric_ret_self_methods: &empty,
+                    param_field_numeric: &empty_pf,
+                    fnptr_numeric_ret: &empty,
+                    vec_locals,
+                };
+                let seed: BTreeSet<String> = f
+                    .params
+                    .iter()
+                    .filter(|p| type_expr_is_numeric_scalar(&p.ty))
+                    .map(|p| p.name.name.clone())
+                    .collect();
+                !fn_body_definitely_non_allocating(&f.body.stmts, &ctx, &seed)
+            })
+            .map(|(f, _)| f.name.name.clone())
+            .collect();
+        if demote.is_empty() {
+            return set;
+        }
+        for n in demote {
+            set.remove(&n);
         }
     }
 }
@@ -1542,6 +1833,10 @@ fn expr_is_nonalloc_numeric(
             ) && expr_is_nonalloc_numeric(left, ctx, num)
                 && expr_is_nonalloc_numeric(right, ctx, num)
         }
+        // GH #2163: a scalar `@form(vec)` local's `len()`.
+        Expr::Call { .. } if matches!(scalar_vec_call(e, ctx), Some(("len", _))) => {
+            expr_definitely_non_allocating(e, ctx, num)
+        }
         // A call to a proven-non-allocating fn returning a numeric scalar
         // (with non-allocating args) yields a numeric scalar — so
         // `helper(x) + 1` is arithmetic. Both a free fn (`numeric_ret`) and,
@@ -1570,6 +1865,12 @@ fn expr_is_nonalloc_numeric(
         // Parenthesized single value `( e )`.
         Expr::Tuple(parts, _) if parts.len() == 1 => {
             expr_is_nonalloc_numeric(&parts[0], ctx, num)
+        }
+        // GH #2163: `get` / `pop` with `or raise` on a scalar `@form(vec)`
+        // local answers an element, numeric when the vec's elements are.
+        Expr::Or { inner, disposition: OrDisposition::Raise(_), .. } => {
+            matches!(scalar_vec_call(inner, ctx), Some(("get" | "pop", true)))
+                && expr_definitely_non_allocating(inner, ctx, num)
         }
         _ => false,
     }
@@ -1600,6 +1901,12 @@ fn stmt_definitely_non_allocating(
     num: &BTreeSet<String>,
 ) -> bool {
     match s {
+        // GH #2163: a local of a scalar `@form(vec)` is bound to an empty
+        // literal of one, and nothing else ([`caller_arena_untouched_free_fns`]).
+        Stmt::Let { name, value, .. } if ctx.vec_locals.contains_key(&name.name) => {
+            let locus = &ctx.vec_locals[&name.name].0;
+            empty_literal_of(value).is_some_and(|l| l == locus)
+        }
         Stmt::Let { value, .. } => expr_definitely_non_allocating(value, ctx, num),
         Stmt::Return(Some(e), _) => expr_definitely_non_allocating(e, ctx, num),
         Stmt::Return(None, _) => true,
@@ -1617,7 +1924,7 @@ fn stmt_definitely_non_allocating(
                     [LValueSeg::Field(f)] if ctx.scalar_self_fields.contains(&f.name)
                 )
             } else {
-                target.tail.is_empty()
+                target.tail.is_empty() && !ctx.vec_locals.contains_key(&target.head.name)
             };
             target_ok && expr_definitely_non_allocating(value, ctx, num)
         }
@@ -1808,6 +2115,11 @@ fn expr_definitely_non_allocating(
                 {
                     ctx.elidable_self_methods.contains(&name.name)
                 }
+                // GH #2163: a synthesized op of a scalar `@form(vec)`
+                // local touches its buffer and nothing else.
+                Expr::Field { receiver, name, .. } if vec_local(receiver, ctx).is_some() => {
+                    SCALAR_VEC_OPS.contains(&name.name.as_str())
+                }
                 _ => false,
             };
             callee_nonalloc
@@ -1837,6 +2149,14 @@ fn expr_definitely_non_allocating(
                 }
         }
         Expr::Block(b) => fn_body_definitely_non_allocating(&b.stmts, ctx, num),
+        // GH #2163: `v.get(i) or raise` on a scalar `@form(vec)` local.
+        // Its error payload is made only on the way out of the process: the
+        // fns that bind such locals are infallible, so the raise is a panic.
+        Expr::Or { inner, disposition: OrDisposition::Raise(_), .. }
+            if scalar_vec_call(inner, ctx).is_some() =>
+        {
+            expr_definitely_non_allocating(inner, ctx, num)
+        }
         // Empty tuple = Unit value, no alloc. Single-elem tuple
         // is parenthesized expression; non-empty multi-elem
         // tuples allocate a tuple struct.
@@ -2003,6 +2323,7 @@ fn elidable_methods(
                         numeric_ret_self_methods: &numeric_ret_self,
                         param_field_numeric: &param_field_numeric,
                         fnptr_numeric_ret: &fnptr_numeric_ret,
+                        vec_locals: &BTreeMap::new(),
                     };
                     // Seed with the method's numeric scalar params.
                     let seed: BTreeSet<String> = params
@@ -2076,6 +2397,7 @@ fn locus_arena_elidable(l: &LocusDecl) -> bool {
         numeric_ret_self_methods: &empty,
         param_field_numeric: &empty_pf,
         fnptr_numeric_ret: &empty,
+        vec_locals: &BTreeMap::new(),
     };
     // All method-like bodies non-allocating.
     for m in &l.members {
