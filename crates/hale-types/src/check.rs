@@ -22745,6 +22745,27 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// The enum an imported seed's `alias::E::V` names a variant of, by
+    /// its merged name, resolved through the import table as
+    /// [`Self::imported_const`] resolves a const; `None` where `E` declares
+    /// no `V` (which [`Self::missing_variant`] says).
+    fn imported_variant(&self, path: &QualifiedName) -> Option<Ty> {
+        let (variant, head) = path.segments.split_last()?;
+        if head.len() < 2 {
+            return None;
+        }
+        let key: Vec<&str> = head.iter().map(|s| s.name.as_str()).collect();
+        let mangled = self.known.import_target(&key.join("::"))?;
+        match self.top.symbols.get(mangled) {
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. }))
+                if variants.iter().any(|v| v.name == variant.name) =>
+            {
+                Some(Ty::Named(mangled.to_string()))
+            }
+            _ => None,
+        }
+    }
+
     fn imported_fn(&self, path: &QualifiedName) -> Option<(String, FnSig)> {
         if path.segments.len() < 2 {
             return None;
@@ -24849,6 +24870,16 @@ impl<'a> Checker<'a> {
                             return Ty::Named(enum_name.clone());
                         }
                     }
+                    // GH #2111 (phase 1): a generic enum's monomorph,
+                    // spelled by its mangled name (`Value_Int::None`), is
+                    // that monomorph, as `Value<Int>` resolves to it.
+                    if let Some((GenericTemplate::Type(decl), _)) = self.resolve_generic_monomorph(enum_name) {
+                        if let TypeDeclBody::Enum(variants) = &decl.body {
+                            if variants.iter().any(|v| v.name.name == *variant_name) {
+                                return Ty::Named(enum_name.clone());
+                            }
+                        }
+                    }
                 }
                 // GH #2023: `E::V` where the enum `E` declares no `V`, as a
                 // value, an operand or a constructor call's callee.
@@ -24889,6 +24920,11 @@ impl<'a> Checker<'a> {
                 // type: `let s: String = lib::MAX` of an `Int` const
                 // checked, built and held the `Int`.
                 if let Some(ty) = self.imported_const(qn) {
+                    return ty;
+                }
+                // GH #2111 (phase 1): and an imported seed's enum variant,
+                // `alias::E::V`, is the enum, as `E::V` is above.
+                if let Some(ty) = self.imported_variant(qn) {
                     return ty;
                 }
                 // GH #803: nothing above answered the path, and in a

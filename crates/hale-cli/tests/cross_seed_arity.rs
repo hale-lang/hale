@@ -32,6 +32,7 @@ locus Acc {
 }
 fn make() -> Acc { return Acc { }; }
 const LIMIT: Int = 9;
+type Scope = enum { project, key };
 "#;
 
 fn tree(tag: &str, app: &str) -> PathBuf {
@@ -176,10 +177,27 @@ fn an_imported_const_is_its_declared_type() {
 }
 
 #[test]
+fn an_imported_variant_is_its_enum() {
+    // GH #2111 (phase 1): `alias::E::V` fell through to `Unknown`, as
+    // `alias::C` did, so its value was held to no type: the build took
+    // the enum into the `String` local.
+    refused(
+        "variant_let",
+        "import \"../lib\" as lib;\nfn main() { let s: String = lib::Scope::key; println(s); }\n",
+        "let `s`: expected `String`, got `lib::Scope`",
+    );
+    refused(
+        "variant_through_a_binding",
+        "import \"../lib\" as lib;\nfn main() { let k = lib::Scope::key; let n: Int = k; println(n); }\n",
+        "let `n`: expected `Int`, got `lib::Scope`",
+    );
+}
+
+#[test]
 fn correct_cross_seed_calls_stay_clean() {
     let d = tree(
         "ok",
-        "import \"../lib\" as lib;\nfn main() {\n    let x = lib::add3(1, 2, 3);\n    let d = lib::digit(\"1\") or 0;\n    let a = lib::make();\n    let y = a.add2(x, d);\n    let mut bound = lib::LIMIT;\n    bound = bound - 1;\n    println(x + y + bound);\n}\n",
+        "import \"../lib\" as lib;\nfn main() {\n    let x = lib::add3(1, 2, 3);\n    let d = lib::digit(\"1\") or 0;\n    let a = lib::make();\n    let y = a.add2(x, d);\n    let mut bound = lib::LIMIT;\n    bound = bound - 1;\n    let mut s = lib::Scope::project;\n    if s == lib::Scope::project { s = lib::Scope::key; }\n    println(x + y + bound);\n    println(s);\n}\n",
     );
     let (ok, out) = check(&d);
     let _ = std::fs::remove_dir_all(&d);

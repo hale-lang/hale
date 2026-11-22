@@ -223,3 +223,22 @@ fn a_fixed_width_argument_names_its_monomorph() {
     assert!(m.iter().any(|s| s.contains("field `value` expects `Bytes`, got `Int`")), "got: {m:?}");
     assert_eq!(m.len(), 2, "the `I8` box is clean: {m:?}");
 }
+
+/// GH #2111: a generic enum's monomorph spelled by its mangled name
+/// (`Value_Int::None`) is that monomorph, as `Value<Int>` resolves to it.
+/// The path was `Unknown`, so its value was held to no type.
+#[test]
+fn a_monomorph_s_variant_is_the_monomorph() {
+    let m = msgs(
+        r#"
+        type Value<T> = enum { Some(T), None };
+        fn main() {
+            let ok: Value<Int> = Value_Int::None;
+            let bad: String = Value_Int::None;
+            println(bad);
+        }
+    "#,
+    );
+    assert_eq!(m.len(), 1, "got: {m:?}");
+    assert!(m[0].contains("let `bad`: expected `String`, got `Value_Int`"), "got: {m:?}");
+}
