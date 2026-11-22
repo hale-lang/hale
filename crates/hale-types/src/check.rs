@@ -15833,7 +15833,14 @@ impl<'a> Checker<'a> {
                     self.expr_types = Some(Vec::new());
                     let lt = self.check_expr(&assertion.left);
                     let rt = self.check_expr(&assertion.right);
-                    if !lt.assignable_from(&rt) && !rt.assignable_from(&lt) {
+                    // an `Int` beside a `Float` is the band's to refuse, at
+                    // its `Int` side (below)
+                    let band_pair = {
+                        let num = |t: &Ty| self.through_aliases(self.scalars.representation(&self.through_aliases(t.clone())));
+                        let is_num = |t: &Ty| matches!(t, Ty::Prim(PrimType::Int | PrimType::Float));
+                        is_num(&num(&lt)) && is_num(&num(&rt))
+                    };
+                    if !band_pair && !lt.assignable_from(&rt) && !rt.assignable_from(&lt) {
                         self.diags.push(Diag::ty(
                             assertion.span,
                             format!(
@@ -15864,17 +15871,9 @@ impl<'a> Checker<'a> {
                     // a `Float`) checked clean as a widening and the build
                     // refused the closure. Refused at the `Int` side.
                     let num = |this: &Self, t: &Ty| this.through_aliases(this.scalars.representation(&this.through_aliases(t.clone())));
-                    // `mean(…)` is a `Float` whatever it samples (the
-                    // accumulator's row), though the walk types the call as
-                    // no builtin's.
-                    let is_mean = |e: &Expr| {
-                        matches!(e, Expr::Call { callee, args, .. }
-                            if args.len() == 1 && matches!(callee.as_ref(), Expr::Ident(i) if i.name == "mean"))
-                    };
-                    let float_ty = Ty::Prim(PrimType::Float);
-                    let side = |this: &Self, e: &Expr, t: &Ty| if is_mean(e) { float_ty.clone() } else { num(this, t) };
-                    let (ln, rn, tn) =
-                        (side(self, &assertion.left, &lt), side(self, &assertion.right, &rt), num(self, &tt));
+                    // (`mean(…)` is a `Float` whatever it samples, the
+                    // accumulator's row, and the walk types it so)
+                    let (ln, rn, tn) = (num(self, &lt), num(self, &rt), num(self, &tt));
                     let int = Ty::Prim(PrimType::Int);
                     let float = Ty::Prim(PrimType::Float);
                     let band = if ln == float || rn == float { Some(&float) } else { None };
@@ -19720,6 +19719,27 @@ impl<'a> Checker<'a> {
             _ => {}
         }
         substitute_generic_ty(te, bindings, self.known)
+    }
+
+    /// The type of the method `name` a locus, or a generic locus's
+    /// monomorph, declares, as a call's callee: `None` for a type that is
+    /// no locus or declares no such method.
+    fn declared_method_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
+        let Ty::Named(n) = ty else { return None };
+        match self.top.lookup(n) {
+            Some(TopSymbol::Locus(info)) => info.methods.iter().find(|m| m.name == name).map(method_to_fn_ty),
+            Some(_) => None,
+            None => {
+                let (GenericTemplate::Locus(ld), bindings) = self.resolve_generic_monomorph(n)? else { return None };
+                ld.members.iter().find_map(|m| match m {
+                    LocusMember::Fn(f) if f.name.name == name => Some(Ty::Function {
+                        params: f.params.iter().map(|p| substitute_generic_ty(&p.ty, &bindings, self.known)).collect(),
+                        ret: Box::new(f.ret.as_ref().map_or(Ty::Unit, |te| substitute_generic_ty(te, &bindings, self.known))),
+                    }),
+                    _ => None,
+                })
+            }
+        }
     }
 
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
@@ -25455,8 +25475,21 @@ impl<'a> Checker<'a> {
                             // anywhere else they named nothing the build
                             // could call. (`count(x)` of a `bounded` is its
                             // intrinsic, below.)
+                            // GH #2111: each is the value lowering reads it as:
+                            // a mean a `Float` whatever it samples, a count an
+                            // `Int`
                             "mean" if self.in_closure && args.len() == 1 && self.locals.lookup("mean").is_none() => {
                                 self.refuse_accumulated_non_field("mean", &args[0]);
+                                let _ = self.check_expr(&args[0]);
+                                return Ty::Prim(PrimType::Float);
+                            }
+                            "count"
+                                if self.in_closure
+                                    && args.is_empty()
+                                    && self.locals.lookup("count").is_none()
+                                    && !self.generic_fns.contains_key("count") =>
+                            {
+                                return Ty::Prim(PrimType::Int);
                             }
                             "count" | "mean"
                                 if !self.in_closure
@@ -25907,61 +25940,75 @@ impl<'a> Checker<'a> {
                         // GH #831: through an alias of the enum too,
                         // exactly as the payload-less form above.
                         let variant_name = &qn.segments[qn.segments.len() - 1].name;
-                        if let Some(TopSymbol::Type(TypeInfo {
-                            kind: TypeKind::Enum(variants),
-                            ..
-                        })) = self.top.symbols.get(&enum_name)
-                        {
-                            if let Some(variant) = variants.iter().find(|v| v.name == *variant_name) {
-                                let variant_name = variant_name.clone();
-                                let fields = variant.fields.clone();
-                                // A variant carries its declared values:
-                                // the count, and each one's type (a
-                                // Decimal literal taking the field's
-                                // scale). Lowering refused a mismatch
-                                // ("`E::V` arg 0: expected type Int, got
-                                // String") with no file or line. A field
-                                // the checker cannot name (a generic
-                                // enum's parameter) stays permissive.
-                                if args.len() != fields.len() {
+                        // GH #2111 (phase 1): a generic enum's monomorph
+                        // spelled by its mangled name (`Value_Int::Some(1)`)
+                        // carries its template's values, the parameters
+                        // bound, as the payload-less `Value_Int::None` is
+                        // that monomorph.
+                        let declared = match self.top.symbols.get(&enum_name) {
+                            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) => {
+                                variants.iter().find(|v| v.name == *variant_name).map(|v| v.fields.clone())
+                            }
+                            Some(_) => None,
+                            None => match self.resolve_generic_monomorph(&enum_name) {
+                                Some((GenericTemplate::Type(decl), bindings)) => match &decl.body {
+                                    TypeDeclBody::Enum(variants) => variants
+                                        .iter()
+                                        .find(|v| v.name.name == *variant_name)
+                                        .map(|v| v.fields.iter().map(|te| self.monomorph_field_ty(te, &bindings)).collect()),
+                                    _ => None,
+                                },
+                                _ => None,
+                            },
+                        };
+                        if let Some(fields) = declared {
+                            let variant_name = variant_name.clone();
+                            // A variant carries its declared values:
+                            // the count, and each one's type (a
+                            // Decimal literal taking the field's
+                            // scale). Lowering refused a mismatch
+                            // ("`E::V` arg 0: expected type Int, got
+                            // String") with no file or line. A field
+                            // the checker cannot name (a generic
+                            // enum's parameter) stays permissive.
+                            if args.len() != fields.len() {
+                                self.diags.push(Diag::ty(
+                                    *call_span,
+                                    format!(
+                                        "`{shown}::{variant_name}` carries {} value{}, and this passes {}",
+                                        fields.len(),
+                                        if fields.len() == 1 { "" } else { "s" },
+                                        args.len()
+                                    ),
+                                ));
+                            }
+                            for (i, a) in args.iter().enumerate() {
+                                let got = self.check_expr(a);
+                                let Some(want) = fields.get(i) else { continue };
+                                // A literal spelled with a generic
+                                // template's name takes the field's
+                                // arguments, its fields held to the
+                                // monomorph's; a monomorph is a type
+                                // the checker names (`Box_Int`).
+                                if self.admit_monomorph_literal(want, &got, a, false) {
+                                    continue;
+                                }
+                                let monomorph = matches!(want, Ty::Named(n) if self.typed.monomorphs.named(n).is_some());
+                                if !self.ty_is_nameable(want) && !monomorph {
+                                    continue;
+                                }
+                                if !self.flows_into(want, &got, a) {
                                     self.diags.push(Diag::ty(
-                                        *call_span,
+                                        a.span(),
                                         format!(
-                                            "`{shown}::{variant_name}` carries {} value{}, and this passes {}",
-                                            fields.len(),
-                                            if fields.len() == 1 { "" } else { "s" },
-                                            args.len()
+                                            "`{shown}::{variant_name}` value {i}: expected `{}`, got `{}`",
+                                            want.display(),
+                                            got.display()
                                         ),
                                     ));
                                 }
-                                for (i, a) in args.iter().enumerate() {
-                                    let got = self.check_expr(a);
-                                    let Some(want) = fields.get(i) else { continue };
-                                    // A literal spelled with a generic
-                                    // template's name takes the field's
-                                    // arguments, its fields held to the
-                                    // monomorph's; a monomorph is a type
-                                    // the checker names (`Box_Int`).
-                                    if self.admit_monomorph_literal(want, &got, a, false) {
-                                        continue;
-                                    }
-                                    let monomorph = matches!(want, Ty::Named(n) if self.typed.monomorphs.named(n).is_some());
-                                    if !self.ty_is_nameable(want) && !monomorph {
-                                        continue;
-                                    }
-                                    if !self.flows_into(want, &got, a) {
-                                        self.diags.push(Diag::ty(
-                                            a.span(),
-                                            format!(
-                                                "`{shown}::{variant_name}` value {i}: expected `{}`, got `{}`",
-                                                want.display(),
-                                                got.display()
-                                            ),
-                                        ));
-                                    }
-                                }
-                                return Ty::Named(enum_name);
                             }
+                            return Ty::Named(enum_name);
                         }
                     }
                 }
@@ -26605,7 +26652,12 @@ impl<'a> Checker<'a> {
                 }
                 let rt = self.check_expr(receiver);
                 self.record_param_access(&rt, name, *span, crate::typed_bodies::AccessKind::Read);
-                match self.field_ty(&rt, &name.name) {
+                // GH #2111: a call names a method, which answers before a
+                // param of the same name (`self.w.restart()` beside
+                // `params { restart: Int }`), as the call's callee row
+                // (`view_method`) and lowering take it
+                let method = if is_callee { self.declared_method_ty(&rt, &name.name) } else { None };
+                match method.or_else(|| self.field_ty(&rt, &name.name)) {
                     Some(t) => {
                         if !is_callee {
                             self.refuse_method_value(&rt, name);
