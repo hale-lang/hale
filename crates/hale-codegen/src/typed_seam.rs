@@ -48,6 +48,33 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.ty_at(e)
     }
 
+    /// GH #2111: the checker's type of `e`, which lowering requires: a read
+    /// that takes no other path. With no row (or a type with no layout)
+    /// it answers `None` so that the caller's lowering can go on, and the
+    /// build is refused when lowering ends, at `e`, naming `what`
+    /// ([`Cx::refuse_missing_rows`]), strict mode or not.
+    pub(crate) fn ty_required(&self, e: &Expr, what: &'static str) -> Option<CodegenTy> {
+        let t = self.ty_at(e);
+        if t.is_none() {
+            self.required_misses.borrow_mut().push((what, e.span()));
+        }
+        t
+    }
+
+    /// The element type and capacity of the receiver `args[0]` when the
+    /// checker types it a `bounded[T; N]`; `None` for a receiver of another
+    /// type, or none. A projection of the receiver's row (GH #2111): until
+    /// the checker's rows reached lowering, lowering typed the receiver
+    /// again with a walk of its own over a subset of the grammar, which
+    /// grew a shape at a time as programs reached the build untyped
+    /// (downstream handoffs, 2026-11-06 and 2026-11-14).
+    pub(crate) fn bounded_recv_spec(&self, args: &[Expr]) -> Option<(CodegenTy, u64)> {
+        match self.ty_required(args.first()?, "the checker's type of this `bounded` call's receiver")? {
+            CodegenTy::Bounded(elem, cap) => Some((*elem, cap)),
+            _ => None,
+        }
+    }
+
     /// One of the seam's fallbacks (GH #2111): lowering types `e` itself
     /// below this call, the checker's row or none. Under strict mode a
     /// missing row is noted here; otherwise it does nothing. Every call
@@ -99,9 +126,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         });
     }
 
-    /// GH #2111 strict mode, at the end of lowering: every expression it
-    /// typed without the checker's row, refused together.
+    /// GH #2111, at the end of lowering: a read that required the
+    /// checker's row and found none (`Cx::ty_required`), refused at its
+    /// site; and under strict mode every expression lowering typed without
+    /// the checker's row, refused together.
     pub(crate) fn refuse_missing_rows(&self) -> Result<(), CodegenError> {
+        if let Some((what, at)) = self.required_misses.borrow().first() {
+            return Err(CodegenError::missing_row("expression_typing", what, Some(*at)));
+        }
         if !self.seam_strict {
             return Ok(());
         }

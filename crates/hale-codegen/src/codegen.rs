@@ -2318,6 +2318,7 @@ fn build_resolved_lowered(
         dispatch_trace: options.dispatch_trace,
         seam_strict: options.seam_strict,
         seam_misses: Default::default(),
+        required_misses: Default::default(),
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
         main_test_fail_bb: None,
@@ -4977,6 +4978,10 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `Cx::ty_at` and refused when lowering ends.
     pub(crate) seam_strict: bool,
     pub(crate) seam_misses: std::cell::RefCell<BTreeMap<(u32, u32, u8, u64, bool), MissingRow>>,
+    /// GH #2111: the reads that require the checker's row
+    /// (`Cx::ty_required`) and found none: the build is refused when
+    /// lowering ends, strict mode or not.
+    pub(crate) required_misses: std::cell::RefCell<Vec<(&'static str, hale_syntax::Span)>>,
     /// GH #717: `deferred_dissolves.len()` once `main`'s own frame is
     /// pushed. Identifies "we are at main's top frame" so a
     /// recorded-assertion-failure branch only routes through main's
