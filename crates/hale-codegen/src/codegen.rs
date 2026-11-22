@@ -24387,22 +24387,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return self.lower_for_drain(var_name, iter, &elem, body, scope);
             }
         }
-        // bounded[T; N] iteration (2026-07-02): `for x in m.history`
-        // where the iterand statically types as bounded — counted
-        // loop over the live slots [0, len).
-        if let Some(CodegenTy::Bounded(belem, bcap)) =
-            self.ty_or_fallback(iter)
-        {
-            return self.lower_for_bounded(
-                var_name,
-                iter,
-                belem.as_ref().clone(),
-                bcap,
-                body,
-                owned,
-                scope,
-            );
-        }
         // 2026-07-02 @form iteration surface: `for e in m.entries`
         // (hashmap — cluster-aware occupied-slot walk, O(cap) total
         // via lotus_hashmap_iter_next; the index-based key_at/
@@ -24411,41 +24395,39 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // calls). The iteration variable is a per-iteration COPY of
         // the cell; mutating the form inside the body is not
         // supported (a grow would rehash/realloc under the cursor).
+        //
+        // GH #2111: decided by the receiver's row, a locus with that
+        // form, before the iterand's own row is asked for: a form's
+        // `entries` / `items` is a pseudo-field the checker gives no
+        // type (it binds the loop variable to the form's cell), and
+        // `self.children` has a type with no layout.
         if let Expr::Field { receiver, name, .. } = iter {
             if name.name == "entries" || name.name == "items" {
-                let recv_form: Option<(PointerValue<'ctx>, String)> =
-                    match self.lower_expr(receiver, scope) {
-                        Ok((v, CodegenTy::LocusRef(ln))) => {
-                            Some((v.into_pointer_value(), ln))
-                        }
-                        _ => None,
+                let hashmap = name.name == "entries";
+                let form = match self.ty_at(receiver) {
+                    Some(CodegenTy::LocusRef(ln)) => self.user_loci.get(&ln).and_then(|info| {
+                        let want = if hashmap { SlotForm::Hashmap } else { SlotForm::Vec };
+                        let slot = info.capacity_slots.iter().find(|s| s.form == Some(want))?.clone();
+                        Some((info.clone(), slot))
+                    }),
+                    _ => None,
+                };
+                if let Some((info, slot)) = form {
+                    let recv_ptr = self.lower_expr(receiver, scope)?.0.into_pointer_value();
+                    return if hashmap {
+                        self.lower_for_hashmap_entries(var_name, recv_ptr, &info, &slot, body, cell_owned, scope)
+                    } else {
+                        self.lower_for_vec_items(var_name, recv_ptr, &info, &slot, body, scope)
                     };
-                if let Some((recv_ptr, ln)) = recv_form {
-                    if let Some(info) = self.user_loci.get(&ln).cloned() {
-                        if name.name == "entries" {
-                            if let Some(slot) = info
-                                .capacity_slots
-                                .iter()
-                                .find(|s| s.form == Some(SlotForm::Hashmap))
-                                .cloned()
-                            {
-                                return self.lower_for_hashmap_entries(
-                                    var_name, recv_ptr, &info, &slot, body,
-                                    cell_owned, scope,
-                                );
-                            }
-                        } else if let Some(slot) = info
-                            .capacity_slots
-                            .iter()
-                            .find(|s| s.form == Some(SlotForm::Vec))
-                            .cloned()
-                        {
-                            return self.lower_for_vec_items(
-                                var_name, recv_ptr, &info, &slot, body, scope,
-                            );
-                        }
-                    }
                 }
+            }
+        }
+        // bounded[T; N] iteration (2026-07-02): `for x in m.history`
+        // where the iterand statically types as bounded — counted
+        // loop over the live slots [0, len).
+        if !is_self_children {
+            if let Some(CodegenTy::Bounded(belem, bcap)) = self.ty_or_fallback(iter) {
+                return self.lower_for_bounded(var_name, iter, belem.as_ref().clone(), bcap, body, owned, scope);
             }
         }
         if !is_self_children {
