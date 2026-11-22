@@ -5060,10 +5060,16 @@ Where this decision chose:
   `bounded[T; N]` or a fixed array, by `for` or as an element chain's
   loop (`src.get(i) or { break; }`, `i` stepping by one), so its term
   count is at most `N` per update; its body does nothing observable but
-  compute (locals, `if`, `break`, `continue`, operators, casts, the
-  natively lowered `T::f`, `len` / `min` / `max` / `abs`: no call into
-  the program or the runtime, no loop, no `return`, `raise` or `fail`, no
-  write to anything but a local); and the accumulator is a local declared
+  compute (locals, `if`, `break`, `continue`, comparisons, logic and bit
+  operators, casts with their `or`, `T::wrapping_*` / `checked_*` / `min`
+  / `max`, `len` / `min` / `max`: no call into the program or the
+  runtime, no loop, no `return`, `raise` or `fail`, no write to anything
+  but a local) and nothing that could stop the process itself: no `/`,
+  `%` or shift, no `-x` of anything but a literal, no index, no `abs`, and
+  every `+`, `-` and `*` besides the sum's own (and its widened step) of
+  `Int` (which wraps) or `Float`, by the checker's types (otherwise such an
+  operation could run after an element whose sum was already out of
+  range, and report itself instead); and the accumulator is a local declared
   before the loop that the loop names only in its updates, `s = s + e`,
   `s = e + s` or `s += e`, `e` not naming it. The accumulator's type is
   the checker's (the place row of an update's target, GH #2111). Anything
@@ -5091,11 +5097,12 @@ Where this decision chose:
   its inner operator checked where it happens.
 - **Where the violation is reported.** At the loop's exit, not at the
   element that crossed the bound. The message is the per-element check's
-  own (`violation: U32 \`+\` overflows: …`); a step's flag is reported
-  before the sum's check. Since the loop's body does nothing observable,
-  nothing a program could see ran between the crossing and the report
-  (a later element's own checked operation, a division by zero, may be
-  the violation reported instead). The lowering is the codegen's, not the
+  own (`violation: U32 \`+\` overflows: …`). Since the loop's body does
+  nothing observable and nothing else in it can stop the process, nothing
+  a program could see ran between the crossing and the report, and the
+  violation is the sum's. When a widened step was out of range too, the
+  step's is reported, before the sum's check, where the per-element check
+  reported whichever came first. The lowering is the codegen's, not the
   optimizer's: a dev build and `hale test` report at the same place as a
   release build.
 - **Out and back in is the sum.** A total that leaves the range mid-way
@@ -5109,9 +5116,10 @@ Where this decision chose:
 **Not breaking.** Every program that ran before computes what it
 computed: a sum in range at every element is in range at the end, and
 each step in range is in range wide. A program that stopped with an
-overflow still stops with the same message, after the loop instead of
-inside it, with nothing observable between, unless its total came back
-into range, where it now runs on with the exact sum.
+overflow still stops with an overflow, after the loop instead of inside
+it, with nothing observable between: the sum's own message, or the
+step's where a step was out of range, unless its total came back into
+range (with every step in it), where it now runs on with the exact sum.
 
 **Considered and rejected.** *A sticky overflow flag beside a narrow
 accumulator*: it reads the running total every element, which is not a

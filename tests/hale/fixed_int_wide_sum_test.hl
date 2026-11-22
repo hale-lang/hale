@@ -8,7 +8,8 @@
 // range, and no violation. A `.map` step of one operator is computed wide
 // too, and an element whose step is out of range is still a violation
 // (the step's, at the end). A loop this lowering does not take (a body
-// that prints, a hand-written `while`) keeps its per-element check. One
+// that prints, one with an operation that can stop the process itself, a
+// hand-written `while`) keeps its per-element check. One
 // program, built once, runs each case by name.
 
 fn app_source() -> String {
@@ -62,6 +63,16 @@ fn app_source() -> String {
             return s;
         }
 
+        fn dividing_i16(xs: bounded[I16; 8]) -> I16 {
+            let mut s: I16 = 0;
+            let mut q: I16 = 0;
+            for x in xs {
+                s += x;
+                q = 1 / (x - 7);
+            }
+            return s + q;
+        }
+
         fn indexed_i16(xs: bounded[I16; 8]) -> I16 {
             let mut s: I16 = 0;
             let mut i = 0;
@@ -100,6 +111,11 @@ fn app_source() -> String {
                 println(double_i16(i16s([20000, -20000, 0, 0])));
             } else if what == "noisy" {
                 println(noisy_i16(i16s([30000, 30000, -30000, -20000])));
+            } else if what == "dividing" {
+                // out at the second element; the third would divide by
+                // zero: a body that can stop the process itself keeps the
+                // check at each element, so the sum's is reported
+                println(dividing_i16(i16s([20000, 20000, 7, 0])));
             } else if what == "indexed" {
                 println(indexed_i16(i16s([30000, 30000, -30000, -20000])));
             } else if what == "fine" {
@@ -184,6 +200,7 @@ fn main() {
         std::str::contains(noisy.stderr, i16_add),
         "noisy says the add: " + noisy.stderr,
     );
+    expect(bin, "dividing", i16_add);
     // so is a hand-written `while`, which has no static term count
     expect(bin, "indexed", i16_add);
 

@@ -589,19 +589,25 @@ fn total(xs: bounded[I16; 1024]) -> I16 {
 - **What it takes.** The sum is a local declared before the loop that
   the loop names only to update it (`s = s + e`, `s = e + s`, `s += e`,
   `e` not naming `s`), or an element chain's `.sum(seed)`; and the loop's
-  body does nothing observable but compute: locals, `if`, `break`,
-  `continue`, operators, casts, the `T::f` functions, `len`, `min`,
-  `max`, `abs`. A loop with a call into the program or the runtime (a
-  print), a nested loop, a `return`, `raise` or `fail`, a write to
-  anything but a local, a sum whose running value it reads, and a sum
-  over a `vec`, a range or a hand-written `while` keep the check at each
-  element, as does every product and every `Int` and `U64` sum.
+  body does nothing observable but compute, and nothing else in it can
+  stop the process: locals, `if`, `break`, `continue`, comparisons, logic
+  and bit operators, casts with their `or`, `T::wrapping_*` /
+  `checked_*` / `min` / `max`, `len`, `min`, `max`, and `+`, `-` and `*`
+  of `Int` or `Float` besides the sum's own. A loop with a call into the
+  program or the runtime (a print), a nested loop, a `return`, `raise` or
+  `fail`, a write to anything but a local, a `/`, `%`, shift, index,
+  `abs` or `-x`, another checked `+ - *`, a sum whose running value it
+  reads, and a sum over a `vec`, a range or a hand-written `while` keep
+  the check at each element, as does every product and every `Int` and
+  `U64` sum.
 - **Why it is safe.** Each term is inside a 32-bit range, so fewer than
   2^32 of them cannot wrap the 64-bit total; a loop over a capacity `N`
   is taken only where `N + 1` times the number of updates is below 2^32.
-  The body does nothing a program could observe, so moving the report to
-  the end of the loop changes what the process prints only where the
-  total came back into range.
+  The body does nothing a program could observe and holds nothing else
+  that could stop the process, so moving the report to the end of the
+  loop changes what the process prints only where the total came back
+  into range, and where a step and the sum were both out of range (the
+  step's is reported, where it was whichever came first).
 - **It vectorizes.** The loop has no exit of its own left, so the add is
   a reduction the loop vectorizer widens, the checked `map` step
   included: `@vectorize` holds on the checked `.map(it * 3).sum(U32(0))`

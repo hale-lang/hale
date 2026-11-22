@@ -33,12 +33,18 @@
 //!   one): its term count is at most `N` per update, so the wide total
 //!   cannot wrap (`N` times the update count below 2^32);
 //! - its body does nothing observable but compute: locals, `if`, `break`,
-//!   `continue`, operators, casts, the natively lowered `T::f` intrinsics
-//!   and `len` / `min` / `max` / `abs`. No call into the program or the
-//!   runtime, no loop, no `return`, `raise` or `fail`, no write to
-//!   anything but a local: the only thing that runs after an overflowing
-//!   element that did not run before is arithmetic, which a violation
-//!   at the exit makes unobservable;
+//!   `continue`, operators, casts with their `or`, `T::wrapping_*` /
+//!   `checked_*` / `min` / `max` and `len` / `min` / `max`. No call into
+//!   the program or the runtime, no loop, no `return`, `raise` or `fail`,
+//!   no write to anything but a local: what runs after an overflowing
+//!   element that did not run before is arithmetic, which a violation at
+//!   the exit makes unobservable;
+//! - nothing else in it can stop the process: no `/`, `%`, shift, index,
+//!   `abs` or `-x`, and every other `+ - *` (and `+=`, `-=`, `*=`) of `Int`,
+//!   which wraps, or `Float`, by the checker's types
+//!   ([`Cx::wide_sums_enter`]). Otherwise it could run after an element
+//!   whose sum was already out of range, and report itself instead of the
+//!   sum;
 //! - the accumulator is a local declared before the loop, every mention
 //!   of it inside is an update `s = s + e`, `s = e + s` or `s += e` with
 //!   `e` not naming it, and the loop's header does not name it.
@@ -78,6 +84,14 @@ pub(crate) struct Shape<'a> {
     /// A `let` whose only use is an accumulator's whole term, with the
     /// operator it binds, and that accumulator: computed wide.
     pub(crate) lets: BTreeMap<String, (&'a Expr, String)>,
+    /// Every `+`, `-` and `*` of the body, and every `+=`, `-=` and `*=`:
+    /// each must be a wide sum's own, or of a type whose arithmetic cannot
+    /// stop the process, or the loop is not taken ([`Cx::wide_sums_enter`]).
+    pub(crate) arith: Vec<&'a Expr>,
+    pub(crate) compound: Vec<&'a LValue>,
+    /// Each `s = s + e` / `s = e + s` update's own `+`, by its accumulator:
+    /// never lowered as an operator when `s` is summed wide.
+    pub(crate) adds: Vec<(String, &'a Expr)>,
 }
 
 impl<'a> Shape<'a> {
@@ -98,16 +112,20 @@ impl<'a> Shape<'a> {
         if !stmts.iter().all(pure_stmt) || body.tail.is_some() {
             return None;
         }
-        let mut updates: Vec<(&'a LValue, &'a Expr, usize)> = Vec::new();
+        let mut updates: Vec<Update<'a>> = Vec::new();
+        let mut own_adds: Vec<(String, &'a Expr)> = Vec::new();
         collect_updates(stmts, &mut updates);
         let mut accs: BTreeMap<String, Vec<(&'a LValue, &'a Expr)>> = BTreeMap::new();
-        for (target, term, _) in &updates {
+        for (target, term, _, value) in &updates {
             accs.entry(target.head.name.clone()).or_default().push((target, term));
+            if !std::ptr::eq(*term, *value) {
+                own_adds.push((target.head.name.clone(), *value));
+            }
         }
         // a local of the enclosing scope (not the loop's element), named
         // in the loop only by its updates, none of whose terms names it
         accs.retain(|name, ups| {
-            let named: usize = updates.iter().filter(|(t, _, _)| &t.head.name == name).map(|(_, _, m)| m).sum();
+            let named: usize = updates.iter().filter(|(t, ..)| &t.head.name == name).map(|(_, _, m, _)| m).sum();
             Some(name.as_str()) != element
                 && mentions_expr(header, name) == 0
                 && ups.iter().all(|(_, term)| mentions_expr(term, name) == 0)
@@ -118,7 +136,11 @@ impl<'a> Shape<'a> {
         }
         let mut lets = BTreeMap::new();
         wide_lets(stmts, &accs, body, &mut lets);
-        Some(Shape { walks: Some(walks), accs, lets })
+        let (mut arith, mut compound) = (Vec::new(), Vec::new());
+        for st in stmts {
+            arith_stmt(st, &mut arith, &mut compound);
+        }
+        Some(Shape { walks: Some(walks), accs, lets, adds: own_adds, arith, compound })
     }
 }
 
@@ -202,7 +224,12 @@ fn if_any(i: &IfStmt, f: &dyn Fn(&Stmt) -> bool) -> bool {
 fn pure_stmt(s: &Stmt) -> bool {
     match s {
         Stmt::Let { value, .. } => pure_expr(value),
-        Stmt::Assign { target, value, .. } => target.tail.is_empty() && target.head.name != "self" && pure_expr(value),
+        Stmt::Assign { target, op, value, .. } => {
+            target.tail.is_empty()
+                && target.head.name != "self"
+                && !matches!(op, AssignOp::SlashEq | AssignOp::PercentEq)
+                && pure_expr(value)
+        }
         Stmt::If(i) => pure_if(i),
         Stmt::Block(b) => pure_block(b),
         Stmt::Break(_) | Stmt::Continue(_) => true,
@@ -231,16 +258,20 @@ fn narrow_type_name(name: &str) -> bool {
 }
 
 fn pure_callee(callee: &Expr) -> bool {
+    // `T::wrapping_*` wrap, `T::checked_*` fail into their `or`, `T::min`
+    // / `T::max` are the ends: none stops the process
+    let quiet = |f: &str| f.starts_with("wrapping_") || f.starts_with("checked_") || matches!(f, "min" | "max");
     match callee {
-        // a cast (`U32(i) or wrap`, `Int(x)`) or a pure builtin
+        // a cast (`U32(i) or wrap`, `Int(x)`: a narrowing has its `or`) or
+        // a builtin that cannot fail (`abs` of a signed minimum does)
         Expr::Ident(f) => {
             matches!(
                 hale_syntax::parser::primitive_from_name(&f.name),
                 Some(PrimType::Int | PrimType::U64 | PrimType::I32 | PrimType::U32 | PrimType::I16 | PrimType::U16 | PrimType::I8 | PrimType::U8 | PrimType::Float)
-            ) || matches!(f.name.as_str(), "len" | "min" | "max" | "abs")
+            ) || matches!(f.name.as_str(), "len" | "min" | "max")
         }
-        Expr::Path(q) => q.segments.len() == 2 && narrow_type_name(&q.segments[0].name),
-        Expr::Path2 { receiver, .. } => matches!(receiver.as_ref(), Expr::Ident(t) if narrow_type_name(&t.name)),
+        Expr::Path(q) => q.segments.len() == 2 && narrow_type_name(&q.segments[0].name) && quiet(&q.segments[1].name),
+        Expr::Path2 { receiver, name, .. } => matches!(receiver.as_ref(), Expr::Ident(t) if narrow_type_name(&t.name)) && quiet(&name.name),
         _ => false,
     }
 }
@@ -248,10 +279,17 @@ fn pure_callee(callee: &Expr) -> bool {
 fn pure_expr(e: &Expr) -> bool {
     match e {
         Expr::Literal(..) | Expr::Ident(_) | Expr::KwSelf(_) | Expr::Path(_) => true,
-        Expr::Binary { left, right, .. } => pure_expr(left) && pure_expr(right),
+        // a division, a remainder or a shift can stop the process at any
+        // type; `+ - *` are admitted here and held to a type that cannot
+        // (`Int`, which wraps, or `Float`) where the types are read
+        // ([`Shape::arith`])
+        Expr::Binary { op, left, right, .. } => {
+            !matches!(op, BinOp::Div | BinOp::Mod | BinOp::Shl | BinOp::Shr) && pure_expr(left) && pure_expr(right)
+        }
+        // `-x` of a signed minimum stops the process; `-5` is a literal
+        Expr::Unary { op: UnaryOp::Neg, operand, .. } => matches!(operand.as_ref(), Expr::Literal(..)),
         Expr::Unary { operand, .. } => pure_expr(operand),
         Expr::Field { receiver, .. } => pure_expr(receiver),
-        Expr::Index { receiver, index, .. } => pure_expr(receiver) && pure_expr(index),
         Expr::Call { callee, args, .. } => pure_callee(callee) && args.iter().all(pure_expr),
         Expr::Or { inner, disposition, .. } => {
             pure_expr(inner)
@@ -267,15 +305,76 @@ fn pure_expr(e: &Expr) -> bool {
     }
 }
 
+/// The `+ - *` operators of `s` and the targets of its compound
+/// arithmetic assignments, for [`Shape::arith`].
+fn arith_stmt<'a>(s: &'a Stmt, ops: &mut Vec<&'a Expr>, compound: &mut Vec<&'a LValue>) {
+    match s {
+        Stmt::Let { value, .. } => arith_expr(value, ops, compound),
+        Stmt::Assign { target, op, value, .. } => {
+            if matches!(op, AssignOp::PlusEq | AssignOp::MinusEq | AssignOp::StarEq) {
+                compound.push(target);
+            }
+            arith_expr(value, ops, compound);
+        }
+        Stmt::If(i) => arith_if(i, ops, compound),
+        Stmt::Block(b) => arith_block(b, ops, compound),
+        _ => {}
+    }
+}
+
+fn arith_block<'a>(b: &'a Block, ops: &mut Vec<&'a Expr>, compound: &mut Vec<&'a LValue>) {
+    for s in &b.stmts {
+        arith_stmt(s, ops, compound);
+    }
+    if let Some(t) = b.tail.as_deref() {
+        arith_expr(t, ops, compound);
+    }
+}
+
+fn arith_if<'a>(i: &'a IfStmt, ops: &mut Vec<&'a Expr>, compound: &mut Vec<&'a LValue>) {
+    arith_expr(&i.cond, ops, compound);
+    arith_block(&i.then_block, ops, compound);
+    match i.else_block.as_deref() {
+        Some(ElseBranch::Else(b)) => arith_block(b, ops, compound),
+        Some(ElseBranch::ElseIf(e)) => arith_if(e, ops, compound),
+        None => {}
+    }
+}
+
+fn arith_expr<'a>(e: &'a Expr, ops: &mut Vec<&'a Expr>, compound: &mut Vec<&'a LValue>) {
+    match e {
+        Expr::Binary { op, left, right, .. } => {
+            if matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul) {
+                ops.push(e);
+            }
+            arith_expr(left, ops, compound);
+            arith_expr(right, ops, compound);
+        }
+        Expr::Unary { operand, .. } => arith_expr(operand, ops, compound),
+        Expr::Field { receiver, .. } => arith_expr(receiver, ops, compound),
+        Expr::Call { args, .. } => args.iter().for_each(|a| arith_expr(a, ops, compound)),
+        Expr::Or { inner, disposition, .. } => {
+            arith_expr(inner, ops, compound);
+            if let OrDisposition::Substitute(v) = disposition {
+                arith_expr(v, ops, compound);
+            }
+        }
+        Expr::Block(b) => arith_block(b, ops, compound),
+        _ => {}
+    }
+}
+
 /// Every update `s = s + e`, `s = e + s` or `s += e` of a local in
-/// `stmts`, nested `if`s and blocks included: its target, its term and
-/// how many times it names `s` (two, or one for `+=`).
-fn collect_updates<'a>(stmts: &'a [Stmt], out: &mut Vec<(&'a LValue, &'a Expr, usize)>) {
+/// `stmts`, nested `if`s and blocks included: its target, its term, how
+/// many times it names `s` (two, or one for `+=`) and its whole value.
+type Update<'a> = (&'a LValue, &'a Expr, usize, &'a Expr);
+
+fn collect_updates<'a>(stmts: &'a [Stmt], out: &mut Vec<Update<'a>>) {
     for s in stmts {
         match s {
             Stmt::Assign { target, op, value, .. } if target.tail.is_empty() => {
                 if let Some((term, mentions)) = update_term(&target.head.name, *op, value) {
-                    out.push((target, term, mentions));
+                    out.push((target, term, mentions, value));
                 }
             }
             Stmt::If(i) => collect_if(i, out),
@@ -285,7 +384,7 @@ fn collect_updates<'a>(stmts: &'a [Stmt], out: &mut Vec<(&'a LValue, &'a Expr, u
     }
 }
 
-fn collect_if<'a>(i: &'a IfStmt, out: &mut Vec<(&'a LValue, &'a Expr, usize)>) {
+fn collect_if<'a>(i: &'a IfStmt, out: &mut Vec<Update<'a>>) {
     collect_updates(&i.then_block.stmts, out);
     match i.else_block.as_deref() {
         Some(ElseBranch::Else(b)) => collect_updates(&b.stmts, out),
@@ -469,14 +568,75 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// Before the loop `stmt`, at its preheader: the wide sums it takes,
     /// each started from its accumulator's value, and the flags of the
     /// operators computed wide, cleared. `None` when it takes none (the
-    /// loop lowers as before).
+    /// loop lowers as before). Everything is decided, from the checker's
+    /// types, before anything is emitted.
     pub(crate) fn wide_sums_enter(&mut self, stmt: &Stmt, scope: &Scope<'ctx>) -> Result<Option<WideSums<'ctx>>, CodegenError> {
         let Some(shape) = Shape::of(stmt) else { return Ok(None) };
+        // each accumulator of a narrower integer, the checker's type, and
+        // the local's own slot laid out as that type
+        let mut typed: BTreeMap<&str, (PrimType, CodegenTy, PointerValue<'ctx>)> = BTreeMap::new();
+        for (name, updates) in &shape.accs {
+            let Ok(ty) = self.place_ty(updates[0].0) else { continue };
+            let Some(prim) = crate::stdlib::fixed::int_prim(&ty).filter(|p| p.is_narrow_int()) else { continue };
+            let Some((narrow, local)) = scope.locals.get(name) else { continue };
+            if *local == ty {
+                typed.insert(name.as_str(), (prim, ty, *narrow));
+            }
+        }
+        if typed.is_empty() {
+            return Ok(None);
+        }
         // the term count: the collection's capacity, the checker's
         let cap = match shape.walks.and_then(|w| self.ty_at(w)) {
             Some(CodegenTy::Bounded(_, n) | CodegenTy::Array(_, n)) => u128::from(n),
             _ => return Ok(None),
         };
+        if typed.keys().any(|name| (cap + 1) * (shape.accs[*name].len() as u128) >= MAX_TERMS) {
+            return Ok(None);
+        }
+        // what is computed wide: each update (its own `+`), each term
+        // written as an operator of the accumulator's type, and each wide
+        // `let`'s operator
+        let mut own: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut ops: Vec<(&str, &Expr, BinOp)> = Vec::new();
+        for (name, updates) in &shape.accs {
+            let Some((_, ty, _)) = typed.get(name.as_str()) else { continue };
+            for (_, term) in updates {
+                if let Some((op, _, _)) = wide_op(term) {
+                    if self.ty_at(term).as_ref() == Some(ty) {
+                        own.insert(node(term));
+                        ops.push((name.as_str(), term, op));
+                    }
+                }
+            }
+        }
+        let mut lets: Vec<(&str, &str, BinOp)> = Vec::new();
+        for (let_name, (value, acc)) in &shape.lets {
+            let Some((_, ty, _)) = typed.get(acc.as_str()) else { continue };
+            let Some((op, _, _)) = wide_op(value) else { continue };
+            if self.ty_at(value).as_ref() == Some(ty) {
+                own.insert(node(value));
+                lets.push((let_name.as_str(), acc.as_str(), op));
+            }
+        }
+        // the updates' own `+` (`s = s + e`), never lowered as an operator
+        own.extend(shape.adds.iter().filter(|(acc, _)| typed.contains_key(acc.as_str())).map(|(_, e)| node(e)));
+        // every other operator must be one that cannot stop the process:
+        // otherwise it could run, and stop it, after an element whose sum
+        // was already out of range, and report itself instead (an `Int`
+        // wraps, a `Float` is IEEE)
+        let quiet = |t: Option<CodegenTy>| matches!(t, Some(CodegenTy::Int | CodegenTy::Float));
+        for e in &shape.arith {
+            if !own.contains(&node(e)) && !quiet(self.ty_at(e)) {
+                return Ok(None);
+            }
+        }
+        for target in &shape.compound {
+            let wide = typed.contains_key(target.head.name.as_str());
+            if !wide && !quiet(self.place_ty(target).ok()) {
+                return Ok(None);
+            }
+        }
         let mut sums = WideSums {
             func: self.current_fn,
             accs: BTreeMap::new(),
@@ -485,48 +645,22 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             flags: Vec::new(),
         };
         let i64_t = self.context.i64_type();
-        for (name, updates) in &shape.accs {
-            if (cap + 1) * (updates.len() as u128) >= MAX_TERMS {
-                continue;
-            }
-            let Ok(ty) = self.place_ty(updates[0].0) else { continue };
-            let Some(prim) = crate::stdlib::fixed::int_prim(&ty).filter(|p| p.is_narrow_int()) else { continue };
-            // the local's own slot, laid out as the checker typed it
-            let Some((narrow, local)) = scope.locals.get(name) else { continue };
-            if *local != ty {
-                continue;
-            }
+        for (name, (prim, ty, narrow)) in &typed {
             let wide = self.alloca_in_entry(i64_t.into(), &format!("{name}.wide"))?;
             let bits = prim.machine_int().expect("a machine integer").0;
             let v = emit(self.builder.build_load(self.context.custom_width_int_type(bits), *narrow, "wide.seed"))?.into_int_value();
-            let v = self.resize_int(v, prim, PrimType::Int)?;
+            let v = self.resize_int(v, *prim, PrimType::Int)?;
             emit(self.builder.build_store(wide, v))?;
-            let acc = WideAcc { prim, ty, narrow: *narrow, wide };
-            // a term written as the operator: wide when it is the
-            // accumulator's type (the checker's)
-            for (_, term) in updates {
-                if let Some((op, _, _)) = wide_op(term) {
-                    if self.ty_at(term).as_ref() == Some(&acc.ty) {
-                        let flag = self.wide_flag(&mut sums, violation_of(op), prim)?;
-                        sums.ops.insert(node(term), flag);
-                    }
-                }
-            }
-            sums.accs.insert(name.clone(), acc);
+            sums.accs.insert(name.to_string(), WideAcc { prim: *prim, ty: ty.clone(), narrow: *narrow, wide });
         }
-        if sums.accs.is_empty() {
-            return Ok(None);
+        for (name, term, op) in ops {
+            let flag = self.wide_flag(&mut sums, violation_of(op), typed[name].0)?;
+            sums.ops.insert(node(term), flag);
         }
-        for (name, (value, acc)) in &shape.lets {
-            let Some(a) = sums.accs.get(acc) else { continue };
-            let Some((op, _, _)) = wide_op(value) else { continue };
-            if self.ty_at(value).as_ref() != Some(&a.ty) {
-                continue;
-            }
-            let prim = a.prim;
-            let slot = self.alloca_in_entry(i64_t.into(), &format!("{name}.wide"))?;
-            let flag = self.wide_flag(&mut sums, violation_of(op), prim)?;
-            sums.lets.insert(name.clone(), (acc.clone(), slot, flag));
+        for (let_name, acc, op) in lets {
+            let slot = self.alloca_in_entry(i64_t.into(), &format!("{let_name}.wide"))?;
+            let flag = self.wide_flag(&mut sums, violation_of(op), typed[acc].0)?;
+            sums.lets.insert(let_name.to_string(), (acc.to_string(), slot, flag));
         }
         Ok(Some(sums))
     }
@@ -719,6 +853,24 @@ mod tests {
         Shape::of(&s).map(|sh| sh.lets.keys().cloned().collect()).unwrap_or_default()
     }
 
+    fn arith(src: &str) -> usize {
+        let s = loop_of(src);
+        Shape::of(&s).map_or(0, |sh| sh.arith.len() + sh.compound.len())
+    }
+
+    /// Every `+ - *` of the body is listed for its type to be read (the
+    /// update's own `+` and the chain's step included), and every `+=`.
+    #[test]
+    fn every_operator_is_listed_for_its_type() {
+        // `s + x`, `x * 3`, `k + 1`
+        assert_eq!(arith("let mut s = 0; let mut k = 0; for x in xs { s = s + x * 3; k = k + 1; }"), 3);
+        // `s += x`, `k += 1`
+        assert_eq!(arith("let mut s = 0; let mut k = 0; for x in xs { s += x; k += 1; }"), 2);
+        // the map's `it * 3` and the sum's `+` (the index's step is the
+        // loop's own)
+        assert_eq!(arith("let t = xs.map(it * 3).sum(U32(0));"), 2);
+    }
+
     #[test]
     fn a_for_sum_and_its_spellings() {
         assert_eq!(accs("let mut s = 0; for x in xs { s = s + x; }"), ["s"]);
@@ -757,5 +909,14 @@ mod tests {
         assert!(accs("let mut s = 0; for x in xs { s = s + s; }").is_empty());
         // `or raise` leaves the frame
         assert!(accs("let mut s = 0; for x in xs { s = s + (U32(x) or raise); }").is_empty());
+        // an operation that can stop the process at any type: it could run
+        // after an element whose sum was out of range, and report itself
+        assert!(accs("let mut s = 0; for x in xs { s += x; let q = 1 / (x - 7); }").is_empty());
+        assert!(accs("let mut s = 0; for x in xs { s += x; let q = x % 3; }").is_empty());
+        assert!(accs("let mut s = 0; for x in xs { s += x; let q = x << 2; }").is_empty());
+        assert!(accs("let mut s = 0; for x in xs { s += x; let q = -x; }").is_empty());
+        assert!(accs("let mut s = 0; for x in xs { s += abs(x); }").is_empty());
+        assert!(accs("let mut s = 0; for x in xs { s += ys[x]; }").is_empty());
+        assert!(accs("let mut s = 0; let mut q = 9; for x in xs { s += x; q /= 2; }").is_empty());
     }
 }
