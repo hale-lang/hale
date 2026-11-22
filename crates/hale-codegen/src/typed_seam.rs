@@ -113,15 +113,23 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // a monomorph's body outside every default: its own walk's
             // row, else the template's (a site whose type names no
             // parameter)
-            (Some(_), true) => self.typed.scoped_expr(body, args, path, e).or_else(|| self.expr_types.at(body, e)),
+            (Some(_), true) => self.scoped_row_of(body, args, path, e).or_else(|| self.expr_types.at(body, e)),
             // a default evaluated here: the row of this evaluation
-            (_, false) => self.typed.scoped_expr(body, args, path, e),
+            (_, false) => self.scoped_row_of(body, args, path, e),
         };
         let Some(ty) = ty else {
             let typed_unknown = path.is_empty() && self.expr_types.recorded(body, e).is_some();
             return Err(if typed_unknown { "unknown" } else { "no row" });
         };
         Ok(ty)
+    }
+
+    /// The row of `e` on the walk of `args` and `path`: a program body's
+    /// ([`hale_types::typed_bodies::TypedBodies::scoped_expr`]), else a
+    /// stdlib body's, which the stdlib's own walk typed
+    /// ([`hale_types::typed_bodies::ExprTypes::scoped_at`]).
+    fn scoped_row_of(&self, body: hale_syntax::ast::NodeId, args: Option<&[Ty]>, path: &[u32], e: &Expr) -> Option<&Ty> {
+        self.typed.scoped_expr(body, args, path, e).or_else(|| self.expr_types.scoped_at(body, args, path, e))
     }
 
     /// GH #2111 strict mode: `e` is lowered without the checker's type.
