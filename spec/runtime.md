@@ -3195,7 +3195,10 @@ skips that step and both its events where it is emitted (and, for
 `ConstructionDelivery`, holds no failure, so the handler runs in
 place while the params are open; for `Cancellation`, a reclaim
 cancels no queued run, which only a fixture whose cells no worker
-will dequeue may use); two name a hold, not a kind: `RunHold`, where
+will dequeue may use; for `PoolJoin`, a run on a pool holds its end
+until teardown has entered its instance's Drain, or ten seconds have
+passed, so the run takes the schedule the missing join permits
+whatever the threads' timing); two name a hold, not a kind: `RunHold`, where
 a reclaim does not wait for its child's started runs, and
 `HandlerHold`, where a pool worker links no hold on a handler's
 subscriber (and so carries none), its `Handler` events still named; `<Kind>.<Point>` drops that one
