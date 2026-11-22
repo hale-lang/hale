@@ -223,6 +223,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// value is laid out as its success type, which is what an `or`
     /// leaves; `Unknown` and a projection have none here.
     pub(crate) fn layout_of(&self, t: &Ty) -> Option<CodegenTy> {
+        // A quantity at a denomination it does not declare (`Money in
+        // 1/10000 cent`, `Duration in s`) is a type the checker
+        // synthesizes and no declaration spells: it is the integer it
+        // counts.
+        if let Ty::Named(n) = t {
+            if n.contains(" in ") {
+                let int = self.unit_int(t)?;
+                return self.type_expr_to_codegen_ty(&TypeExpr::Primitive(int, hale_syntax::Span::new(0, 0))).ok();
+            }
+        }
         let te = spelled(t)?;
         self.type_expr_to_codegen_ty(&te).ok()
     }

@@ -200,3 +200,26 @@ fn generic_typeexpr_unifies_with_monomorph_literal() {
         m
     );
 }
+
+/// GH #2111: a fixed-width integer or a byte type as a generic argument
+/// names its monomorph (`Box<U64>` is `Box_U64`), as the mangle names it.
+/// The checker's own list of argument tokens knew seven primitives, so
+/// `Box<U64>` resolved to `Unknown`: its literal was checked against
+/// nothing, and the build refused what the check passed.
+#[test]
+fn a_fixed_width_argument_names_its_monomorph() {
+    let m = msgs(
+        r#"
+        type Box<T> { value: T; }
+        fn main() {
+            let a: Box<U64> = Box { value: "x" };
+            let b: Box<Bytes> = Box { value: 3 };
+            let ok: Box<I8> = Box { value: 7 };
+            println(ok.value);
+        }
+    "#,
+    );
+    assert!(m.iter().any(|s| s.contains("field `value` expects `U64`, got `String`")), "got: {m:?}");
+    assert!(m.iter().any(|s| s.contains("field `value` expects `Bytes`, got `Int`")), "got: {m:?}");
+    assert_eq!(m.len(), 2, "the `I8` box is clean: {m:?}");
+}

@@ -522,25 +522,17 @@ fn mangle_token_to_ty(
     tok: &str,
     known: &KnownNames,
 ) -> Ty {
-    match tok {
-        "Int" => Ty::Prim(PrimType::Int),
-        "Float" => Ty::Prim(PrimType::Float),
-        "Bool" => Ty::Prim(PrimType::Bool),
-        "String" => Ty::Prim(PrimType::String),
-        "Duration" => Ty::Prim(PrimType::Duration),
-        "Decimal" => Ty::Prim(PrimType::DECIMAL),
-        "Time" => Ty::Prim(PrimType::Time),
-        // `Decimal<18>`'s token, `Decimal18`: every scale names its own.
-        other if other.starts_with("Decimal") && crate::ty::prim_of_mangle_token(other).is_some() => {
-            Ty::Prim(crate::ty::prim_of_mangle_token(other).expect("guard checked"))
-        }
-        other => {
-            if known.contains_key(other) {
-                Ty::Named(other.to_string())
-            } else {
-                Ty::Unknown
-            }
-        }
+    // Every primitive a generic argument may be names itself by the token
+    // the mangle gives it (`crate::ty::generic_arg_mangle_token`): the
+    // fixed-width integers and the byte types as well as `Int`, and
+    // `Decimal<18>` as `Decimal18`. A hand list here knew seven, so
+    // `Box<U64>`'s argument was `Unknown` (GH #2111).
+    if let Some(p) = crate::ty::prim_of_mangle_token(tok) {
+        Ty::Prim(p)
+    } else if known.contains_key(tok) {
+        Ty::Named(tok.to_string())
+    } else {
+        Ty::Unknown
     }
 }
 
@@ -21042,6 +21034,14 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        // GH #2111: an empty literal (`[]`) names no element type of its
+        // own; the place it flows into decides it, and its row says so,
+        // for lowering to build the place's empty array or `bounded`.
+        if let (Ty::Array(we, _) | Ty::Bounded(we, _), Expr::Array(elems, _), Ty::Array(ge, _)) = (want, value, got) {
+            if elems.is_empty() && **ge == Ty::Unknown && **we != Ty::Unknown {
+                self.meet_row(value, want.clone());
+            }
+        }
         // GH #1951: an array literal at a declared `bounded[T; N]` site is
         // that bounded, its count the literal's length (`[]` is empty).
         // A literal longer than the capacity is refused where it stands;
@@ -24296,6 +24296,10 @@ impl<'a> Checker<'a> {
         // GH #1965: a site that declares the literal's type supplies its
         // arguments.
         self.admitted_template_literals.insert((literal_span.start.0, literal_span.end.0));
+        // GH #2111: and the literal is the monomorph that site declares,
+        // which its row says (it typed the template alone), for lowering
+        // to build
+        self.meet_row(value, want.clone());
         for init in inits {
             let declared: Option<&TypeExpr> = match template {
                 GenericTemplate::Type(decl) => match &decl.body {

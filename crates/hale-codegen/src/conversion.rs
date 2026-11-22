@@ -236,14 +236,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// GH #2131: the integer a value of the unit-dialect type `t` counts
     /// (`Int`, `U64`), or that integer itself; `Int` for the stdlib's
-    /// `Duration` and `Time`. `None` for every other type.
+    /// `Duration` and `Time`, and for either at another denomination
+    /// (`Duration in s`). `None` for every other type.
     pub(crate) fn unit_int(&self, t: &hale_types::ty::Ty) -> Option<hale_syntax::ast::PrimType> {
         use hale_syntax::ast::PrimType;
         use hale_types::ty::Ty;
         match t {
             Ty::Prim(p) if p.machine_int().is_some() => Some(*p),
             Ty::Prim(PrimType::Duration | PrimType::Time) => Some(PrimType::Int),
-            Ty::Named(n) => self.scalar_ints.get(n.split_once(" in ").map_or(n.as_str(), |(base, _)| base)).copied(),
+            Ty::Named(n) => match n.split_once(" in ") {
+                Some(("Duration" | "Time", _)) => Some(PrimType::Int),
+                Some((base, _)) => self.scalar_ints.get(base).copied(),
+                None => self.scalar_ints.get(n.as_str()).copied(),
+            },
             _ => None,
         }
     }
