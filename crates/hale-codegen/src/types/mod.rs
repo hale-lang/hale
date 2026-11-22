@@ -1030,7 +1030,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // checker's `type_omitted_defaults` pushes it, and every
             // conversion in it is that path's row (`ConversionSite::path`).
             if defaulted {
-                self.default_evaluation.push(literal.0);
+                self.default_evaluation.push(self.expr_types.path_step(literal));
             }
             let lowered = self.lower_expr(expr_to_lower, scope);
             if defaulted {

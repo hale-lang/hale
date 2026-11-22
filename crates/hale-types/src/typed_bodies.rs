@@ -1469,7 +1469,21 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExprTypes {
     rows: std::collections::HashMap<(u32, u32, u32, u8, u64), Ty>,
+    /// The stdlib copy's rows on the walks the `views` column does not
+    /// record ([`TypedBody::scoped_exprs`]), by the merged body and
+    /// [`ExprScope`] ([`Self::add_scoped`]): a default its bodies leave
+    /// to a literal, evaluated where the literal is.
+    scoped: std::collections::HashMap<u32, Vec<(ExprScope, ScopedRows)>>,
+    /// Each stdlib site of the merged program, by its merged id: the
+    /// analysis copy's id the checker recorded it under, which is how a
+    /// default's evaluation path names a step inside the stdlib
+    /// ([`Self::path_step`]).
+    stdlib_sites: std::collections::HashMap<u32, u32>,
 }
+
+/// One walk's expression rows within a body, keyed as [`ExprTypes`]' rows
+/// are (span, kind, name).
+pub type ScopedRows = std::collections::HashMap<(u32, u32, u8, u64), Ty>;
 
 fn fnv(s: &str) -> u64 {
     hale_graph::identity::fnv64(s.as_bytes())
@@ -1571,6 +1585,62 @@ impl ExprTypes {
     pub fn at(&self, body: NodeId, e: &Expr) -> Option<&Ty> {
         let sp = e.span();
         self.rows.get(&(body.0, sp.start.0, sp.end.0, expr_kind(e), expr_name(e))).filter(|t| **t != Ty::Unknown)
+    }
+
+    /// GH #2111: the row of `e` in `body` on the walk of `args` and `path`
+    /// ([`ExprScope`]) where the rows are the stdlib copy's
+    /// ([`Self::add_scoped`]); a program's are [`TypedBodies::scoped_expr`]'s.
+    pub fn scoped_at(&self, body: NodeId, args: Option<&[Ty]>, path: &[u32], e: &Expr) -> Option<&Ty> {
+        let sp = e.span();
+        self.scoped
+            .get(&body.0)?
+            .iter()
+            .find(|(s, _)| s.args.as_deref() == args && s.path == path)?
+            .1
+            .get(&(sp.start.0, sp.end.0, expr_kind(e), expr_name(e)))
+            .filter(|t| **t != Ty::Unknown)
+    }
+
+    /// GH #2111: add the scoped rows of the stdlib copy's walk
+    /// (`hale_types::stdlib_bodies::scoped_rows`), each body by the id
+    /// `node` gives the copy's (the merged program's); the evaluation
+    /// path keeps the checker's ids ([`Self::path_step`]). A row whose
+    /// body has no image is dropped: lowering never reaches it.
+    pub fn add_scoped(&mut self, rows: &[(NodeId, ExprScope, ScopedRows)], node: &dyn Fn(NodeId) -> Option<NodeId>) {
+        for (body, scope, rows) in rows {
+            let Some(body) = node(*body) else { continue };
+            let held = self.scoped.entry(body.0).or_default();
+            match held.iter_mut().find(|(s, _)| s == scope) {
+                Some((_, into)) => {
+                    for (key, ty) in rows {
+                        match into.get_mut(key) {
+                            Some(t) if t != ty => *t = Ty::Unknown,
+                            Some(_) => {}
+                            None => {
+                                into.insert(*key, ty.clone());
+                            }
+                        }
+                    }
+                }
+                None => held.push((scope.clone(), rows.clone())),
+            }
+        }
+    }
+
+    /// GH #2111: the merged program's stdlib sites, each with the analysis
+    /// copy's id the checker walked it under (the correspondence's
+    /// `Image::Stdlib`).
+    pub fn add_stdlib_sites(&mut self, sites: impl IntoIterator<Item = (u32, u32)>) {
+        self.stdlib_sites.extend(sites);
+    }
+
+    /// The id a default's evaluation path names the literal or call
+    /// `merged` by, the checker's: a stdlib site's analysis copy id (a
+    /// default declared in the stdlib, evaluated in a program's body or
+    /// the stdlib's own), and any other site's own, which the merged
+    /// mint kept.
+    pub fn path_step(&self, merged: NodeId) -> u32 {
+        self.stdlib_sites.get(&merged.0).copied().unwrap_or(merged.0)
     }
 
     /// The row of `e` in `body` as recorded, `Unknown` included: what
@@ -1797,6 +1867,17 @@ struct WalkUndo {
 }
 
 impl TypingRecord {
+    /// GH #2111: every body's rows on the walks the `views` column does
+    /// not record ([`TypedBody::scoped_exprs`]), by body.
+    pub fn scoped_rows(&self) -> Vec<(NodeId, ExprScope, ScopedRows)> {
+        self.bodies
+            .iter()
+            .flat_map(|(body, b)| {
+                b.scoped_exprs.iter().filter(|(s, _)| !s.is_views()).map(|(s, rows)| (NodeId(*body), s.clone(), rows.clone()))
+            })
+            .collect()
+    }
+
     /// Open a walk whose rows are discarded (a struct field's default,
     /// typed at a literal that leaves it): every write from here on is
     /// undone by [`Self::close_walk`]. Walks do not nest.
