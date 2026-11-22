@@ -1089,6 +1089,21 @@ worker and a `sleep` inside a handler never blocks the pool; the
 timer half of an event loop now costs what the design always
 claimed).
 
+Each pass of the drain loop polls the pool's fds, resumes the
+coros whose fd is ready, runs one expiry sweep, and then drains
+one cell if one is waiting. The sweep reads the clock once, when
+it begins, and resumes each parked coro at most once: the timed
+parks that were due at that reading (and those the process drain
+cuts). A park
+made during the sweep, by a coro the sweep resumed and that
+sleeps again, waits for the next pass, after that cell. So a loop
+whose round takes longer than its own sleep
+(`while !self.started { work; sleep(1ms) }`) still lets the pool
+drain the cell that ends it. Before GH #2183 the sweep read the
+clock before each resume, and two such loops passed the worker
+back and forth inside one sweep: each one's sleep ran out while
+the other worked, and that cell was never drained.
+
 Each bus delivery to a subscriber on an `async_io` pool runs its
 handler on a coroutine (a struct + a 64 KiB stack). Rather than
 allocate and free that pair per delivery, the pool keeps a bounded
