@@ -5559,7 +5559,8 @@ For each `closure NAME { LEFT ~~ RIGHT within TOL; epoch
 
 The band is computed in one type: LEFT, RIGHT and TOL are all `Int`
 (a `Duration`, a `Decimal`) or all `Float`. An `Int` beside a `Float`
-— most often a literal beside `mean(self.x)`, which is a `Float` — is
+— most often a literal beside `mean(self.x)`, which is a `Float`, or a
+`Float` beside `count()`, which is an `Int` — is
 refused by `hale check` at the `Int` ("closure \`band\`: the band is a
 \`Float\` (the other side is one), and its tolerance is an \`Int\`; …
 write it as a \`Float\`").

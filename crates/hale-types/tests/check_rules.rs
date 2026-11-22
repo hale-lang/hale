@@ -3297,3 +3297,64 @@ mod range_loop_tests {
         assert_eq!(m, vec!["a range loop's bounds are `Int`s; this one is `Float`".to_string()]);
     }
 }
+
+mod callee_row_tests {
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn messages(src: &str) -> Vec<String> {
+        let p = parse_source(src).expect("parses");
+        check_program(&p).into_iter().map(|d| d.message).collect()
+    }
+
+    /// GH #2111: a call names the method, beside a param of the same name
+    /// (`params { hits: Int }` and `fn hits()`), as lowering calls it. The
+    /// check took the callee as the param, an `Int` and no fn, and typed
+    /// the call `Unknown`, so it held the call's value to nothing.
+    #[test]
+    fn a_call_names_the_method_beside_a_param_of_its_name() {
+        let src = "locus Sub {\n    params { hits: Int = 0; }\n    fn hits() -> Int { return self.hits; }\n}\n\
+                   locus Pub {\n    params { sub: Sub = Sub { }; }\n    fn hits() -> Int { let s: String = self.sub.hits(); return 0; }\n}\n\
+                   fn main() { let p = Pub { }; println(p.hits()); }\n";
+        assert_eq!(messages(src), vec!["let `s`: expected `String`, got `Int`".to_string()]);
+    }
+
+    /// A generic enum's monomorph spelled by its mangled name carries its
+    /// template's values with the parameters bound: `Value_Int::Some(..)`
+    /// is a `Value_Int`, and its value an `Int`, as the build has it
+    /// ("Value_Int::Some arg 0: expected type Int, got String"). The check
+    /// typed the call `Unknown` and passed the value unchecked.
+    #[test]
+    fn a_monomorph_s_variant_carries_its_bound_values() {
+        let src = "type Value<T> = enum { Some(T), None };\n\
+                   fn main() {\n    let a: Value<Int> = Value_Int::Some(1);\n    let b: String = Value_Int::Some(2);\n    \
+                   let c = Value_Int::Some(\"x\");\n    println(a == c);\n}\n";
+        assert_eq!(
+            messages(src),
+            vec![
+                "let `b`: expected `String`, got `Value_Int`".to_string(),
+                "`Value_Int::Some` value 0: expected `Int`, got `String`".to_string(),
+            ]
+        );
+    }
+
+    /// A closure's accumulators are the values lowering reads them as:
+    /// `count()` an `Int`, `mean(x)` a `Float`. The check typed both
+    /// `Unknown`, so `count() ~~ 2.0` passed it and the build refused it
+    /// ("left/right types differ (Int vs Float)", at the locus).
+    #[test]
+    fn a_closure_s_accumulators_are_typed() {
+        let src = "locus T {\n    params { n: Int = 0; f: Float = 0.0; }\n    \
+                   closure b { count() ~~ 2.0 within 0.5; }\n    closure c { mean(self.f) ~~ 0.5 within 0.1; }\n    \
+                   closure d { count() ~~ 2 within 0; }\n    fn tick() { self.n = self.n + 1; }\n}\n\
+                   fn main() { let t = T { }; t.tick(); }\n";
+        assert_eq!(
+            messages(src),
+            vec![
+                "closure `b`: the band is a `Float` (the other side is one), and its left side is an `Int`; a \
+                 closure compares in one type, so write it as a `Float` (`1.0`, or `Float(x)`)"
+                    .to_string()
+            ]
+        );
+    }
+}
