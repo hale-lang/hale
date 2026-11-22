@@ -4338,6 +4338,17 @@ row	IntVec@main1	IntVec	main	default
 == crates/hale-codegen/tests/loop_iteration_reclaim.rs#9029d920
 row	IntVec@main1	IntVec	main	default
 
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#fdaa9482
+-- dynamic	sites in the seed
+dynamic	Flags	on main
+dynamic	IntVec	on main
+
+== crates/hale-codegen/tests/loop_iteration_reclaim.rs#f971daf7
+row	IntVec@main1	IntVec	main	default
+-- dynamic	sites in the seed
+dynamic	IntVec	on main
+dynamic	Names	on main
+
 == crates/hale-codegen/tests/loop_iteration_reclaim.rs#7bbf6e14
 row	Driver@main4	Driver	main	default
 row	Keeper@main1	Keeper	main	default

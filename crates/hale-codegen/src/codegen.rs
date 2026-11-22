@@ -5990,6 +5990,11 @@ pub(crate) struct FnSig<'ctx> {
     /// KwSelf / Field read / Index read / numeric Binary / Unary /
     /// If with non-allocating arms → non-allocating.
     pub(crate) non_allocating: bool,
+    /// GH #2163: a call of this fn leaves nothing in the arena it is
+    /// handed (`alloc_routing.caller_arena_untouched`): it allocates there
+    /// only on its way to a panic. [`Cx::callee_arena`] hands it the
+    /// frame's arena, as it does a `non_allocating` fn.
+    pub(crate) leaves_caller_arena: bool,
     /// Stage-1 FFI (2026-05-22): when `true`, this fn is an
     /// `@ffi("c")` declaration. The LLVM-level signature uses the
     /// C-ABI shape directly (no implicit `__caller_arena` prefix,
@@ -15370,6 +15375,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // arena-allocs a payload). Total: a fn the rows do not prove
         // non-allocating keeps its scratch.
         let non_allocating = self.alloc_routing.is_nonalloc(&f.name.name);
+        let leaves_caller_arena = self.alloc_routing.leaves_caller_arena_untouched(&f.name.name);
         self.user_fns.insert(
             f.name.name.clone(),
             FnSig {
@@ -15379,6 +15385,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ret: ret_ty,
                 fallible: fallible_payload_ty,
                 non_allocating,
+                leaves_caller_arena,
                 is_ffi: false,
                 ffi_js: false,
             },
@@ -15893,6 +15900,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 ret: ret_ty,
                 fallible: None,
                 non_allocating: true,
+                leaves_caller_arena: true,
                 is_ffi: true,
                 ffi_js,
             },
@@ -40557,9 +40565,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// one is handed the frame's arena, outside any iteration arena, so a
     /// loop whose body only calls such fns opens none: a
     /// `@budget(alloc_per_call = 0)` fn called in it allocates nothing.
+    ///
+    /// So is a callee that leaves nothing in the arena it is handed
+    /// (`leaves_caller_arena`, GH #2163): one taking and returning only
+    /// scalars whose allocations are a scalar `@form(vec)`'s it makes and
+    /// dissolves, as `fn_scratch_work`'s `do_work`. An iteration arena
+    /// would hold nothing of it and cost the loop an enter per iteration.
     fn callee_arena(&mut self, sig: &FnSig<'ctx>, args: &[Expr], scope: &Scope<'ctx>) -> Result<PointerValue<'ctx>, CodegenError> {
         let reads_none = sig.non_allocating && !matches!(sig.ret, Some(CodegenTy::Bounded(..)));
-        if reads_none {
+        if reads_none || sig.leaves_caller_arena {
             return self.outside_iteration_arenas(|cx| cx.call_site_arena(args, scope));
         }
         self.call_site_arena(args, scope)

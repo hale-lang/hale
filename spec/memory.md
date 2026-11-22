@@ -1327,7 +1327,12 @@ A call hands its callee the iteration's region as the caller arena,
 which keeps the region open for that iteration, except a call of a fn
 that allocates nothing (`non_allocating`, returning no `bounded` list),
 which never reads it; a call through a fn value whose type only
-such fns are named as values for; and a call of a locus method that
+such fns are named as values for; a call of an infallible fn taking and
+returning only scalars whose allocations are a scalar `@form(vec)`'s it
+makes, fills and dissolves (an empty literal of a `@form(vec)` whose
+only members are `heap` slots of a scalar, and that vec's synthesized
+ops, `or raise` included), which leaves nothing in the arena it is
+handed (GH #2163); and a call of a locus method that
 returns nothing or a scalar and takes only scalars, Strings, Bytes,
 views and locus references (its allocations are its scratch's, carved
 from its own locus's arena, and its caller's arena takes only the

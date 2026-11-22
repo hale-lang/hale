@@ -1084,6 +1084,153 @@ fn main() {
     assert_eq!(main.matches("call ptr @lotus_arena_iteration_enter(").count(), 0, "no loop of main keeps anything in its iteration");
 }
 
+/// The enters in `fn main` of `ir`.
+fn main_enters(ir: &str) -> usize {
+    let main = ir.split("\ndefine ").find(|f| f.contains(" @main(")).expect("the program's main in the IR");
+    let main = &main[..main.find("\n}\n").unwrap_or(main.len())];
+    main.matches("call ptr @lotus_arena_iteration_enter(").count()
+}
+
+/// A helper that leaves nothing in the arena it is handed (GH #2163):
+/// hale-lang/bench `fn_scratch_work`'s `do_work`, which makes a scalar
+/// `@form(vec)`, pushes into it, sums it with `get(j) or raise` and
+/// returns an Int, and fns that only call such helpers. Its vec has an
+/// arena of its own and a buffer the system allocator holds, dissolved at
+/// its return, so an iteration arena around the call holds nothing.
+const UNTOUCHED: &str = r#"
+@form(vec)
+locus IntVec { capacity { heap items of Int; } }
+
+@form(vec)
+locus Flags { capacity { heap items of Bool; } }
+
+fn do_work(n: Int) -> Int {
+    let v = IntVec { };
+    let mut i = 0;
+    while i < n {
+        v.push(i);
+        i = i + 1;
+    }
+    let mut sum = 0;
+    let mut j = 0;
+    while j < n {
+        sum = sum + (v.get(j) or raise);
+        j = j + 1;
+    }
+    return sum + v.len();
+}
+
+fn odd_count(n: Int) -> Int {
+    let f = Flags { };
+    let mut i = 0;
+    while i < n {
+        f.push(i % 2 == 1);
+        i = i + 1;
+    }
+    let mut c = 0;
+    let mut j = 0;
+    while j < n {
+        if f.get(j) or raise { c = c + 1; }
+        j = j + 1;
+    }
+    return c;
+}
+
+fn both(n: Int) -> Int { return do_work(n) + odd_count(n); }
+
+fn main() {
+    let mut total = 0;
+    let mut c = 0;
+    while c < 20000 {
+        total = total + do_work(100);
+        c = c + 1;
+    }
+    let mut odd = 0;
+    let mut k = 0;
+    while k < 20000 {
+        odd = odd + both(50);
+        k = k + 1;
+    }
+    println(f"total={total} odd={odd}");
+}
+"#;
+
+/// Neighbours of [`UNTOUCHED`]'s helpers that do leave something in the
+/// arena they are handed, or may: a vec of Strings, whose elements are
+/// made in it; an error an `or` substitutes for, whose payload is made in
+/// it and the helper carries on; a String returned; a vec handed in. Each
+/// main loop calling one keeps its iteration arena.
+const TOUCHED: &str = r#"
+@form(vec)
+locus IntVec { capacity { heap items of Int; } }
+
+@form(vec)
+locus Names { capacity { heap items of String; } }
+
+fn names(n: Int) -> Int {
+    let v = Names { };
+    let mut i = 0;
+    while i < n { v.push(to_string(i)); i = i + 1; }
+    return v.len();
+}
+
+fn substituted(n: Int) -> Int {
+    let v = IntVec { };
+    v.push(n);
+    return (v.get(n) or 0) + (v.get(0) or 0);
+}
+
+fn shown(n: Int) -> String {
+    let v = IntVec { };
+    v.push(n);
+    return to_string(v.get(0) or raise);
+}
+
+fn into(v: IntVec, n: Int) -> Int {
+    v.push(n);
+    return v.len();
+}
+
+fn main() {
+    let keep = IntVec { };
+    let mut a = 0;
+    let mut i = 0;
+    while i < 100 { a = a + names(10); i = i + 1; }
+    i = 0;
+    while i < 100 { a = a + substituted(i); i = i + 1; }
+    i = 0;
+    while i < 100 { a = a + len(shown(i)); i = i + 1; }
+    i = 0;
+    while i < 100 { a = a + into(keep, i); i = i + 1; }
+    println(a);
+}
+"#;
+
+#[test]
+fn a_loop_calling_a_helper_that_keeps_nothing_in_its_caller_opens_no_arena() {
+    let bin = harness::unique_bin("loop_iteration_reclaim_untouched_ir");
+    let ir = harness::build_source_ir_text(UNTOUCHED, &bin).expect("build");
+    let _ = std::fs::remove_file(&bin);
+    assert_eq!(main_enters(&ir), 0, "a loop calling helpers that keep nothing in their caller's arena opens none");
+
+    let bin = harness::unique_bin("loop_iteration_reclaim_touched_ir");
+    let ir = harness::build_source_ir_text(TOUCHED, &bin).expect("build");
+    let _ = std::fs::remove_file(&bin);
+    assert_eq!(main_enters(&ir), 4, "each loop calling a helper that may keep something in its caller's arena opens one");
+}
+
+/// What [`UNTOUCHED`]'s helpers make goes at their return, now that
+/// main's loops hand them the program's arena: the residency peak stays
+/// at one call's, and the run is clean under AddressSanitizer with the
+/// chunk pool off.
+#[test]
+fn a_helper_that_keeps_nothing_in_its_caller_stays_flat_on_the_programs_arena() {
+    let (peak, out) = peak_of("untouched", UNTOUCHED, &[]);
+    assert!(out.contains("total=101000000 odd=26000000"), "{out}");
+    assert!(peak < MIB, "main's loops kept what the helpers made: chunk_bytes_peak={peak}");
+    plain_and_asan("untouched", UNTOUCHED, &["total=101000000 odd=26000000"]);
+}
+
 /// A free fn's loops take iteration arenas owned by its per-call
 /// subregion, which its epilogue destroys after the copy-out (GH #2094).
 /// What each hands on survives, read after the fn returned: stores through
