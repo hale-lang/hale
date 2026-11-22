@@ -4859,3 +4859,56 @@ fn an_if_whose_then_arm_leaves_is_its_else_arm_s_value() {
         "hale_cb_if_then_leaves_built",
     );
 }
+
+/// GH #2111 (phase 1): a field written through a capacity cell is a field
+/// of the record the cell holds, its slot's element, and is typed as one.
+/// The cell has no value-level type in the check (F.22), and the field
+/// written through it had none either, so a write of the wrong type, or of
+/// a field the record does not declare, checked and the build refused it.
+#[test]
+fn a_field_written_through_a_capacity_cell_is_the_element_s_field() {
+    let program = |write: &str| {
+        format!(
+            "type Entry {{ key: Int; value: Int; }}\n\
+             locus MapL {{\n\
+             capacity {{ pool entries of Entry; }}\n\
+             birth {{\n\
+             let cell = self.entries.acquire();\n\
+             {write}\n\
+             println(\"key=\", cell.key);\n\
+             }}\n\
+             }}\n\
+             fn main() {{ let _ = MapL {{ }}; }}\n"
+        )
+    };
+    assert_refused_by_the_check(
+        &[
+            (&program("cell.key = \"x\";"), "\"x\"", "assignment: target type `Int` not assignable from `String`"),
+            (&program("cell.nosuch = 1;"), "nosuch", "no field `nosuch` on `Entry`"),
+        ],
+        "cell_field",
+    );
+    assert_built(&program("cell.key = 42;"), "hale_cb_cell_field_built");
+}
+
+/// GH #2111 (phase 1): an assignment's target in a generic fn has its type
+/// in each monomorph, as an expression there does: the template's walk
+/// types `q.x` through a `T` (`Unknown`), the monomorph's walk through the
+/// argument's type, and lowering reads the monomorph's. The monomorph's
+/// walk recorded no place row, so lowering, which reads the target's type
+/// from the checker, refused a program the check accepted
+/// (`let_write_refused.rs`'s locus monomorph).
+#[test]
+fn an_assignment_in_a_monomorph_has_its_target_s_type() {
+    assert_built(
+        "locus L { params { x: Int = 0; } }\n\
+         type P { x: Int; }\n\
+         fn touch<T>(x: T) -> Int {\n\
+         let mut q = x;\n\
+         q.x = 2;\n\
+         return q.x;\n\
+         }\n\
+         fn main() { println(touch(L { })); println(touch(P { x: 1 })); }\n",
+        "hale_cb_monomorph_place_built",
+    );
+}

@@ -1498,6 +1498,24 @@ pub fn expr_name(e: &Expr) -> u64 {
     }
 }
 
+/// The [`ExprTypes`] key of an assignment target's place through its head
+/// or a field segment `name` (GH #2111): the place's type, not the type of
+/// an expression at the name's span.
+pub fn place_name_key(name: &Ident) -> (u32, u32, u8, u64) {
+    (name.span.start.0, name.span.end.0, PLACE_NAME, fnv(&name.name))
+}
+
+/// The [`ExprTypes`] key of an assignment target's place through its index
+/// segment, whose index expression is `index` (GH #2111).
+pub fn place_index_key(index: &Expr) -> (u32, u32, u8, u64) {
+    let sp = index.span();
+    (sp.start.0, sp.end.0, PLACE_INDEX, 0)
+}
+
+/// The kinds of a place's [`ExprTypes`] keys, past every expression kind.
+const PLACE_NAME: u8 = 200;
+const PLACE_INDEX: u8 = 201;
+
 /// An expression's kind, the part of an [`ExprTypes`] key that tells two
 /// expressions at one span apart (`x` and `x.f` begin together; a call
 /// and its callee may end together).
@@ -1554,7 +1572,6 @@ impl ExprTypes {
     ) {
         for (item, v) in program.items.iter().zip(views) {
             visit_view_nodes(item, &mut |at, n| {
-                let ViewNode::Expr(e) = n else { return };
                 let Some(at) = body(at) else { return };
                 let mut add = |(start, end, kind, name): (u32, u32, u8, u64), ty: &Ty| {
                     match self.rows.get_mut(&(at.0, start, end, kind, name)) {
@@ -1565,6 +1582,17 @@ impl ExprTypes {
                         }
                     }
                 };
+                let e = match n {
+                    // GH #2111: an assignment target's head or field, by its
+                    // place row ([`place_name_key`])
+                    ViewNode::Name(i) => {
+                        if let Some(ty) = v.places.get(&node(i)) {
+                            add(place_name_key(i), ty);
+                        }
+                        return;
+                    }
+                    ViewNode::Expr(e) => e,
+                };
                 if let Some(ty) = v.typed(e) {
                     let sp = e.span();
                     add((sp.start.0, sp.end.0, expr_kind(e), expr_name(e)), ty);
@@ -1572,8 +1600,21 @@ impl ExprTypes {
                 if let Some((field, ty)) = v.anchors.get(&node(e)) {
                     add(anchor_key(e, field), ty);
                 }
+                // an assignment target's index segment, by its place row
+                if let Some(ty) = v.places.get(&node(e)) {
+                    add(place_index_key(e), ty);
+                }
             });
         }
+    }
+
+    /// GH #2111: the checker's type of an assignment target's place up to
+    /// and through `key`'s segment ([`place_name_key`],
+    /// [`place_index_key`]) in `body`; `None` where it recorded none, or
+    /// two.
+    pub fn place_at(&self, body: NodeId, key: (u32, u32, u8, u64)) -> Option<&Ty> {
+        let (start, end, kind, name) = key;
+        self.rows.get(&(body.0, start, end, kind, name)).filter(|t| **t != Ty::Unknown)
     }
 
     pub fn len(&self) -> usize {
@@ -2226,12 +2267,18 @@ impl TypedBodies {
     /// ([`TypedBody::scoped_exprs`]).
     pub fn scoped_expr(&self, body: NodeId, args: Option<&[Ty]>, path: &[u32], e: &Expr) -> Option<&Ty> {
         let sp = e.span();
+        self.scoped_row(body, args, path, (sp.start.0, sp.end.0, expr_kind(e), expr_name(e)))
+    }
+
+    /// [`Self::scoped_expr`] by the row's key: an expression's, or an
+    /// assignment target's place ([`place_name_key`], [`place_index_key`]).
+    pub fn scoped_row(&self, body: NodeId, args: Option<&[Ty]>, path: &[u32], key: (u32, u32, u8, u64)) -> Option<&Ty> {
         self.body(body)?
             .scoped_exprs
             .iter()
             .find(|(s, _)| s.args.as_deref() == args && s.path == path)?
             .1
-            .get(&(sp.start.0, sp.end.0, expr_kind(e), expr_name(e)))
+            .get(&key)
             .filter(|t| **t != Ty::Unknown)
     }
 

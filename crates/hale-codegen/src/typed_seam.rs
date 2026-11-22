@@ -112,6 +112,35 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Err(CodegenError::MissingRows(rows))
     }
 
+    /// GH #2111: the checker's type of the assignment target `target`, a
+    /// place of the body being lowered: its head's place, or its last
+    /// segment's (a field by its name, an element by its index). The
+    /// checker types every assignment's target, so a target with no row,
+    /// or with a type that has no layout, is refused at its span, a
+    /// compiler defect rather than a guess.
+    pub(crate) fn place_ty(&self, target: &hale_syntax::ast::LValue) -> Result<CodegenTy, CodegenError> {
+        let key = match target.tail.last() {
+            None => hale_types::typed_bodies::place_name_key(&target.head),
+            Some(hale_syntax::ast::LValueSeg::Field(f)) => hale_types::typed_bodies::place_name_key(f),
+            Some(hale_syntax::ast::LValueSeg::Index(ix)) => hale_types::typed_bodies::place_index_key(ix),
+        };
+        // read as `ty_at` reads an expression's row: a monomorph's own
+        // walk (else the template's), a default's evaluation's
+        let row = self.current_body.and_then(|body| {
+            let args = self.specialization_args();
+            let path = self.default_evaluation.as_slice();
+            match (args, path.is_empty()) {
+                (None, true) => self.expr_types.place_at(body, key),
+                (Some(_), true) => self.typed.scoped_row(body, args, path, key).or_else(|| self.expr_types.place_at(body, key)),
+                (_, false) => self.typed.scoped_row(body, args, path, key),
+            }
+        });
+        row.and_then(|t| self.layout_of(t))
+            .ok_or_else(|| {
+                CodegenError::missing_row("expression_typing", "the checker's type of this assignment's target", Some(target.span))
+            })
+    }
+
     /// The checker's type of the call `call`, the value its lowering
     /// hands back, where lowering has no signature of its own to read
     /// (a bare builtin's result: `len`, `to_string`, `min` over its

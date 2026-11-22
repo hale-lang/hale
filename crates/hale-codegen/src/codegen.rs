@@ -18567,7 +18567,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // of a part of one) sets its record's presence flag, after the
         // store, so a part the write copied first holds the flag too.
         if let (Ok(BlockEnd::Open), Stmt::Assign { target, .. }) = (&r, stmt) {
-            if let Err(err) = self.mark_optional_written(target, scope) {
+            if let Err(err) = self.mark_optional_written(target, None, scope) {
                 return Err(self.place(err, stmt.span()));
             }
         }
@@ -18582,9 +18582,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// that record's `has_x` and clears its `clear_x`: `r.x = v`,
     /// `self.row.x = v`, `xs[i].x = v`, and a write into a part of one,
     /// `r.x.n = v`. A hand-written pair's flag is not touched.
+    /// `written` is the expression the target was built from, for a
+    /// write the checker typed as an expression rather than an assignment
+    /// (a `push` or `set` into `h.tags`); `None` for an assignment's
+    /// target. Each prefix's type is the checker's: the place row of the
+    /// assignment's segment, or the row of the sub-expression it spells
+    /// (GH #2111).
     pub(crate) fn mark_optional_written(
         &mut self,
         target: &LValue,
+        written: Option<&Expr>,
         scope: &Scope<'ctx>,
     ) -> Result<(), CodegenError> {
         if self.user_types.values().all(|t| t.optional.is_empty()) {
@@ -18593,7 +18600,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         for i in 0..target.tail.len() {
             let LValueSeg::Field(x) = &target.tail[i] else { continue };
             let prefix = LValue { head: target.head.clone(), tail: target.tail[..i].to_vec(), span: target.span };
-            let Some(CodegenTy::TypeRef(t)) = self.place_declared_ty(&prefix, scope) else { continue };
+            let prefix_ty = match written {
+                Some(e) => self.ty_at(Self::place_prefix_expr(e, target.tail.len() - i)),
+                None => Some(self.place_ty(&prefix)?),
+            };
+            let Some(CodegenTy::TypeRef(t)) = prefix_ty else { continue };
             let Some((has, clear)) = self.user_types.get(&t).and_then(|info| info.optional.get(&x.name)).cloned()
             else {
                 continue;
@@ -19888,12 +19899,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // A bounded local bound from a place: the place evaluated
                 // once, its owner kept for the view's arena below.
                 let mut bounded_owner: Option<Option<LvalueOwner<'ctx>>> = None;
-                let bounded_place = Self::expr_place_lvalue(value_to_lower)
-                    .is_some_and(|lv| matches!(self.place_declared_ty(&lv, scope), Some(CodegenTy::Bounded(_, _))));
+                // (the place's type is the checker's row of the expression
+                // that spells it, GH #2111)
+                let bounded_place = Self::expr_place_lvalue(value_to_lower).is_some()
+                    && matches!(self.ty_at(value_to_lower), Some(CodegenTy::Bounded(_, _)));
                 let lower_result = if bounded_place {
-                    let ty = self
-                        .place_declared_ty(&Self::expr_place_lvalue(value_to_lower).expect("a place"), scope)
-                        .expect("a bounded place");
+                    let ty = self.ty_at(value_to_lower).expect("a bounded place");
                     self.bounded_place(value_to_lower, scope).map(|(storage, owner)| {
                         bounded_owner = owner;
                         (storage.into(), ty)
@@ -20190,10 +20201,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // `let` ascription: `self.cfg = Cfg { n: 2 }` with `cfg:
                 // Cfg<Int>` builds `Cfg_Int`. The literal keeps its id.
                 let rewritten;
-                let value: &Expr = match matches!(op, AssignOp::Eq)
-                    .then(|| self.place_declared_ty(target, scope))
-                    .flatten()
-                    .and_then(|t| self.rewrite_generic_literal(value, &t))
+                let place = if matches!(op, AssignOp::Eq) { Some(self.place_ty(target)?) } else { None };
+                let value: &Expr = match place.and_then(|t| self.rewrite_generic_literal(value, &t))
                 {
                     Some(r) => {
                         rewritten = r;
@@ -20230,7 +20239,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // whole-struct copy carries them (`spec/types.md` §
                 // bounded).
                 if matches!(op, AssignOp::Eq) {
-                    if let Some(CodegenTy::Bounded(elem, cap)) = self.place_declared_ty(target, scope) {
+                    if let CodegenTy::Bounded(elem, cap) = self.place_ty(target)? {
                         if target.tail.is_empty() && target.head.name != "self" {
                             return self.lower_bounded_local_assign(target, &elem, cap, value, *assign_id, scope);
                         }
@@ -37057,33 +37066,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
 
-    /// The declared type of an assignment's place, read off the
-    /// layouts without emitting anything: the head's (`self`'s field,
-    /// a local's), then each field's or element's in turn. `None`
-    /// where a step is not a record's, a locus's or an array's.
-    fn place_declared_ty(&self, target: &LValue, scope: &Scope<'ctx>) -> Option<CodegenTy> {
-        let mut segs = target.tail.iter();
-        let mut ty = if target.head.name == "self" {
-            let LValueSeg::Field(f) = segs.next()? else { return None };
-            self.current_self.as_ref()?.fields.get(&f.name)?.1.clone()
-        } else {
-            scope.locals.get(&target.head.name)?.1.clone()
-        };
-        for seg in segs {
-            ty = match (seg, &ty) {
-                (LValueSeg::Field(f), CodegenTy::TypeRef(t)) => {
-                    self.user_types.get(t)?.fields.get(&f.name)?.1.clone()
-                }
-                (LValueSeg::Field(f), CodegenTy::LocusRef(l)) => {
-                    self.user_loci.get(l)?.fields.get(&f.name)?.1.clone()
-                }
-                (LValueSeg::Index(_), CodegenTy::Array(elem, _)) => (**elem).clone(),
-                _ => return None,
-            };
-        }
-        Some(ty)
-    }
-
     /// `place = value` where the place is a `bounded[T; N]`: the
     /// value's storage (`{ i64 len, [N x T] }`, inline in its
     /// container) is copied over the place's, then each live slot of
@@ -37246,6 +37228,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
 
     /// A place written as an expression, `self.a[i].b`, as the lvalue the
     /// walker addresses; `None` for a bare name or anything else.
+    /// The sub-expression of the place expression `e` that spells its
+    /// place without its last `drop` segments ([`Self::expr_place_lvalue`]'s
+    /// prefix): `h` of `h.tags` with one dropped.
+    fn place_prefix_expr(mut e: &Expr, drop: usize) -> &Expr {
+        for _ in 0..drop {
+            e = match e {
+                Expr::Field { receiver, .. } | Expr::Index { receiver, .. } => receiver,
+                other => return other,
+            };
+        }
+        e
+    }
+
     pub(crate) fn expr_place_lvalue(recv: &Expr) -> Option<LValue> {
         fn place(e: &Expr, tail: &mut Vec<LValueSeg>) -> Option<Ident> {
             match e {

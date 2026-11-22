@@ -10,6 +10,9 @@
 //! a sixth. The path now resolves through the same import table codegen
 //! uses, to the library's own signature.
 //!
+//! An imported const (`lib::LIMIT`) is its declared type too (GH #2111):
+//! it was `Unknown`, so `let s: String = lib::LIMIT` checked and built.
+//!
 //! Each case is a throwaway two-seed tree: `lib` declares the callee,
 //! `app` imports it as `lib` and calls it. The last case is the
 //! control — correct calls, fallible and not, stay clean.
@@ -28,6 +31,7 @@ locus Acc {
     fn add2(a: Int, b: Int) -> Int { self.total = self.total + a + b; return self.total; }
 }
 fn make() -> Acc { return Acc { }; }
+const LIMIT: Int = 9;
 "#;
 
 fn tree(tag: &str, app: &str) -> PathBuf {
@@ -155,10 +159,27 @@ fn an_alias_of_nothing_is_not_an_imported_fn() {
 }
 
 #[test]
+fn an_imported_const_is_its_declared_type() {
+    // GH #2111 (phase 1): `alias::C` fell through to `Unknown`, so its
+    // value was held to no type. The build took the `Int` into the
+    // `String` local, and the program printed it.
+    refused(
+        "const_let",
+        "import \"../lib\" as lib;\nfn main() { let s: String = lib::LIMIT; println(s); }\n",
+        "let `s`: expected `String`, got `Int`",
+    );
+    refused(
+        "const_through_a_binding",
+        "import \"../lib\" as lib;\nfn main() { let n = lib::LIMIT; let s: String = n; println(s); }\n",
+        "let `s`: expected `String`, got `Int`",
+    );
+}
+
+#[test]
 fn correct_cross_seed_calls_stay_clean() {
     let d = tree(
         "ok",
-        "import \"../lib\" as lib;\nfn main() {\n    let x = lib::add3(1, 2, 3);\n    let d = lib::digit(\"1\") or 0;\n    let a = lib::make();\n    let y = a.add2(x, d);\n    println(x + y);\n}\n",
+        "import \"../lib\" as lib;\nfn main() {\n    let x = lib::add3(1, 2, 3);\n    let d = lib::digit(\"1\") or 0;\n    let a = lib::make();\n    let y = a.add2(x, d);\n    let mut bound = lib::LIMIT;\n    bound = bound - 1;\n    println(x + y + bound);\n}\n",
     );
     let (ok, out) = check(&d);
     let _ = std::fs::remove_dir_all(&d);

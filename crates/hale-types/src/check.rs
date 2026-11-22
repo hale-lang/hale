@@ -18743,10 +18743,16 @@ impl<'a> Checker<'a> {
     }
 
     fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
+        // F.22: a cell has no value-level type (`Unknown`), but a field
+        // written through it is a field of the record it holds, its
+        // slot's element, and is typed as one (GH #2111: the place's row,
+        // which lowering reads).
+        let mut cell_elem = None;
         let mut ty = if lv.head.name == "self" {
             self.note_self(lv.head.span);
             self.self_ty()
         } else if let Some(s) = self.binding_of(&lv.head.name) {
+            cell_elem = s.cell.map(|c| c.elem);
             s.ty
         } else {
             // no module item is assigned: a name no binding answers is
@@ -18757,6 +18763,11 @@ impl<'a> Checker<'a> {
         let records = self.records_views();
         if records {
             self.views.note_place(&lv.head, ty.clone());
+        } else {
+            self.note_scoped_place(crate::typed_bodies::place_name_key(&lv.head), &ty);
+        }
+        if let (Ty::Unknown, Some(elem), false) = (&ty, cell_elem, lv.tail.is_empty()) {
+            ty = elem;
         }
         // The place as written up to the segment at hand, for a hint.
         let mut spelled = lv.head.name.clone();
@@ -18816,12 +18827,14 @@ impl<'a> Checker<'a> {
                         self.refuse_missing_lvalue_field(&owner, f);
                     }
                     ty = found.unwrap_or(Ty::Unknown);
+                    let view = match &ty {
+                        Ty::Unknown => self.interface_field(&owner, &f.name).map(Ty::Named).unwrap_or(Ty::Unknown),
+                        t => t.clone(),
+                    };
                     if records {
-                        let view = match &ty {
-                            Ty::Unknown => self.interface_field(&owner, &f.name).map(Ty::Named).unwrap_or(Ty::Unknown),
-                            t => t.clone(),
-                        };
                         self.views.note_place(f, view);
+                    } else {
+                        self.note_scoped_place(crate::typed_bodies::place_name_key(f), &view);
                     }
                 }
                 LValueSeg::Index(idx) => {
@@ -18833,6 +18846,8 @@ impl<'a> Checker<'a> {
                     };
                     if records {
                         self.views.note_place(idx, ty.clone());
+                    } else {
+                        self.note_scoped_place(crate::typed_bodies::place_index_key(idx), &ty);
                     }
                 }
             }
@@ -22715,6 +22730,21 @@ impl<'a> Checker<'a> {
         Some((mangled.to_string(), written.join("::"), template))
     }
 
+    /// The declared type of the const an imported seed's `alias::C`
+    /// names, resolved through the import table as [`Self::imported_fn`]
+    /// resolves a fn.
+    fn imported_const(&self, path: &QualifiedName) -> Option<Ty> {
+        if path.segments.len() < 2 {
+            return None;
+        }
+        let key: Vec<&str> = path.segments.iter().map(|s| s.name.as_str()).collect();
+        let mangled = self.known.import_target(&key.join("::"))?;
+        match self.top.lookup(mangled) {
+            Some(TopSymbol::Const(c)) => Some(c.ty.clone()),
+            _ => None,
+        }
+    }
+
     fn imported_fn(&self, path: &QualifiedName) -> Option<(String, FnSig)> {
         if path.segments.len() < 2 {
             return None;
@@ -23582,6 +23612,16 @@ impl<'a> Checker<'a> {
         (sp.start.0, sp.end.0, crate::typed_bodies::expr_kind(e), crate::typed_bodies::expr_name(e))
     }
 
+    /// GH #2111: an assignment target's place on a walk that records no
+    /// `views` row (a monomorph's, a default's evaluation), kept with the
+    /// walk's expression rows, as lowering reads it in the monomorph or
+    /// where it evaluates the default (`Cx::place_ty`).
+    fn note_scoped_place(&mut self, key: (u32, u32, u8, u64), ty: &Ty) {
+        if let Some(scope) = self.expr_scope() {
+            self.typed.scoped_key(self.body, &scope, key, ty.clone());
+        }
+    }
+
     fn expr_scope(&self) -> Option<crate::typed_bodies::ExprScope> {
         if self.records_views() || self.defaults_judged_at_literals {
             return None;
@@ -24329,7 +24369,7 @@ impl<'a> Checker<'a> {
     /// | site | loci | codegen rewrite |
     /// |---|---|---|
     /// | `let` ascription | yes | `Stmt::Let` |
-    /// | plain assignment's place | yes | `Stmt::Assign` (`place_declared_ty`) |
+    /// | plain assignment's place | yes | `Stmt::Assign` (the place's row, `Cx::place_ty`) |
     /// | return slot (fallible or not) | yes | `lower_return` |
     /// | locus param default | no | `locus/decl.rs` |
     /// | record literal's field | no | `populate_user_type_fields` |
@@ -24838,6 +24878,14 @@ impl<'a> Checker<'a> {
                         params: sig.params.iter().map(|(_, t)| t.clone()).collect(),
                         ret: Box::new(sig.ret.clone()),
                     };
+                }
+                // GH #2111 (phase 1): an imported seed's const, `alias::C`,
+                // is its declared type, as a bare const's read is. It fell
+                // through to `Unknown` below, so its value was held to no
+                // type: `let s: String = lib::MAX` of an `Int` const
+                // checked, built and held the `Int`.
+                if let Some(ty) = self.imported_const(qn) {
+                    return ty;
                 }
                 // GH #803: nothing above answered the path, and in a
                 // whole program nothing else will. This is the CALL
