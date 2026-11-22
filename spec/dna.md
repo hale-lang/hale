@@ -4792,7 +4792,7 @@ The live half is memory's, projected from the record by the spine
   `habitat/identity`, `habitat/admission`, each under the Board; the
   person who runs `up` holds the Board and every one of them, so the
   habitat settles its Reviews with nobody else asked). It is the one organism born
-  without a parent. `hale habitat up [--foreground] [--profile local]`
+  without a parent. `hale habitat up [--no-body] [--profile local]`
   births it the first time into `<habitat>/genome` (written from the
   toolchain's files, a repository, then the birth's seed on it, its record in its
   own memory allocation, and both packs proposed to its Board), then
@@ -4803,10 +4803,11 @@ The live half is memory's, projected from the record by the spine
   under ongoing work — records its placement (the host `local` the
   `compose` provider produces with its offers, the `local` profile's
   policy, and its own head and face placed on that host:
-  `spec/habitat.md`, Hosts, providers and placement) and starts its body, `hale dna dev <genome>`: a
-  systemd user unit named for the habitat's project, or with
-  `--foreground` in the process itself (what a fixture runs, to ready).
-  `up` is idempotent, and the `hosted` profile is not built. **A
+  `spec/habitat.md`, Hosts, providers and placement) and starts its body
+  and face, the `body` and `face` services of its compose project
+  (`--no-body` starts neither: what a fixture's habitat runs, to graft
+  into). `up` is idempotent, and `local` is the one profile it takes
+  (`--profile` takes `local`, any other is refused). **A
   habitat's backends are chosen at its birth** (`--backends own|operator`,
   kept beside it and as its `habitat.profile` row, which names no DSN):
   `own`, the default, provisions memory, the nerves and the senses' store

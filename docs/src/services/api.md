@@ -1020,7 +1020,7 @@ locus Desk {
 }
 ```
 
-- **Outcome Matching**: Each row becomes a method returning `<Surface><Row>Outcome`. HTTP `404` maps to `HandlerError` with `class: "not_found"`, `401`/`403`/`429` map to `Refusal`, and `5xx` maps to `ServerError`. When calling a Hale-authored surface over `api::client`, `HandlerError` carries the server's typed error enum directly.
+- **Outcome Matching**: Each row becomes a method returning `<Surface><Row>Outcome`. For an imported OpenAPI row, a `2xx` is `Result`; `400`, `401` and `429` map to `Refusal` (`malformed`, `unauthenticated`, `full`); a status an error class answers with (`403`, `404`, `409`, `422`, `503`) maps to `HandlerError` whose `class` names it (`404` is `"not_found"`), and any other `4xx` to `HandlerError` with no class; any other `5xx` is `ServerError`, and an endpoint that cannot be reached is `Lost`. When calling a Hale-authored surface over `api::client`, `HandlerError` carries the server's typed error enum directly.
 - **Secret Vault Credentials (`std::api::VaultPrincipals`)**: Maps surface roles to secret vault slots (`"editor=shelf-editor, *=shelf-reader"`), fetching the bearer token from the vault on each outbound request so raw tokens never appear in source or locus state.
 - **Effect Class (`client(Surface)`)**: Outbound calls carry the `client(<Surface>)` effect class, allowing architectural claims to restrict external API calls:
 

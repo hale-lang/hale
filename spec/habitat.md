@@ -6,8 +6,7 @@ on the machine it is born on, which is this machine or another one reached
 over SSH (`up --host`, § A habitat on another machine). Hosts can join
 it to take allocations, and one admin machine can keep several habitats
 (below). An organism grafted from it is placed with the
-`local` or `remote-body` profile (§ Graft and `[dna] needs`). The `hosted` profile, a
-habitat whose backends are a platform's managed services, is not built.
+`local` or `remote-body` profile (§ Graft and `[dna] needs`).
 The organism it serves is specified in `spec/dna.md`; the design it came
 from is `docs/src/habitat.md`.
 
