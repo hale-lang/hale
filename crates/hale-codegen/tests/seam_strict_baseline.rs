@@ -708,6 +708,36 @@ fn a_loop_over_a_form_or_the_children_asks_its_receiver_s_row() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n11\n30\n");
 }
 
+/// A path to a fn used as a value (an imported seed's, `apply(lib::add3)`,
+/// or a Hale-bodied stdlib fn's, `apply(std::url::encode)`, GH #1082) is
+/// the fn pointer of the fn it names, typed by the path's row. Lowering
+/// built a name at the path and lowered that instead, and a built name
+/// has no row.
+#[test]
+fn a_path_to_a_fn_used_as_a_value_is_typed_by_its_row() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "fn apply(f: fn (String) -> String, s: String) -> String { return f(s); }\n\
+               fn main() {\n\
+                   println(apply(std::url::encode, \"a b\"));\n\
+                   let f = std::url::encode;\n\
+                   println(f(\"c/d\"));\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_fn_values");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "a%20b\nc%2Fd\n");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)
