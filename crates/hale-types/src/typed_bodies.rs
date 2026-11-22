@@ -106,7 +106,7 @@
 use std::collections::BTreeMap;
 
 use hale_syntax::ast::{
-    Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, Ident, IfStmt, KeyFilter, LValueSeg, LocusMember,
+    Block, BusMember, ClosureAssertion, ContractKind, ElseBranch, Expr, Ident, IfStmt, Literal, KeyFilter, LValueSeg, LocusMember,
     MatchArmBody, MatchStmt, NodeId, OrDisposition, ParamInit, QualifiedName,
     RecoveryModifier, ScalarClause, Stmt, TopDecl, TypeDeclBody, TypeExpr,
 };
@@ -1494,6 +1494,25 @@ pub fn expr_name(e: &Expr) -> u64 {
         Expr::Field { name, .. } | Expr::Path2 { name, .. } => fnv(&name.name),
         Expr::Path(q) => q.segments.last().map_or(0, |i| fnv(&i.name)),
         Expr::Call { callee, .. } => expr_name(callee),
+        // GH #2111: what tells apart the nodes a rewrite builds at one span
+        // (an element chain's are all at the chain's): a literal by its
+        // class (its counter's `0` from its flag's `true`; a numeric one's
+        // variant is left out, which a later rewrite may change: `5` held
+        // at a `U64`), a block by whether it gives a value (the chain's
+        // `{ …; n }` from its `or { break; }`).
+        Expr::Literal(l, _) => match l {
+            Literal::Int(_)
+            | Literal::U64(_)
+            | Literal::Float(_)
+            | Literal::Decimal(_)
+            | Literal::Quantity { .. }
+            | Literal::Time(_) => 0,
+            Literal::Bool(_) => 1,
+            Literal::String(_) => 2,
+            Literal::Bytes(_) => 3,
+            Literal::Nil => 4,
+        },
+        Expr::Block(b) => u64::from(b.tail.is_some()),
         _ => 0,
     }
 }
