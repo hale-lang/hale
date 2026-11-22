@@ -359,7 +359,15 @@ impl<'ctx, 'p> BusDispatch<'ctx> for Cx<'ctx, 'p> {
                     .to_string(),
             )
         })?;
-        let (subj_val, subj_ty) = self.lower_expr(subject, scope)?;
+        // GH #2111: a constant subject is a routing key, the topic's wire
+        // name (what the topic rewrite leaves for `Topic <- v`, or a
+        // subject written as a string), emitted as the string it is, as
+        // `ShmWrite`'s is: no value of the program's for lowering to type.
+        // A computed subject is the program's value, with its row.
+        let (subj_val, subj_ty) = match subject {
+            Expr::Literal(Literal::String(s), _) => (self.global_string(s).into(), CodegenTy::String),
+            _ => self.lower_expr(subject, scope)?,
+        };
         if !matches!(subj_ty, CodegenTy::String | CodegenTy::StringView) {
             return Err(CodegenError::Unsupported(format!(
                 "bus send subject must be String; got {}",
