@@ -86,9 +86,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// Whether the checker types `e` `()`: a block the check accepted in
+    /// a value's place only because it never ends (`f() or { return x; }`,
+    /// `block_always_diverges`), so lowering builds it as statements and
+    /// asks it for no value. A row of `()` has no layout, so [`Cx::ty_at`]
+    /// answers no such site.
+    pub(crate) fn row_is_unit(&self, e: &Expr) -> bool {
+        matches!(self.checker_row(e), Ok(Ty::Unit))
+    }
+
     /// [`Cx::ty_at`]'s answer, or why there is none (a [`MissingRow`]'s
     /// reason).
     fn row_layout(&self, e: &Expr) -> Result<CodegenTy, &'static str> {
+        let ty = self.checker_row(e)?;
+        self.layout_of(ty).ok_or("no layout")
+    }
+
+    /// The checker's row of `e`, by the body, the monomorph's arguments and
+    /// the default being evaluated, or why there is none.
+    fn checker_row(&self, e: &Expr) -> Result<&Ty, &'static str> {
         let body = self.current_body.ok_or("no body")?;
         let args = self.specialization_args();
         let path = self.default_evaluation.as_slice();
@@ -105,7 +121,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             let typed_unknown = path.is_empty() && self.expr_types.recorded(body, e).is_some();
             return Err(if typed_unknown { "unknown" } else { "no row" });
         };
-        self.layout_of(ty).ok_or("no layout")
+        Ok(ty)
     }
 
     /// GH #2111 strict mode: `e` is lowered without the checker's type.

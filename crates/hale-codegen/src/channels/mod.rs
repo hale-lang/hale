@@ -1097,18 +1097,29 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         }
                         (None, None)
                     } else {
-                        self.lower_expr_opt(rhs, &sub_scope)?
+                        match rhs {
+                            // A block the checker types `()` where the
+                            // call has a value: the check accepted it
+                            // because it never ends (`or { return x; }`).
+                            // It is built as statements and gives no
+                            // value; the join below sees the branch
+                            // closed (GH #2111).
+                            Expr::Block(b) if self.row_is_unit(rhs) => {
+                                let mut sub_mut_scope = Scope {
+                                    locals: sub_scope.locals.clone(),
+                                };
+                                self.lower_block(b, &mut sub_mut_scope)?;
+                                (None, None)
+                            }
+                            _ => self.lower_expr_opt(rhs, &sub_scope)?,
+                        }
                     };
                     // A disposer that always diverges — `or { return …; }`
-                    // or `or { fail …; }` — terminates the err branch and
-                    // produces NO substitute value: `lower_block_as_expr`
-                    // hands back a placeholder `(undef, Int)` for the
-                    // unreachable fall-through. Detect the terminator and
-                    // treat it like `or raise`: the err branch is closed,
-                    // only the ok value reaches the join, and the
-                    // placeholder type is irrelevant (so the fallible's
-                    // success type may be String / Bytes / a struct, not
-                    // just the spurious Int).
+                    // or `or { fail …; }`, built as statements above —
+                    // terminates the err branch and produces NO substitute
+                    // value. Detect the terminator and treat it like `or
+                    // raise`: the err branch is closed, and only the ok
+                    // value reaches the join.
                     // A block whose own value lowering ended control
                     // flow (a trailing `match` diverging in every arm)
                     // continued in a dead block: that is the same
