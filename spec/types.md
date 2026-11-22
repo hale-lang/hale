@@ -496,7 +496,8 @@ has no unary \`-\`"). A negated literal is held as the value it is:
 **Arithmetic never wraps unless asked**, as a `U64`'s (F.60): `+`, `-`
 and `*` past either end, `/` or `%` by zero, a signed `/` of the minimum
 by `-1` and a signed unary `-` of the minimum are a runtime violation
-where they happen, the process printing what happened and exiting 1
+where they happen (a checked sum's, at the end of its loop: *Checked
+sums* below), the process printing what happened and exiting 1
 (`violation: U8 \`+\` overflows: the result is outside U8's range, 0
 through 255 (U8::checked_add fails instead, and U8::wrapping_add
 wraps)`). Overflow is detected with `llvm.{s,u}{add,sub,mul}.with.overflow`
@@ -548,13 +549,66 @@ violation (`violation: U8 shift by a count outside 0 through 7`); the
 **The element chain's `sum`.** `.sum(seed)` accumulates in its seed's
 type (`sum(0.0)` for a `Float`), so a sum of a fixed-width integer
 names one: `.map(it * 3).sum(U32(0))`. Its `+` is checked like every
-other, so the loop carries an overflow branch per element and is not
-vectorized; a kernel that wants lanes says `U32::wrapping_add` /
-`wrapping_mul`, which are plain adds and multiplies at the width (on
-aarch64 four `i32` lanes a NEON instruction, where an `Int`'s
-`.map(it * 3)` has no vector multiply). `@vectorize(min_width: 4)` holds
-for such a `U32` fold on aarch64 and x86-64, and refuses the checked one
-at its loop (spec/semantics.md § Vectorized loops).
+other (*Checked sums*, next). A kernel that wants the width's own lanes
+says `U32::wrapping_add` / `wrapping_mul`, which are plain adds and
+multiplies at the width (on aarch64 four `i32` lanes a NEON instruction,
+where an `Int`'s `.map(it * 3)` has no vector multiply);
+`@vectorize(min_width: 4)` holds for such a `U32` fold on aarch64 and
+x86-64 (spec/semantics.md § Vectorized loops).
+
+**Checked sums** (GH #2162, F.65). A sum of one of these types in a loop
+that walks a `bounded[T; N]` or a fixed array is accumulated in a 64-bit
+integer and held to the type's range once, when the loop ends, where it
+is narrowed back into the accumulator:
+
+```hale
+fn total(xs: bounded[I16; 1024]) -> I16 {
+    let mut s: I16 = 0;
+    for x in xs {
+        s = s + x;      // added wide: no check here
+    }
+    return s;           // held to I16's range when the loop ended
+}
+```
+
+- **The violation is reported at the end of the loop**, not at the
+  element that crossed the bound, with the message the per-element check
+  gives (`violation: I16 \`+\` overflows: …`), and nothing after the loop
+  runs.
+- **A total that leaves the range and comes back is the sum.** Over
+  `I16`, `30000 + 30000 - 30000 - 20000` is `10000`, no violation: the
+  check is of the total. One out of range at the end is a violation
+  however often it crossed on the way.
+- **A `map` step of one operator is computed wide too**: a `+`, `-` or
+  `*` of two operands of the sum's type, each a read or a literal
+  (`.map(it * 3).sum(U32(0))`, or `s = s + x * 3`). An element whose step
+  is outside the type is still a violation, the step's
+  (`violation: U32 \`*\` overflows`), reported at the end of the loop
+  before the sum's own check. A step of more operators is checked where
+  it happens.
+- **What it takes.** The sum is a local declared before the loop that
+  the loop names only to update it (`s = s + e`, `s = e + s`, `s += e`,
+  `e` not naming `s`), or an element chain's `.sum(seed)`; and the loop's
+  body does nothing observable but compute: locals, `if`, `break`,
+  `continue`, operators, casts, the `T::f` functions, `len`, `min`,
+  `max`, `abs`. A loop with a call into the program or the runtime (a
+  print), a nested loop, a `return`, `raise` or `fail`, a write to
+  anything but a local, a sum whose running value it reads, and a sum
+  over a `vec`, a range or a hand-written `while` keep the check at each
+  element, as does every product and every `Int` and `U64` sum.
+- **Why it is safe.** Each term is inside a 32-bit range, so fewer than
+  2^32 of them cannot wrap the 64-bit total; a loop over a capacity `N`
+  is taken only where `N + 1` times the number of updates is below 2^32.
+  The body does nothing a program could observe, so moving the report to
+  the end of the loop changes what the process prints only where the
+  total came back into range.
+- **It vectorizes.** The loop has no exit of its own left, so the add is
+  a reduction the loop vectorizer widens, the checked `map` step
+  included: `@vectorize` holds on the checked `.map(it * 3).sum(U32(0))`
+  over a `bounded[U32; N]` and on an `I16` `for` sum, on aarch64 and
+  x86-64. The lowering is the same at every optimization level, so a
+  dev build and `hale test` report a violation where a release build
+  does.
 
 **Where it goes.** Everywhere a `U64` goes (§ U64), at its own width:
 a record or locus field, a `bounded` buffer, a fixed array, an enum's

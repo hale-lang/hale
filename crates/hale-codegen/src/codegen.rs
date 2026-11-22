@@ -2343,6 +2343,7 @@ fn build_resolved_lowered(
         fused_clones: HashMap::new(),
         fused_pending: Vec::new(),
         accumulator_ctx: None,
+        wide_sums: None,
         serializers: BTreeMap::new(),
         ser_bound: None,
         de_checked: false,
@@ -5117,6 +5118,9 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// order in declare_locus_struct, so the Nth `sum` encountered
     /// during lowering corresponds to the Nth slot.
     pub(crate) accumulator_ctx: Option<AccumulatorCtx<'ctx>>,
+    /// GH #2162 (F.65): the checked narrow sums of the loop being lowered,
+    /// accumulated wide and checked at its exit (`crate::wide_sum`).
+    pub(crate) wide_sums: Option<crate::wide_sum::WideSums<'ctx>>,
     /// m60: per-payload-type serializer / deserializer fns,
     /// keyed by the type's name (e.g., "Ping" or "Greeting").
     /// Synthesized in lower_program after pass A2 once user_types
@@ -19428,6 +19432,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         stmt: &Stmt,
         scope: &mut Scope<'ctx>,
     ) -> Result<BlockEnd, CodegenError> {
+        // GH #2162: an update of a wide sum, or a wide term's `let`
+        if self.wide_sums.is_some() {
+            if let Some(end) = self.lower_wide_sum_stmt(stmt, scope)? {
+                return Ok(end);
+            }
+        }
         match stmt {
             Stmt::Expr(Expr::Struct { path, inits, id: literal, .. }) => {
                 // m73a: rewrite recognized `std::*` paths to the
@@ -20898,16 +20908,18 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 Ok(BlockEnd::Open)
             }
             Stmt::If(if_stmt) => self.lower_if(if_stmt, scope),
-            Stmt::While { cond, body, .. } => {
-                self.lower_loop_stmt(|cx| cx.lower_while(cond, body, scope))
-            }
+            Stmt::While { cond, body, .. } => self.lower_wide_sum_loop(stmt, scope, |cx, scope| {
+                cx.lower_loop_stmt(|cx| cx.lower_while(cond, body, scope))
+            }),
             Stmt::For { name, iter, body, id, .. } => {
                 // An element of an array read from a place views it, as
                 // a `let` of the place would (`crate::view_bindings`).
                 let owned = self.owned_views.node(*id);
                 let cell_owned = self.owned_views.cell_owned(*id);
                 let cow = self.owned_views.cow_bind(*id, &name.name).map(|f| f.to_vec());
-                self.lower_loop_stmt(|cx| cx.lower_for(name, iter, body, owned, cell_owned, cow, scope))
+                self.lower_wide_sum_loop(stmt, scope, |cx, scope| {
+                    cx.lower_loop_stmt(|cx| cx.lower_for(name, iter, body, owned, cell_owned, cow, scope))
+                })
             }
             Stmt::Break(_) => self.lower_break(),
             Stmt::Continue(_) => self.lower_continue(),

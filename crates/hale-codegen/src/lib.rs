@@ -66,6 +66,7 @@ pub(crate) mod string_len;
 pub(crate) mod typed_seam;
 pub(crate) mod types;
 pub(crate) mod view_bindings;
+pub(crate) mod wide_sum;
 pub mod vectorize;
 
 pub use ownership::{

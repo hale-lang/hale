@@ -1,0 +1,200 @@
+// tests/hale/fixed_int_wide_sum_test.hl — a checked sum of a fixed-width
+// integer accumulates wide and is checked once (GH #2162, F.65). A sum
+// over a `bounded` (by `for` or an element chain) whose loop computes
+// nothing else observable is held to its type's range at the end of the
+// loop, not at the element that crossed it: a total out of range is the
+// same violation the per-element check gives, reported after the loop;
+// a total that left the range and came back is the mathematical sum, in
+// range, and no violation. A `.map` step of one operator is computed wide
+// too, and an element whose step is out of range is still a violation
+// (the step's, at the end). A loop this lowering does not take (a body
+// that prints, a hand-written `while`) keeps its per-element check. One
+// program, built once, runs each case by name.
+
+fn app_source() -> String {
+    return """
+        fn u32s(xs: [Int; 4]) -> bounded[U32; 8] {
+            let mut out: bounded[U32; 8] = [];
+            for x in xs {
+                push(out, U32(x) or wrap) or discard;
+            }
+            return out;
+        }
+
+        fn i16s(xs: [Int; 4]) -> bounded[I16; 8] {
+            let mut out: bounded[I16; 8] = [];
+            for x in xs {
+                push(out, I16(x) or wrap) or discard;
+            }
+            return out;
+        }
+
+        fn sum_u32(xs: bounded[U32; 8]) -> U32 {
+            let mut s: U32 = 0;
+            for x in xs {
+                s = s + x;
+            }
+            return s;
+        }
+
+        fn sum_i16(xs: bounded[I16; 8]) -> I16 {
+            return xs.map(it).sum(I16(0));
+        }
+
+        fn triple_u32(xs: bounded[U32; 8]) -> U32 {
+            return xs.map(it * 3).sum(U32(0));
+        }
+
+        fn double_i16(xs: bounded[I16; 8]) -> I16 {
+            let mut s: I16 = 0;
+            for x in xs {
+                s += x * 2;
+            }
+            return s;
+        }
+
+        fn noisy_i16(xs: bounded[I16; 8]) -> I16 {
+            let mut s: I16 = 0;
+            for x in xs {
+                s = s + x;
+                println("added ", x);
+            }
+            return s;
+        }
+
+        fn indexed_i16(xs: bounded[I16; 8]) -> I16 {
+            let mut s: I16 = 0;
+            let mut i = 0;
+            while i < count(xs) {
+                s = s + (xs.get(i) or 0);
+                i = i + 1;
+            }
+            return s;
+        }
+
+        fn main() {
+            let what = std::env::arg_or(1, "");
+            println("before");
+            if what == "last" {
+                // in range until the last element
+                println(sum_u32(u32s([4000000000, 200000000, 90000000, 5000000])));
+            } else if what == "out" {
+                // out at the second element, back in at the third, out
+                // again at the end
+                println(sum_i16(i16s([30000, 30000, -30000, 5000])));
+            } else if what == "back" {
+                // out at the second element, back in range at the end: the
+                // mathematical sum, 10000
+                println(sum_i16(i16s([30000, 30000, -30000, -20000])));
+            } else if what == "low" {
+                println(sum_i16(i16s([-30000, -30000, 20000, -100])));
+            } else if what == "map" {
+                // the step `it * 3` of the first element is out of range
+                println(triple_u32(u32s([2000000000, 0, 0, 0])));
+            } else if what == "mapsum" {
+                // every step in range, their sum out of it
+                println(triple_u32(u32s([1000000000, 1000000000, 0, 0])));
+            } else if what == "mapback" {
+                // `x * 2` of 20000 is out of range, of -20000 out the other
+                // way; the sum of the steps is 0, but a step was out
+                println(double_i16(i16s([20000, -20000, 0, 0])));
+            } else if what == "noisy" {
+                println(noisy_i16(i16s([30000, 30000, -30000, -20000])));
+            } else if what == "indexed" {
+                println(indexed_i16(i16s([30000, 30000, -30000, -20000])));
+            } else if what == "fine" {
+                println(
+                    sum_u32(u32s([4000000000, 200000000, 90000000, 4967295])),
+                    " ",
+                    sum_i16(i16s([32767, -32768, 32767, -1])),
+                    " ",
+                    triple_u32(u32s([1, 1, 1, 1431655762])),
+                    " ",
+                    double_i16(i16s([16383, -16384, 1, 0])),
+                );
+            }
+            println("after");
+        }
+        """;
+}
+
+fn run(bin: String, what: String) -> std::process::ProcessOutput {
+    return std::process::run(bin + "\n" + what)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+}
+
+fn expect(bin: String, what: String, want: String) {
+    let out = run(bin, what);
+    std::test::assert_eq_int(out.code, 1, what + " exits 1: " + out.stderr);
+    std::test::assert(std::str::contains(out.stdout, "before"), what + " ran up to the sum");
+    std::test::assert(
+        !std::str::contains(out.stdout, "after"),
+        what + " ran nothing after it: " + out.stdout,
+    );
+    std::test::assert(
+        std::str::contains(out.stderr, want),
+        what + " says `" + want + "`: " + out.stderr,
+    );
+}
+
+fn main() {
+    let hale = if std::env::var_exists("HALE_BIN") { std::env::var("HALE_BIN") } else { "hale" };
+    let src = std::io::fs::mktemp("/tmp/hale-2162-", ".hl") or "";
+    std::test::assert(src != "", "a scratch source path");
+    std::io::fs::write_file(src, app_source()) or discard;
+    let built = std::process::run(hale + "\nbuild\n" + src)
+    or std::process::ProcessOutput { code: -9, signal: 0, stdout: "", stderr: "run failed" };
+    std::test::assert_eq_int(built.code, 0, "the program builds: " + built.stderr);
+    let bin = src[0..(len(src) - 3)];
+
+    let u32_add = "violation: U32 `+` overflows: the result is outside U32's range, 0 through 4294967295";
+    let i16_add = "violation: I16 `+` overflows: the result is outside I16's range, -32768 through 32767";
+    expect(bin, "last", u32_add);
+    expect(bin, "out", i16_add);
+    expect(bin, "low", i16_add);
+    expect(bin, "map", "violation: U32 `*` overflows: the result is outside U32's range");
+    expect(bin, "mapsum", u32_add);
+    expect(bin, "mapback", "violation: I16 `*` overflows: the result is outside I16's range");
+
+    // out and back in: the mathematical sum
+    let back = run(bin, "back");
+    std::test::assert_eq_int(
+        back.code,
+        0,
+        "a sum that comes back into range runs on: " + back.stderr,
+    );
+    std::test::assert(
+        std::str::contains(back.stdout, "10000\nafter"),
+        "it is the sum: " + back.stdout,
+    );
+
+    // a body that prints is checked at the element that crossed: the
+    // second element's add, after the first element's print only
+    let noisy = run(bin, "noisy");
+    std::test::assert_eq_int(noisy.code, 1, "noisy exits 1: " + noisy.stderr);
+    std::test::assert(
+        std::str::contains(noisy.stdout, "added 30000"),
+        "the first element ran: " + noisy.stdout,
+    );
+    std::test::assert(
+        !std::str::contains(noisy.stdout, "added -30000"),
+        "nothing after the crossing ran: " + noisy.stdout,
+    );
+    std::test::assert(
+        std::str::contains(noisy.stderr, i16_add),
+        "noisy says the add: " + noisy.stderr,
+    );
+    // so is a hand-written `while`, which has no static term count
+    expect(bin, "indexed", i16_add);
+
+    let fine = run(bin, "fine");
+    std::test::assert_eq_int(fine.code, 0, "sums in range run on: " + fine.stderr);
+    std::test::assert(
+        std::str::contains(fine.stdout, "4294967295 32765 4294967295 0"),
+        "each sum: " + fine.stdout,
+    );
+    std::test::assert(std::str::contains(fine.stdout, "after"), "and what follows runs");
+
+    std::io::fs::unlink(src) or discard;
+    std::io::fs::unlink(bin) or discard;
+}

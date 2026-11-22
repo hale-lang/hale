@@ -5030,3 +5030,96 @@ wraps at 256 is the bug these types are most likely to carry, and the
 explicit `wrapping_*` costs nothing where it is meant. *Widening at the
 operators*: see above. *Packing range types by width* (spec/units.md §
 What the dialect does not do) and `F32`: separate decisions.
+
+### F.65 — A checked narrow sum accumulates wide and is checked once
+
+**Status: accepted and implemented (2026-11-22; GH #2162).**
+
+**Problem.** A sum over `I32` … `U8` written with the default checked
+`+` (F.64), `.map(it * 3).sum(U32(0))` or `for x in xs { s = s + x; }`,
+branches per element to the process-stopping violation: a side exit
+LLVM 18's loop vectorizer does not take, so the loop stayed scalar on
+every target, while the same kernel with `U32::wrapping_*` vectorized
+four lanes wide. A hot loop had to choose between overflow safety and
+lanes.
+
+**Decision.** A checked sum of a fixed-width integer narrower than 64
+bits is accumulated in an `i64` and held to the element type's range
+once, at the loop's exit, where it is narrowed back into the
+accumulator (spec/types.md § Fixed-width integers, *Checked sums*). The
+loop has no exit of its own left, so the add is a reduction the
+vectorizer widens: measured on LLVM 18, the checked `.map(it * 3).sum(U32(0))`
+over a `bounded[U32; 1024]` and an `I16` `for` sum vectorize 16 and 8
+lanes wide on aarch64 (apple-m1), 2 on a baseline x86-64 and 4 on
+x86-64-v3, the latter from the same IR through `opt` and from a cross
+build.
+
+Where this decision chose:
+
+- **What is taken, by shape, before any type is read.** The loop walks a
+  `bounded[T; N]` or a fixed array, by `for` or as an element chain's
+  loop (`src.get(i) or { break; }`, `i` stepping by one), so its term
+  count is at most `N` per update; its body does nothing observable but
+  compute (locals, `if`, `break`, `continue`, operators, casts, the
+  natively lowered `T::f`, `len` / `min` / `max` / `abs`: no call into
+  the program or the runtime, no loop, no `return`, `raise` or `fail`, no
+  write to anything but a local); and the accumulator is a local declared
+  before the loop that the loop names only in its updates, `s = s + e`,
+  `s = e + s` or `s += e`, `e` not naming it. The accumulator's type is
+  the checker's (the place row of an update's target, GH #2111). Anything
+  else keeps its per-element check: a product, `Int` and `U64` (no wider
+  type), a sum whose running value the loop reads, a sum over a `vec`, a
+  range or a hand-written `while` (no static term count), a body that
+  prints or calls.
+- **The bound.** Each term is inside a 32-bit range, so fewer than 2^32
+  terms cannot wrap an `i64` (nor a `u64`, unsigned): the lowering takes
+  a loop only where `(N + 1)` times its update count is below 2^32, which
+  a static capacity makes a fact rather than an assumption. A `vec`'s
+  length has no such bound short of memory (2^32 `U32`s is 16 GiB), so it
+  is not taken; splitting each term into halves would make it exact to
+  2^47 terms, but measured at 2.5 times the plain wide sum's cost.
+- **The `map` step is widened when it is one operator.** A `+`, `-` or
+  `*` of two operands of the accumulator's type, each a read or a
+  literal (the chain's `let` of a `map` whose value only the sum reads,
+  or `s = s + x * 3` written out), is computed in `i64`, where two 32-bit
+  operands' product is exact. Whether it fits the type is not branched on
+  per element: it is or-ed into a flag, itself a reduction, and the flag
+  is a violation at the exit, named as that operator's (`U32 \`*\`
+  overflows`). So an element whose step is out of range is still a
+  violation, as it was, and a chain with a checked `map` vectorizes
+  whole. A step of two operators (`it * 3 + 1`) is lowered as written,
+  its inner operator checked where it happens.
+- **Where the violation is reported.** At the loop's exit, not at the
+  element that crossed the bound. The message is the per-element check's
+  own (`violation: U32 \`+\` overflows: …`); a step's flag is reported
+  before the sum's check. Since the loop's body does nothing observable,
+  nothing a program could see ran between the crossing and the report
+  (a later element's own checked operation, a division by zero, may be
+  the violation reported instead). The lowering is the codegen's, not the
+  optimizer's: a dev build and `hale test` report at the same place as a
+  release build.
+- **Out and back in is the sum.** A total that leaves the range mid-way
+  and comes back into it (`30000 + 30000 - 30000 - 20000` over `I16`) is
+  the mathematical sum, `10000`, and is no violation: the check is of
+  the total. Before this decision it stopped at the second element. A
+  total that is out of range at the end is a violation however often it
+  crossed. An unsigned sum's running total never decreases, so for it
+  the two readings agree.
+
+**Not breaking.** Every program that ran before computes what it
+computed: a sum in range at every element is in range at the end, and
+each step in range is in range wide. A program that stopped with an
+overflow still stops with the same message, after the loop instead of
+inside it, with nothing observable between, unless its total came back
+into range, where it now runs on with the exact sum.
+
+**Considered and rejected.** *A sticky overflow flag beside a narrow
+accumulator*: it reads the running total every element, which is not a
+reduction, so it does not vectorize. *A saturating wide add*
+(`uadd.sat`): exact for any term count, but LLVM 18 recognizes no
+saturating reduction. *An `i128` accumulator*: interleaved, not
+vectorized, on aarch64. *Taking any `while` or a range*: its term count
+is unbounded, and 2^32 terms of a 32-bit type take a second or two. *A
+per-element check of the `map` step with a wide sum*: correct, but the
+step's branch is still a side exit, so the motivating kernel would stay
+scalar.

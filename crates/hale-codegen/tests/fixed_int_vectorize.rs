@@ -4,8 +4,12 @@
 //! vector (NEON on aarch64, SSE2 on x86-64), so `@vectorize(min_width: 4)`
 //! holds on both, where aarch64 has no `i64` vector multiply and the
 //! same kernel over `Int` is interleaved scalar code there (F.63's
-//! spike). The checked `.map(it * 3).sum(U32(0))` carries an overflow
-//! branch per element to the process-stopping violation, a side exit no
+//! spike). A checked sum over a `bounded` (GH #2162, F.65) accumulates in
+//! an `i64` and is checked once, after the loop, so it has no exit per
+//! element and vectorizes too: `.map(it * 3).sum(U32(0))`, its `map`
+//! computed wide, and an `I16` `for` sum. A checked sum this lowering does
+//! not take (a step of two operators, a product) keeps its overflow branch
+//! per element to the process-stopping violation, a side exit no
 //! vectorizer takes, so `@vectorize` refuses it at the loop on every
 //! target.
 
@@ -75,18 +79,39 @@ fn the_int_kernel_is_scalar_on_aarch64() {
     }
 }
 
-/// A checked narrow sum stops the process on an overflow, a side exit
-/// in every iteration: refused at the loop on every target.
+/// A checked narrow sum over a `bounded` accumulates wide and is checked
+/// at the loop's exit (F.65): its loop has no side exit and vectorizes,
+/// the `map` step computed wide too, as does an `I16` sum written as a
+/// `for` with `+=`. Plain `@vectorize`: an `i64` accumulator is two lanes
+/// on a baseline x86-64 (SSE2) and four with AVX2, sixteen and eight on
+/// aarch64.
 #[test]
-fn a_checked_narrow_sum_does_not_vectorize() {
+fn a_checked_narrow_sum_vectorizes() {
     let src = format!(
-        "@vectorize\nfn checked(xs: bounded[U32; 1024]) -> U32 {{\n    return xs.map(it * 3).sum(U32(0));\n}}\n{WRAPPING}{}",
-        MAIN.replace("println(kernel(xs)", "println(checked(xs), kernel(xs)")
+        "@vectorize\nfn checked(xs: bounded[U32; 1024]) -> U32 {{\n    return xs.map(it * 3).sum(U32(0));\n}}\n\
+         @vectorize\nfn halves(hs: bounded[I16; 1024]) -> I16 {{\n    let mut s: I16 = 0;\n    for h in hs {{\n        s += h;\n    }}\n    return s;\n}}\n\
+         {WRAPPING}{}",
+        MAIN.replace("println(kernel(xs)", "let mut hs: bounded[I16; 1024] = [];\n    push(hs, 7) or discard;\n    println(checked(xs), halves(hs), kernel(xs)")
     );
-    match build(&src, "fixed_vec_checked") {
+    build(&src, "fixed_vec_checked").expect("the checked U32 and I16 sums vectorize");
+}
+
+/// What the wide sum does not take keeps its overflow branch per element
+/// and is refused at its loop on every target: a step of two operators
+/// (whose inner one is checked where it happens) and a product.
+#[test]
+fn a_checked_narrow_sum_it_does_not_take_does_not_vectorize() {
+    let src = format!(
+        "@vectorize\nfn two_ops(xs: bounded[U32; 1024]) -> U32 {{\n    return xs.map(it * 3 + 1).sum(U32(0));\n}}\n\
+         @vectorize\nfn product(xs: bounded[U32; 1024]) -> U32 {{\n    let mut p: U32 = 1;\n    for x in xs {{\n        p = p * x;\n    }}\n    return p;\n}}\n\
+         {WRAPPING}{}",
+        MAIN.replace("println(kernel(xs)", "println(two_ops(xs), product(xs), kernel(xs)")
+    );
+    match build(&src, "fixed_vec_untaken") {
         Err(CodegenError::NotVectorized(msg, _, false)) => {
-            assert!(msg.starts_with("`@vectorize` on `checked`: this loop does not vectorize on "), "{msg}");
+            assert!(msg.starts_with("`@vectorize` on `two_ops`: this loop does not vectorize on "), "{msg}");
+            assert!(msg.contains("in `product`"), "{msg}");
         }
-        other => panic!("expected the checked sum refused, got {other:?}"),
+        other => panic!("expected both refused, got {other:?}"),
     }
 }
