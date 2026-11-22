@@ -415,11 +415,13 @@ fn main() {
             + allocation(face, key + "/services"),
     );
     // a crash (exit 3) is a restart docker makes, and the habitat says so.
-    // The signal is sent from outside: a `docker exec … kill -USR1 1` is
-    // still attached when PID 1 exits, and comes back 137 when the
-    // container's teardown wins that race (GH #2170)
+    // The signal comes from inside, by a detached exec: an attached one is
+    // still running when PID 1 exits and comes back 137 when the
+    // container's teardown wins that race (GH #2170), and a `docker kill`
+    // marks the container stopped by hand, which its restart policy
+    // leaves down
     let crashed = dna::run_tool(
-        "sh\n-c\nfor c in $(docker ps -q --filter label=hale.organism=sprout --filter label=com.docker.compose.service=web); do docker kill --signal USR1 \"$c\"; done\nsh\n",
+        "sh\n-c\nfor c in $(docker ps -q --filter label=hale.organism=sprout --filter label=com.docker.compose.service=web); do docker exec -d \"$c\" kill -USR1 1; done\nsh\n",
     );
     std::test::assert_eq_int(crashed.code, 0, "the service is crashed: " + crashed.stderr);
     let mut restarted = "";
