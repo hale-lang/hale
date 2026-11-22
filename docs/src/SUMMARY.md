@@ -7,6 +7,7 @@
 - [Hello World & the Toolchain](./getting-started/first-run.md)
 - [Your First Program](./basics/first-program.md)
 - [Tutorial: Build a Job Queue](./tutorial/job-queue.md)
+- [Running Without a Habitat](./getting-started/without-a-habitat.md)
 
 # Part I: The Language
 

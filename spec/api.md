@@ -3551,8 +3551,8 @@ in the current directory). A file is read as an OpenAPI document; a URL
 as one when it serves one by `GET`, and as an MCP endpoint otherwise
 (`--openapi` and `--mcp` say which). The mapping:
 
-- **An OpenAPI operation** (OpenAPI 3; Swagger 2.0 and a YAML document are
-  refused naming why) is a row named by its `operationId` in snake case
+- **An OpenAPI operation** (OpenAPI 3, JSON or YAML; Swagger 2.0 is
+  refused, naming why) is a row named by its `operationId` in snake case
   (`listItems` is `list_items`), else by its method and path
   (`get_items_item_id`); `wire:` is `"METHOD /path"`, followed by `?` and
   its query parameters' names joined by `&` when it has any (`"GET
@@ -4090,14 +4090,11 @@ values).
 
 ## Open points
 
-- **Binding an imported surface** to a client (`api::client(Surface,
-  mcp::Client | http::Client)`), which reads the signature rows' `wire:`;
-  until then an imported surface is declared, checked and described, and
-  called by nothing the compiler generates.
-- **The import's reach**: a YAML document, Swagger 2.0, a header or cookie
-  parameter, an operation's error responses, authentication beyond what a
-  public document needs, and a `$ref` to another document are not read.
-
+- **The import's reach**: Swagger 2.0 (refused, naming why), a header or
+  cookie parameter, an operation's error responses (a row's answer is its
+  lowest-numbered `2xx`), the document's security schemes (a row's bearer
+  is its client's principals', § Calling a surface), and a `$ref` to
+  another document (a `std::json::Value`) are not read.
 - **`grpc://` endpoints for `hale describe` and `hale call`**: the
   clients are Rust and have no HTTP/2 stack (the runtime's nghttp2 is
   linked into compiled programs, the test suite's client is hand-written

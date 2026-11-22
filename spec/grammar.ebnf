@@ -925,14 +925,11 @@ lifecycle_keyword = "birth"
 
 (* === 7. Mode declarations (removed) =========================== *)
 
-(* F.61 — there is no `mode_decl`: locus modes (`mode bulk`, `mode
-   harmonic`, `mode resolution`) were removed. A mode compiled as an
-   ordinary method and is written as a `fn` member (one returning a
-   locus, as a free fn over the locus). `mode NAME`
+(* F.61 — there is no `mode_decl`. A locus member is a `fn`, a
+   lifecycle hook, a failure handler or a closure; `mode NAME`
    followed by `(`, `->` or `{` at locus-member position is refused
    with one located error at the word `mode`, naming the `fn` to write
-   (spec/decisions.md F.61). `mode`, `bulk`, `harmonic` and
-   `resolution` are ordinary identifiers. *)
+   (spec/decisions.md F.61). `mode` is an ordinary identifier. *)
 
 
 (* === 8. Failure handler ======================================= *)

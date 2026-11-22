@@ -51,6 +51,27 @@ fn get(port: u16, path: &str) -> (u16, String) {
     ask(port, &format!("GET {path} HTTP/1.1\r\nHost: probes\r\n\r\n"))
 }
 
+/// Polls `/readyz` until it answers 200, for up to five seconds.
+/// `spawn` returns once the probes' port is bound, which their own birth
+/// does: the main locus's later births, bindings and boot subscriptions
+/// may still be under way, and until they are done the process answers
+/// 503 `starting` (spec/semantics.md § Probes). Anything else before
+/// ready is a failure, so a read that comes too early cannot pass for
+/// one that comes too late (GH #2154).
+fn wait_ready(port: u16) {
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let last = get(port, "/readyz");
+        if last.0 == 200 {
+            assert_eq!(last.1, "ready\n");
+            return;
+        }
+        assert_eq!(last, (503, "starting\n".to_string()), "/readyz before ready");
+        assert!(Instant::now() < until, "/readyz still says starting after 5s");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 fn stop(mut child: child::Reaped) {
     let _ = child.kill();
     let _ = child.wait();
@@ -72,7 +93,7 @@ fn the_probes_answer_health_readiness_and_capacity() {
     let bin = build("served", SERVED);
     let (child, port) = spawn(&bin, None);
     assert_eq!(get(port, "/healthz"), (200, "ok\n".to_string()));
-    assert_eq!(get(port, "/readyz"), (200, "ready\n".to_string()));
+    wait_ready(port);
     let (status, body) = get(port, "/capacity");
     assert_eq!(status, 200, "{body}");
     assert!(body.starts_with("{\"ready\":true,\"draining\":false,\"queues\":[{\"name\":\"main\",\"pending\":0,"), "{body}");
@@ -102,7 +123,7 @@ fn main() { App { }; }
 fn a_draining_process_is_not_ready() {
     let bin = build("drains", DRAINS);
     let (child, port) = spawn(&bin, None);
-    assert_eq!(get(port, "/readyz").0, 200);
+    wait_ready(port);
     let _ = Command::new("kill").arg("-TERM").arg(child.id().to_string()).status();
     let until = Instant::now() + Duration::from_secs(3);
     let mut last = (0, String::new());
