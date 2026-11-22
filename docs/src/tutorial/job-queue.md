@@ -170,4 +170,4 @@ A separate producer binary imports `Jobs` and `Submitter` and binds `Jobs: unix(
 - **[Part III: Locus Lifecycle](../services/lifecycle.md)** and **[Concurrency & Thread Placement](../services/concurrency.md)** — Deep dive into `birth`/`run`/`drain`/`dissolve` and thread pools.
 - **[Part III: Multi-Binary Systems & Fleets](../services/multi-binary.md)** — Compose multiple binaries into a verified `fleet locus`.
 
-Next: [Part I: The Language](../parts/language.md).
+Next: [Running Without a Habitat](../getting-started/without-a-habitat.md).

@@ -221,17 +221,15 @@ closure body, and a `@phase_effects( … )` key or a claim's `during`
 phase names any of them. A field, parameter, local or free fn may be
 named `run`; a locus METHOD may not (above).
 
-### Mode words (removed)
+### `mode` (not a keyword)
 
-`mode`, `bulk`, `harmonic` and `resolution` are not keywords (F.61):
-locus modes were removed, and the four words lex and parse as ordinary
-identifiers in every position, a locus method's name included. A
-program that still writes `mode NAME` (followed by `(`, `->` or `{`)
-at locus-member position is refused there with one located error
-naming the `fn` to write:
+`mode` is not a keyword (F.61): it lexes and parses as an ordinary
+identifier in every position, a locus method's name included. At
+locus-member position, `mode NAME` followed by `(`, `->` or `{` is
+refused there with one located error naming the `fn` to write:
 
 ```text
-work.hl:4:5: parse error: locus modes were removed in 0.38: write `fn bulk(...)` (a mode compiled as an ordinary method; spec/decisions.md F.61)
+work.hl:4:5: parse error: locus modes were removed in 0.38: write `fn rebalance(...)` (a mode compiled as an ordinary method; spec/decisions.md F.61)
 ```
 
 ### Projection-class keywords (contextual)

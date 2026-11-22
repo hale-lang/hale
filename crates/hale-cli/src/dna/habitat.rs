@@ -181,8 +181,10 @@ up                   birth the habitat the first time, from the genome the
                      DNS label: lowercase letters, digits and `-`, at most
                      63; `local` when none is given), recorded on its
                      `habitat.profile` row and kept: `status`, the head's
-                     Commands::index and the operator face show it. The
-                     hosted profile is not built.
+                     Commands::index and the operator face show it.
+                     --profile takes `local`, the one profile `up` has
+                     (docker compose on this machine, or on another with
+                     --host).
 up --host <name>     run the habitat on another machine, one with docker and
                      nothing else: reach it over SSH as the person's own
                      login (--user and --port, else the SSH config's;
@@ -2490,7 +2492,7 @@ fn up(args: &[String]) -> ExitCode {
         return remote::refuse_local_up(&p);
     }
     if profile != "local" {
-        eprintln!("hale habitat up: the `{profile}` profile is not built: only `local` (docker compose on this machine) is; the hosted one runs on the backends a platform already runs (GH #1653)");
+        eprintln!("hale habitat up: `--profile {profile}` is not a profile of `up`: it takes `local` (docker compose on this machine, or on another with `--host <name>`), and `--backends operator` adopts a Postgres and a NATS already running");
         return ExitCode::from(2);
     }
     // GH #1653: the habitat's backends are chosen at its birth and kept:
