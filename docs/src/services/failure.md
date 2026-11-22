@@ -60,7 +60,7 @@ locus Account {
 
 ### Accumulator Closures (`persists_through` & `resets_on`)
 
-Closures that aggregate values across epochs using `sum(...)`, `count(...)`, or `mean(...)` reset their running totals to zero whenever the locus is recovered. An accumulator belongs to a closure assertion and samples one field (`sum(self.delta)`, `mean(self.latency)`): `hale check` refuses one outside a closure assertion or over a wider expression (keep `self.a + self.b` in a field of its own), and refuses `prod(...)`, which has no lowering yet. The band compares in one type, so beside `mean(...)` (a `Float`) write the other side and the tolerance as `Float`s (`mean(self.ms) ~~ 10.0 within 2.0`). To preserve running totals across specific recovery actions, add `persists_through(...)`:
+Closures that aggregate values across epochs using `sum(...)`, `count(...)`, or `mean(...)` reset their running totals to zero whenever the locus is recovered. An accumulator belongs to a closure assertion and samples one field (`sum(self.delta)`, `mean(self.latency)`): `hale check` refuses one outside a closure assertion or over a wider expression (keep `self.a + self.b` in a field of its own), and refuses `prod(...)`, which has no lowering yet. The band compares in one type, so beside `mean(...)` (a `Float`) write the other side and the tolerance as `Float`s (`mean(self.ms) ~~ 10.0 within 2.0`), and beside `count()` (an `Int`) as `Int`s (`count() ~~ 3 within 0`). To preserve running totals across specific recovery actions, add `persists_through(...)`:
 
 ```hale,fragment
 closure within_band {
