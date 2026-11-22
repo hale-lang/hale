@@ -8,6 +8,99 @@ behavior.
 
 ## Unreleased
 
+## v0.38.0 — the integers, and loops that must vectorize (2026-11-21)
+
+This release fills out the integers, adds a way to require that a loop vectorizes, and removes a feature that compiled to nothing distinct.
+
+- **The integers.**
+  - `U64` (F.60) and the fixed-width `I32`, `U32`, `I16`, `U16`, `I8` and `U8` (F.64) join `Int`. Each is stored at its declared width in records, `bounded` lists, locus fields, topic payloads and locals: a `bounded[U8; 1024]` is 1,024 bytes, not 8,192.
+  - Overflow, division by zero and a shift past the width are runtime violations. `T::wrapping_*` wraps and `T::checked_*` fails into an `or`.
+  - Widening is implicit only where it loses nothing. Narrowing is `T(x) or …`, with the range types' policies (clamp, wrap, a value, raise, fail).
+  - Literals take the type of their place, range-checked.
+  - On the wire: JSON is a number (a `U64` is a string), protobuf has a type per width, C FFI is the native width.
+  - The unit dialect counts any of them: `type Wei = quantity U64 in wei;`, `type Port = U16 { range: 1..65536; }` (F.62).
+  - A program that uses none of them pays one declared symbol.
+- **`@vectorize` (F.63).** On a fn, every innermost loop in its body must be vectorized on the build's target, or the build fails at that loop with the optimizer's reason, in Hale's terms. `hale check` refuses what no target could vectorize: an allocation, a send, an effectful call. Builds that don't optimize skip the check and say so.
+  - A `wrapping_*` loop over `U32` runs four lanes on aarch64 and x86-64.
+  - Checked narrow arithmetic doesn't vectorize, because each element's overflow check is a side exit. Write the hot loop with `wrapping_*`.
+- **Locus modes are removed (F.61).** `mode bulk|harmonic|resolution` compiled exactly like a method, and the per-mode compilation the spec described was never built. Write `fn bulk(...)`. An old `mode` declaration gets a located error with that rewrite.
+- **The compiler's types (#2111).**
+  - Strict mode (#2139) counts every place lowering types a value without the checker's type, both in codegen's source and across the corpus. A ratchet test holds the count, and phase 1 ends when it is zero and the fallback is deleted.
+  - Lowering now reads the checker's types for literals, operators, branch values and assignment targets as well (#2135, #2148).
+  - Several check/build gaps closed along the way, among them a send to an `on_full: fail` topic, which the check refused and the build accepted (#2147).
+- **Nightly builds.** Every day `main` has changed, a `nightly-YYYY-MM-DD` pre-release and a `:nightly` image are published. Install one with `HALE_VERSION=nightly`. Releases are now milestones like this one.
+
+Breaking changes: the new builtin type names, the `if` whose `then` arm leaves now taking its `else` arm's type, and the removal of modes. Each entry below has its migration.
+
+The item-level notes follow, breaking changes first.
+
+### Breaking
+
+- `U64` is a builtin type name: a program's own declaration named `U64` is no longer what `U64` means in a type position, and `U64::f` in an expression is `std::u64::f`. Rename the declaration. The reserved `Uint` is gone; the checker refused every use of it, so no program that checked spelled it, and it is an ordinary name again.
+- An `if` expression whose `then` arm leaves (a block ending in a `match` whose every arm returns, fails or breaks) now has its `else` arm's type. Such an `if` was untyped, so its value was held to no type: `let s: String = v` of an `Int` `else` arm built, and `s` held the `Int`. It is now refused ("let `s`: expected `String`, got `Int`"). Declare the type the value has, or convert it (`to_string(v)`).
+- Locus modes are removed (GH #2133, F.61). A mode compiled exactly as a locus method, so write `mode X(...) -> T { ... }` as `fn X(...) -> T { ... }`, with the same decorators and the same calls (`self.X()`, `child.X()`). A mode that returned a locus becomes a free fn over the locus (`fn X(l: L, ...) -> M`), because a locus method may not return one. A program that still writes `mode bulk(...)` is refused at the word with the `fn` to write ("locus modes were removed in 0.38: write `fn bulk(...)`"). `mode`, `bulk`, `harmonic` and `resolution` are no longer keywords; a locus method may now take one of the three names, and `expose bulk: T` binds a `fn bulk` like any other method. Editor grammars (tree-sitter-hale, vscode-hale, hlhub) drop their mode rules after the next release.
+- `I32`, `U32`, `I16`, `U16`, `I8` and `U8` are builtin type names: a program's own declaration named one is no longer what the name means in a type position, and `U8::f` in an expression is `std::u8::f`. Rename the declaration.
+
+### Fixed
+
+- `hale check` types a subscription's `where key == EXPR`, in the subscribing locus's body. A filter naming a field the locus does not have (`where key == self.nosuch`) checked clean and `hale build` refused it; the check now refuses it at the field ("no field `nosuch` on `Lane`").
+
+### Changed
+
+- internal: the stdlib's own bodies have the checker's type at each call to one of its Rust primitives and each field read off their results (GH #2111, family 9). A fallible stdlib call under `or` is typed as its row's fallible value; the process primitives and the bytes builder's views name what they return; the internal primitives with no signature have one; a `birth_check` and a key filter are carried to lowering under the locus's body.
+
+### Added
+
+- `U64`, a 64-bit unsigned integer (`0` through `2^64 - 1`) for hashes, counters past `2^63` and `uint64` fields (GH #2121). An integer literal is a `U64` wherever its place is one (`let n: U64 = 7;`, `x + 1`, an argument, a field, a match pattern), and a decimal literal past `Int`'s max is one by itself; a negative literal into a `U64`, or one past `2^64 - 1`, is refused where it is written. `+ - *` past either end and `/` or `%` by zero stop the process with a violation, as `U256`'s do; `U64::wrapping_add` / `wrapping_sub` / `wrapping_mul` / `wrapping_shl` / `wrapping_shr` wrap modulo `2^64`, and `U64::checked_*` fail into an `or`. Division, remainder, comparison and `>>` are unsigned, and a shift count outside 0 through 63 is a violation. It never mixes with `Int`: `U64::from_int`, `U64::to_int(x) or ...`, `U64::from_bits` / `to_bits`, `Float(x)`, `U64::from_float(f) or ...`, `U64::parse`, `U64::to_hex`, `U64::to_be_bytes` / `to_le_bytes` and `from_be_bytes` / `from_le_bytes`. It prints unsigned (`to_string`, `println`, f-strings with `:x` and widths, `@display`), sits in records, loci, `bounded` lists, fixed arrays, enum payloads, hashmap cells, `Box<U64>` and bus payloads (contract tag `u64`), crosses `@ffi("c")` as a `uint64_t` (and `@ffi("js")` as a number, as an `Int` does), and crosses the API codecs as a JSON string of its digits (schema `"x-hale-type": "U64"`) and a protobuf `uint64`. spec/types.md § U64, F.60.
+
+### Fixed
+
+- `return v` of such an `if`'s value, of a type the fn does not return, is refused by `hale check` at `v`. It checked, and the build refused it.
+
+### Changed
+
+- Nightly builds: every day `main` has changed, a nightly build of it is published as a GitHub pre-release tagged `nightly-YYYY-MM-DD` (the same Linux x86_64, Linux arm64 and macOS arm64 archives as a release) and as the image `ghcr.io/hale-lang/hale:nightly-YYYYMMDD`, with `:nightly` moving to the newest. A nightly reports its own version, `<next>-nightly.<YYYYMMDD>+<commit>` (`hale 0.37.1-nightly.20261121+8fd8d68`), and `HALE_VERSION=nightly` (or `=nightly-2026-11-21`) installs one; the install script's default and the image's `latest` stay on the newest release. A habitat on a nightly toolchain pulls that nightly's image, and a nightly pin installs from its pre-release. The newest 14 nightlies are kept. Releases remain the milestones whose changes `CHANGELOG.md` records.
+
+### Changed
+
+- internal: lowering's own typing, where the checker left no type, is counted and may only shrink. A build option refuses every value lowered without the checker's type, and a test holds the count over the corpus, `tests/hale` and the DNA fixtures, with the compiler's static measures, to a committed baseline (GH #2111).
+
+### Added
+
+- The unit dialect's scalars may count a `U64` (GH #2131): `type Wei = quantity U64 in wei;`, `type Nonce = distinct U64;` and `type Port = U64 { range: 1..65536; }`. The base integer is a parameter of the dialect, read from the root of a scalar's chain, and every rule follows it: arithmetic is the `U64`'s (unsigned; an overflow, an underflow or a division by zero is a violation, a widening's multiplication included), `Wei / Wei` and `.split(u)`'s whole part are `U64`s, a range's bounds, a literal's count and an integer literal in its place are held to the base, rounding and range narrowing are unsigned, and an unsigned scalar has no unary `-`. `U64(nonce)` is an identity's `U64`. An `Int` beside one is refused naming the conversion (`U64::from_int(n)`), and a component counts one integer, so a quantity over the other integer than its component's quantity is refused at its base. A quantity literal's magnitude may be any `U64` (`18446744073709551615wei`). On the wire a `U64` scalar is a JSON string of its digits and a protobuf `uint64`, in a shape `u64` or `q(u64 wei)`, across `@ffi("c")` a `uint64_t`; `hale check --units` says what a scalar counts and gives a `U64`'s headroom from zero. A conversion whose factor the base cannot hold is now refused by `hale check`, not only by the build. spec/units.md § The base, F.62.
+
+### Fixed
+
+- tests: the DNA fixtures start busybox and alpine from the repository's mirror (`ghcr.io/hale-lang/ci-busybox:1.36`, `ci-alpine:3.20`, through `dna::TEST_BUSYBOX` and `dna::TEST_ALPINE`) instead of pulling them anonymously from Docker Hub, whose pull limit failed DNA runs at random (GH #2141). The `dna_fixture_images_are_mirrored` guard refuses a Docker Hub or bare image name in a fixture's compose `image:`, Dockerfile `FROM` or `docker run`.
+
+### Fixed
+
+- tests: `bus_bounded_topics` holds its subscriber's queue through the publisher's burst (the first delivery waits on a latch the publisher sets after it), so `on_full_fail_or_raise_refuses` finds the topic at its bound by the third send instead of racing main's drain, and `drop_old_keeps_newest_under_burst` sheds the same way on every run; `on_full_or_wait_delivers_everything` waits for its 50 deliveries instead of a fixed 1.5 s (GH #2138).
+
+### Added
+
+- `@vectorize` and `@vectorize(min_width: N)` on a fn: every innermost loop written in its body (an element chain's loop included) must be vectorized by the build's optimizer on the build's target, at least `N` lanes wide when given, or `hale build` fails at the loop with the target and the reason, in the program's terms beside LLVM's own words (GH #2134, F.63). `hale check` refuses first what no target vectorizes, at the place that stops the loop: a `break` or `return` beside the loop's own exit, a call to a fn with effects or with a loop of its own, an allocation, a locus built, a publish or send, and a `@vectorize` fn with no loop. The rest is the target's answer (a `Float` sum vectorizes on aarch64, not x86-64). It asks the optimizer for nothing and changes nothing the program computes. It is not checked at O1 (`--dev`, `HALE_DEV`, `hale test`), under AddressSanitizer or on wasm, and `hale build` says when it skipped. spec/semantics.md § Vectorized loops.
+
+### Fixed
+
+- Nightly builds publish: the publish step downloads only the tarballs, not the docker build records the image job leaves in the same run (#2145).
+
+### Fixed
+
+- `hale check` takes `or raise` and `or discard` on a send to an `on_full: fail` topic, keyed or not. It took an `or` disposition only when the topic declared `on_unmatched: fail` (which needs `keyed_by`) while an `on_full: fail` topic demanded one, so an unkeyed `bounded(N); on_full: fail;` topic could not be published to, though `hale build` took the program (GH #2146). An `on_full: fail` topic takes `or raise`, `or discard` and `or wait`; an `on_unmatched: fail` topic `or raise`, `or discard`, `or <expr>` and `or fail <p>`; a topic with both, `or raise` and `or discard` (spec/semantics.md § "Send dispositions").
+
+### Changed
+
+- internal: the checker records the type of every literal, operator and range it types, and a value whose place decides its type (an integer literal into a `U64`) carries the place's type, for the build to read; the count of values the build types without the checker falls from about 320,000 to about 2,200 over the test corpus (GH #2111).
+
+### Fixed
+
+- tests: `head_push_test` waits for its event stream to go quiet before each `rows` check and pokes once a second rather than before every read, so a late `changed` event from an earlier check's pokes is no longer heard as another organization's row (GH #2149).
+
+### Added
+
+- The fixed-width integers `I32`, `U32`, `I16`, `U16`, `I8` and `U8` (GH #2132, F.64): stored at their declared width in records, `bounded` lists, fixed arrays, locus fields, topic payloads and locals (a `bounded[U8; 1024]` field is 1024 bytes), with checked arithmetic (an overflow, a division by zero or a shift past the width stops the process; `T::wrapping_*` wrap and `T::checked_*` fail into an `or`). An integer literal takes the type of its place and is held to its range. A value widens implicitly only where nothing is lost (`U8` into `U32`, anything into `Int`), never at an operator, and narrows with a cast and an `or`: `U8(n) or clamp`, `or wrap`, `or 0`, `or raise`. They cross JSON as numbers (range-checked on read), protobuf as `int32` / `uint32` (range-checked on decode), `@ffi("c")` as `int8_t` … `uint32_t` and a topic's shape as `u8` … `i32`, and a unit-dialect type may count one (`quantity U32 in tick`). A kernel that wants vector lanes uses `wrapping_*`: a `U32` fold vectorizes to four `i32` lanes a NEON instruction on aarch64, where `Int` has no vector multiply.
+
 ## v0.37.0 — dots, receivers, and the checker's types (2026-11-21)
 
 This release adds two shorter spellings and starts moving the compiler onto one set of types.
