@@ -13,7 +13,7 @@ curl -fsSL https://hale-lang.org/install.sh | sh
 ```
 
 - Set `HALE_INSTALL=/custom/dir` to change the installation directory.
-- Set `HALE_VERSION=v0.37.0` to pin a specific version, or `HALE_VERSION=nightly` for the newest [nightly build](#nightly-builds).
+- Set `HALE_VERSION=v0.38.0` to pin a specific version, or `HALE_VERSION=nightly` for the newest [nightly build](#nightly-builds).
 
 ### Nightly Builds
 
