@@ -10,8 +10,8 @@ measure	static typers	9
 measure	value+type lowerings	378
 measure	CodegenTy built in an expression	985
 measure	seam fallbacks (static)	29
-measure	seam reads	25
-total	1295
+measure	seam reads	26
+total	457
 2	call	program	no row	4
 2	call	program	unknown	14
 3	field	program	no layout	10
@@ -32,10 +32,7 @@ total	1295
 5	struct	program	no body	5
 5	struct	program	no layout	17
 5	struct	stdlib	no row	1
-6	block	generated	no layout	592
-6	block	program	no layout	244
 6	block	program	unknown	36
-6	block	stdlib	no layout	2
 6	match	program	unknown	1
 6	or	program	no layout	23
 6	or	program	no row	7

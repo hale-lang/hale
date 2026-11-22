@@ -287,7 +287,7 @@ fn static_measures() -> Vec<(&'static str, usize, bool)> {
             }
             if !seam {
                 fallbacks += code.matches(".seam_fallback(").count() + code.matches(".ty_or_fallback(").count();
-                reads += [".ty_at(", ".call_result(", ".ty_required(", ".place_ty("].iter().map(|r| code.matches(r).count()).sum::<usize>();
+                reads += [".ty_at(", ".call_result(", ".ty_required(", ".place_ty(", ".row_is_unit("].iter().map(|r| code.matches(r).count()).sum::<usize>();
             }
         }
     }
@@ -491,4 +491,40 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let at = rows.iter().find(|r| !r.stdlib).unwrap_or_else(|| panic!("a site of the program is named: {err}"));
     assert_eq!(at.in_fn, "main", "{err}");
     assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
+}
+
+/// A substitute block that leaves (`f() or { return x; }`) is no value:
+/// the checker types it `()` and accepts it beside the call's value only
+/// because it never ends. Lowering built it as a value, with a
+/// placeholder it typed `Int` itself, and strict mode counted it a block
+/// with no layout (836 of the corpus's sites, the RPC decoders' bails
+/// most of them). It is built as statements now, at every success type.
+#[test]
+fn a_substitute_that_leaves_asks_no_value() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Pt { x: Int; }\n\
+               fn word(i: Int) -> String fallible(String) { if i < 0 { fail \"neg\"; } \"w\" }\n\
+               fn point(i: Int) -> Pt fallible(String) { if i < 0 { fail \"neg\"; } Pt { x: i } }\n\
+               fn count(i: Int) -> Int fallible(String) { if i < 0 { fail \"neg\"; } i }\n\
+               fn first(i: Int) -> String {\n\
+                   let s = word(i) or { return \"left at word\"; };\n\
+                   let p = point(i) or { return \"left at point: \" + err; };\n\
+                   let n = count(i) or { return \"left at count\"; };\n\
+                   s + to_string(p.x + n)\n\
+               }\n\
+               fn main() { println(first(2)); println(first(-1)); }\n";
+    let out = harness::unique_bin("seam_strict_leaving_substitute");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "w4\nleft at word\n");
 }
