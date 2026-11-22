@@ -20,7 +20,8 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[path = "support/harness.rs"]
@@ -165,13 +166,45 @@ fn closed_promptly(end: &TcpListener, within: Duration) {
     assert!(t0.elapsed() < within, "closed promptly");
 }
 
+/// Where the slow clients stop half way through their upgrade: until the
+/// test opens it, or `HOLD` has passed.
+struct Gate {
+    open: Mutex<bool>,
+    opened: Condvar,
+}
+
+impl Gate {
+    fn new() -> Gate {
+        Gate { open: Mutex::new(false), opened: Condvar::new() }
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+
+    /// Wait for the gate; whether it was opened before `HOLD` ran out.
+    fn wait(&self) -> bool {
+        let open = self.open.lock().unwrap();
+        let (open, _) = self.opened.wait_timeout_while(open, HOLD, |open| !*open).unwrap();
+        *open
+    }
+}
+
+/// The longest a slow client holds its upgrade half sent. Shorter than the
+/// fast client's handshake read (5 s), so a fast connection held behind the
+/// slow ones is served once they give up, and the test says which it was.
+const HOLD: Duration = Duration::from_secs(4);
+
 /// An upgrade that stalls half way: the request line and the first headers
-/// now, the rest after `stall`; the head of the answer.
-fn slow_upgrade(port: u16, stall: Duration) -> String {
+/// now (counted in `sent`), the rest once `gate` opens; the head of the
+/// answer, and whether the gate opened before the client gave up on it.
+fn slow_upgrade(port: u16, gate: &Gate, sent: &AtomicUsize) -> (String, bool) {
     let mut s = TcpStream::connect(("127.0.0.1", port)).expect("connect");
     s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     s.write_all(b"GET / HTTP/1.1\r\nHost: hub\r\nUpgrade: websocket\r\n").expect("half the upgrade");
-    std::thread::sleep(stall);
+    sent.fetch_add(1, Ordering::SeqCst);
+    let held = gate.wait();
     let rest = format!("Connection: Upgrade\r\nSec-WebSocket-Key: {RFC_KEY}\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer t-dave\r\n\r\n");
     s.write_all(rest.as_bytes()).expect("the rest of the upgrade");
     let mut head = Vec::new();
@@ -182,7 +215,7 @@ fn slow_upgrade(port: u16, stall: Duration) -> String {
             other => panic!("the slow upgrade was not answered: {other:?} after {:?}", String::from_utf8_lossy(&head)),
         }
     }
-    String::from_utf8_lossy(&head).into_owned()
+    (String::from_utf8_lossy(&head).into_owned(), held)
 }
 
 #[test]
@@ -225,31 +258,45 @@ fn stop_by_name_closes_the_hubs_listener_and_its_connections_are_served_on() {
     assert!(matches!(dave.recv_within(5000), Frame::Close(_)));
 }
 
+/// GH #2179: the fast client is served while every slow upgrade is still
+/// half sent. That is the claim itself; it used to be timed instead, the
+/// fast client against the slow clients' 800 ms stall, and the clock took
+/// in more than the hub: the test's command and statistics files, polled
+/// every 5 ms, and the program's main thread, where the hub's core runs
+/// beside the loop that reads and writes them. It failed once at 1.0 s on a
+/// loaded runner, with nothing on the hub's path that waits a second. A hub
+/// that served the connections one at a time, or held a new one behind the
+/// stalled ones, serves the fast client only when the slow ones give up
+/// waiting (`HOLD`), and they say so.
 #[test]
 fn slow_connections_are_served_at_once_beside_the_fast_ones() {
     let server = Server::start(&build(), &[]);
     let port = server.port;
-    let stall = Duration::from_millis(800);
-    let t0 = Instant::now();
+    let gate = Gate::new();
+    let sent = AtomicUsize::new(0);
     std::thread::scope(|s| {
-        // eight upgrades that stall half way, each its own connection
-        let slow: Vec<_> = (0..8).map(|_| s.spawn(move || slow_upgrade(port, stall))).collect();
+        // eight upgrades that stall half way, each its own connection,
+        // ahead of the fast one in the listener's queue
+        let slow: Vec<_> = (0..8).map(|_| s.spawn(|| slow_upgrade(port, &gate, &sent))).collect();
+        let start = Instant::now();
+        while sent.load(Ordering::SeqCst) < 8 {
+            assert!(start.elapsed() < Duration::from_secs(20), "the slow clients never connected");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         std::thread::sleep(Duration::from_millis(100));
         // meanwhile a fast client is upgraded, admitted and delivered to
-        let fast = Instant::now();
         let mut dave = admitted(port);
         server.await_stat("subs", 1);
         server.command("publish 1");
         assert_eq!(dave.text(), event(1, 1));
-        assert!(fast.elapsed() < stall, "a fast connection waits for no slow one ({:?})", fast.elapsed());
+        // and only then do the slow ones go on, all of them answered
+        gate.open();
         for (i, h) in slow.into_iter().enumerate() {
-            let head = h.join().expect("a slow client");
+            let (head, held) = h.join().expect("a slow client");
+            assert!(held, "a fast connection waits for no slow one: slow connection {i} gave up waiting after {HOLD:?}");
             assert!(head.starts_with("HTTP/1.1 101"), "slow connection {i}: {head}");
         }
     });
-    // eight stalls, served together: one stall and change, not eight
-    let all = t0.elapsed();
-    assert!(all < stall * 3, "eight slow upgrades took {all:?}");
     let done = server.finish();
     assert!(done.status.success(), "{}{}", done.stdout, done.stderr);
 }
