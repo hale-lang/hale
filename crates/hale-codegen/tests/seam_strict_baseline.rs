@@ -736,3 +736,37 @@ fn a_method_and_a_monomorph_s_variant_have_call_rows() {
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "5\ntrue\n");
 }
+
+/// A default left to a literal has its rows where the literal evaluates
+/// it: in a stdlib body (`std::metrics`' counter builds its entry with
+/// `__StdMetricsEntry { }`), and in a program's body inside a stdlib
+/// default (`std::api::Context { }` leaves `caller`, whose default is a
+/// `std::api::Principal { }`), where the evaluation path names the
+/// stdlib's literal by the id the checker walked it under.
+#[test]
+fn a_stdlib_default_has_rows_where_it_is_evaluated() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "fn main() {\n\
+                   let reg = std::metrics::Registry { namespace: \"app\" };\n\
+                   let hits = std::metrics::counter(reg, \"hits\", std::metrics::labels_one(\"r\", \"a\"));\n\
+                   hits.inc();\n\
+                   let c = std::api::Context { role: \"r\" };\n\
+                   println(c.caller.uid);\n\
+                   println(c.caller.mode);\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_stdlib_defaults");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let defaults: Vec<_> =
+                rows.iter().filter(|r| matches!(r.kind, "literal" | "unary" | "struct")).collect();
+            assert!(defaults.is_empty(), "the defaults have rows: {defaults:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "-1\nlocal\n");
+}

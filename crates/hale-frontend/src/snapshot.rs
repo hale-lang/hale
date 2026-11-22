@@ -2404,10 +2404,22 @@ impl Snapshot {
                     (hale_types::stdlib_bodies::program(), hale_types::stdlib_bodies::view_types())
                 {
                     let correspondence = &view.correspondence;
-                    expr_types.add_program(program, views, &|id| {
+                    let merged = |id: hale_syntax::ast::NodeId| {
                         correspondence.merged_stdlib_node(id.0).map(hale_syntax::ast::NodeId)
-                    });
+                    };
+                    expr_types.add_program(program, views, &merged);
+                    // and its rows where a body evaluates a default it
+                    // leaves to a literal
+                    if let Some(scoped) = hale_types::stdlib_bodies::scoped_rows() {
+                        expr_types.add_scoped(scoped, &merged);
+                    }
                 }
+                // an evaluation path names a stdlib step by the copy's id,
+                // as the checker walked it
+                expr_types.add_stdlib_sites(view.correspondence.images().filter_map(|(merged, image)| match image {
+                    hale_types::correspondence::Image::Stdlib(site) => Some((merged, site.index)),
+                    _ => None,
+                }));
                 // and the direct calls the intra-locus rewrite made of sends,
                 // which the checker never walked
                 expr_types.add_direct_sends(&stage.program, &stage.intra_locus, &scope.top);

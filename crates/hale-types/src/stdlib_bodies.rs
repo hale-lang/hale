@@ -114,14 +114,37 @@ pub fn mono_shapes() -> Option<&'static crate::typed_bodies::MonoShapes> {
     stdlib_walk().map(|(_, monos)| monos)
 }
 
+/// GH #2111: the rows [`view_types`]' walk typed on the walks the `views`
+/// column does not record, by the copy's body
+/// ([`crate::typed_bodies::TypingRecord::scoped_rows`]): a default the
+/// stdlib's bodies leave to a literal, typed where the literal evaluates
+/// it, which lowering reads there.
+pub fn scoped_rows() -> Option<&'static [StdlibScopedRow]> {
+    stdlib_walk()?;
+    STDLIB_SCOPED.get().map(Vec::as_slice)
+}
+
+/// A body, a walk's scope and its rows ([`scoped_rows`]).
+pub type StdlibScopedRow =
+    (hale_syntax::ast::NodeId, crate::typed_bodies::ExprScope, crate::typed_bodies::ScopedRows);
+
 #[allow(clippy::type_complexity)]
 static STDLIB_WALK: OnceLock<
     Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)>,
 > = OnceLock::new();
 
+static STDLIB_SCOPED: OnceLock<Vec<StdlibScopedRow>> = OnceLock::new();
+
 #[allow(clippy::type_complexity)]
 fn stdlib_walk() -> Option<&'static (Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)> {
-    STDLIB_WALK.get_or_init(|| walk_copy(&|_, _| None)).as_ref()
+    STDLIB_WALK
+        .get_or_init(|| {
+            walk_copy(&|_, _| None).map(|(views, monos, scoped)| {
+                let _ = STDLIB_SCOPED.set(scoped);
+                (views, monos)
+            })
+        })
+        .as_ref()
 }
 
 /// The checker's walk of the copy over the scope of no program, the
@@ -130,7 +153,7 @@ fn stdlib_walk() -> Option<&'static (Vec<std::sync::Arc<crate::typed_bodies::Vie
 #[allow(clippy::type_complexity)]
 fn walk_copy(
     reuse: &dyn Fn(&str, usize) -> Option<crate::check::DeclChecked>,
-) -> Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes)> {
+) -> Option<(Vec<std::sync::Arc<crate::typed_bodies::ViewTypes>>, crate::typed_bodies::MonoShapes, Vec<StdlibScopedRow>)> {
     let program = program()?;
     let bundle = crate::Bundle::new(std::iter::once((crate::snapshot::STDLIB_SEED.to_string(), program)).collect());
     let (top, _) = crate::resolve::build_top_scope(&crate::Bundle::new(Default::default()));
@@ -141,9 +164,10 @@ fn walk_copy(
     let inputs =
         crate::check::WalkInputs { top: &top, handlers: &handlers, bindings: &bindings, units: &units, target: &target };
     let walk = crate::check::walk_bundle_for_record(&bundle, &inputs, reuse);
+    let scoped = walk.record.scoped_rows();
     let mut views = walk.record.views;
     let monos = (*walk.record.mono_shapes).clone();
-    views.remove(crate::snapshot::STDLIB_SEED).map(|v| (v, monos))
+    views.remove(crate::snapshot::STDLIB_SEED).map(|v| (v, monos, scoped))
 }
 
 /// The `views` column of the items of the copy a program reaches
@@ -183,7 +207,7 @@ pub fn view_types_within(reach: &crate::stdlib_reach::StdlibReach) -> Option<Rea
     });
     let missing: std::collections::BTreeSet<usize> = reach.items().filter(|&i| !held.walked[i]).collect();
     if !missing.is_empty() {
-        let (views, monos) = walk_copy(&|_, i| {
+        let (views, monos, _) = walk_copy(&|_, i| {
             (!missing.contains(&i)).then(|| crate::check::DeclChecked {
                 typing: Vec::new(),
                 reveal: Vec::new(),
@@ -521,7 +545,7 @@ mod reached_walk {
         parts.push((0..n).map(|i| reach.contains(i)).collect());
         parts.push((0..n).map(|i| i >= n / 2).collect());
         for (p, part) in parts.iter().enumerate() {
-            let (views, monos) = super::walk_copy(&|_, i| {
+            let (views, monos, _) = super::walk_copy(&|_, i| {
                 (!part[i]).then(|| crate::check::DeclChecked {
                     typing: Vec::new(),
                     reveal: Vec::new(),

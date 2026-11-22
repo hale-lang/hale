@@ -26573,7 +26573,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.default_invocations.push(call.0);
         // The call leaves this parameter: one step of the evaluation
         // path, as the checker's `record_omitted_defaults` pushes it.
-        self.default_evaluation.push(call.0);
+        self.default_evaluation.push(self.expr_types.path_step(call));
         let result = self.lower_expr(default, scope);
         self.default_evaluation.pop();
         self.default_invocations.pop();
