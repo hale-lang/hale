@@ -26587,6 +26587,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let (Literal::Int(n), CodegenTy::Narrow(p)) = (lit, want) {
             return Ok((self.narrow_int_type(*p).const_int(*n as u64, true).into(), want.clone()));
         }
+        // GH #2111: a pattern is no expression of the program's, and its
+        // type is the scrutinee's (the check held the pattern to it): a
+        // plain scalar's constant is built at that type, as the cases above
+        // build theirs, rather than typed again by its kind
+        let at_want: Option<BasicValueEnum<'ctx>> = match (lit, want) {
+            (Literal::Int(n), CodegenTy::Int) => Some(self.context.i64_type().const_int(*n as u64, true).into()),
+            (Literal::Float(f), CodegenTy::Float) => Some(self.context.f64_type().const_float(*f).into()),
+            (Literal::Bool(b), CodegenTy::Bool) => Some(self.context.bool_type().const_int(*b as u64, false).into()),
+            (Literal::String(text), CodegenTy::String) => Some(self.global_string(text).into()),
+            _ => None,
+        };
+        if let Some(v) = at_want {
+            return Ok((v, want.clone()));
+        }
         self.lower_expr(&Expr::Literal(lit.clone(), span), scope)
     }
 
