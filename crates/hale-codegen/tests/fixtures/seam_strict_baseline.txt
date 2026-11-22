@@ -13,7 +13,7 @@ measure	value+type lowerings	378
 measure	CodegenTy built in an expression	985
 measure	seam fallbacks (static)	29
 measure	seam reads	33
-total	67
+total	51
 2	call	program	no row	4
 2	call	program	unknown	1
 4	ident	program	no row	8
@@ -28,7 +28,6 @@ total	67
 6	or	program	no row	7
 6	or	program	unknown	2
 6	or	stdlib	no row	1
-7	binary	program	unknown	16
 7	literal	generated	no body	2
 7	literal	program	no body	2
 7	literal	program	no row	5
