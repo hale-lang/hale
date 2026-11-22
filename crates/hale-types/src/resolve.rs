@@ -1561,16 +1561,11 @@ pub(crate) fn type_expr_mangle_token(
     bindings: &BTreeMap<String, Ty>,
 ) -> Option<String> {
     match t {
-        TypeExpr::Primitive(p, _) => match p {
-            PrimType::Int => Some("Int".into()),
-            PrimType::Float => Some("Float".into()),
-            PrimType::Bool => Some("Bool".into()),
-            PrimType::String => Some("String".into()),
-            PrimType::Duration => Some("Duration".into()),
-            PrimType::Decimal(s) => Some(crate::ty::decimal_mangle_token(*s).into()),
-            PrimType::Time => Some("Time".into()),
-            _ => None,
-        },
+        // The token the mangle gives every primitive a generic argument
+        // may be, the fixed-width integers and the byte types included: a
+        // hand list here knew seven, so `Box<U64>` resolved to `Unknown`
+        // and its value was checked against nothing (GH #2111).
+        TypeExpr::Primitive(p, _) => crate::ty::generic_arg_mangle_token(*p).map(Into::into),
         TypeExpr::Named { path, generic_args, .. }
             if path.segments.len() == 1 =>
         {

@@ -528,3 +528,42 @@ fn a_substitute_that_leaves_asks_no_value() {
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "w4\nleft at word\n");
 }
+
+/// What names no type of its own takes the place's, and the checker's row
+/// says so: an empty literal (`[]`) at a `bounded` or array place, a
+/// generic record's literal spelled with the template's name at its
+/// monomorph's place (a fixed-width argument's too, `Box<U64>`), and a
+/// quantity at a denomination no declaration names (`Duration in s`),
+/// which is the integer it counts. Each was a row lowering had no layout
+/// for.
+#[test]
+fn a_place_decides_what_names_no_type_of_its_own() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Box<T> { value: T; }\n\
+               fn main() {\n\
+                   let mut tags: bounded[String; 4] = [];\n\
+                   push(tags, \"a\") or raise;\n\
+                   let none: [Int; 0] = [];\n\
+                   let b: Box<U64> = Box { value: 7 };\n\
+                   let i: Box<Int> = Box { value: 8 };\n\
+                   let secs = (3s + 500ms).in(s) or floor;\n\
+                   println(count(tags) + len(none));\n\
+                   println(b.value);\n\
+                   println(i.value);\n\
+                   println(secs);\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_place_decides");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n7\n8\n3s\n");
+}
