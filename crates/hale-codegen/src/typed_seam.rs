@@ -132,6 +132,21 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.typed.scoped_expr(body, args, path, e).or_else(|| self.expr_types.scoped_at(body, args, path, e))
     }
 
+    /// A path to an imported seed's fn or a Hale-bodied stdlib fn, used
+    /// as a value (GH #1082): the fn pointer of `mangled`, the fn the path
+    /// names, typed by the path's row. It used to be lowered as a name
+    /// built at the path, which has no row of its own (GH #2111).
+    pub(crate) fn path_fn_value(&self, path: &Expr, mangled: &str) -> Result<(inkwell::values::BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        let sig = self
+            .user_fns
+            .get(mangled)
+            .ok_or_else(|| CodegenError::Unsupported(format!("unknown identifier `{mangled}`")))?;
+        let ty = self.ty_at(path).ok_or_else(|| {
+            CodegenError::missing_row("expression_typing", "the checker's type of this fn value", Some(path.span()))
+        })?;
+        Ok((sig.func.as_global_value().as_pointer_value().into(), ty))
+    }
+
     /// GH #2111 strict mode: `e` is lowered without the checker's type.
     fn note_missing_row(&self, e: &Expr, reason: &'static str) {
         let sp = e.span();
