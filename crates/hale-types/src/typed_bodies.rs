@@ -1592,15 +1592,7 @@ impl ExprTypes {
         for (item, v) in program.items.iter().zip(views) {
             visit_view_nodes(item, &mut |at, n| {
                 let Some(at) = body(at) else { return };
-                let mut add = |(start, end, kind, name): (u32, u32, u8, u64), ty: &Ty| {
-                    match self.rows.get_mut(&(at.0, start, end, kind, name)) {
-                        Some(held) if held != ty => *held = Ty::Unknown,
-                        Some(_) => {}
-                        None => {
-                            self.rows.insert((at.0, start, end, kind, name), ty.clone());
-                        }
-                    }
-                };
+                let mut add = |key: (u32, u32, u8, u64), ty: &Ty| self.add_row(at, key, ty);
                 let e = match n {
                     // GH #2111: an assignment target's head or field, by its
                     // place row ([`place_name_key`])
@@ -1622,6 +1614,83 @@ impl ExprTypes {
                 // an assignment target's index segment, by its place row
                 if let Some(ty) = v.places.get(&node(e)) {
                     add(place_index_key(e), ty);
+                }
+            });
+        }
+    }
+
+    /// One row: `ty` at `key` in the body `at`. A second, different answer
+    /// at a key makes it `Unknown`, which a reader takes as no row.
+    fn add_row(&mut self, at: NodeId, (start, end, kind, name): (u32, u32, u8, u64), ty: &Ty) {
+        match self.rows.get_mut(&(at.0, start, end, kind, name)) {
+            Some(held) if held != ty => *held = Ty::Unknown,
+            Some(_) => {}
+            None => {
+                self.rows.insert((at.0, start, end, kind, name), ty.clone());
+            }
+        }
+    }
+
+    fn add_expr_row(&mut self, at: NodeId, e: &Expr, ty: &Ty) {
+        let sp = e.span();
+        self.add_row(at, (sp.start.0, sp.end.0, expr_kind(e), expr_name(e)), ty);
+    }
+
+    /// GH #2111: add the rows of the nodes the intra-locus rewrite built in
+    /// `program`, its rewritten program: one direct call
+    /// `self.<fields>.<handler>(value)` at each send's span, in place of the
+    /// send (`hale_syntax::desugar::desugar_intra_locus_topics`). The
+    /// rewrite is lowering's, after the check, so the checker never walked
+    /// these nodes; the value is the send's own, walked. Each is typed as
+    /// the checker types it, from the scope's declarations:
+    ///
+    /// - `self`, the publisher (`Checker::self_ty`);
+    /// - each field, its declared type in the locus before it;
+    /// - the call, its handler's return.
+    ///
+    /// A send whose chain the scope does not resolve gets no rows past
+    /// where it stops. Neither does the call of a fallible handler.
+    pub fn add_direct_sends(
+        &mut self,
+        program: &hale_syntax::ast::Program,
+        sends: &[hale_syntax::desugar::IntraLocusRewrite],
+        top: &crate::resolve::TopScope,
+    ) {
+        let by_send: std::collections::HashMap<u32, &hale_syntax::desugar::IntraLocusRewrite> =
+            sends.iter().filter(|s| !s.send.is_none()).map(|s| (s.send.0, s)).collect();
+        if by_send.is_empty() {
+            return;
+        }
+        let locus = |name: &str| match top.lookup(name) {
+            Some(crate::symbol::TopSymbol::Locus(l)) => Some(l),
+            _ => None,
+        };
+        for item in &program.items {
+            visit_view_nodes(item, &mut |at, n| {
+                let ViewNode::Expr(call @ Expr::Call { id, callee, .. }) = n else { return };
+                let Some(send) = by_send.get(&id.0) else { return };
+                let Expr::Field { receiver, .. } = callee.as_ref() else { return };
+                let mut fields = Vec::new();
+                let mut head = receiver.as_ref();
+                while let Expr::Field { receiver, .. } = head {
+                    fields.push(head);
+                    head = receiver.as_ref();
+                }
+                let (Expr::KwSelf(_), Some(mut info)) = (head, locus(&send.locus)) else { return };
+                self.add_expr_row(at, head, &Ty::Named(send.locus.clone()));
+                for field in fields.into_iter().rev() {
+                    let Expr::Field { name, .. } = field else { return };
+                    let Some(p) = info.params.iter().find(|p| p.name == name.name) else { return };
+                    self.add_expr_row(at, field, &p.ty);
+                    let next = match &p.ty {
+                        Ty::Named(n) => locus(n),
+                        _ => None,
+                    };
+                    let Some(next) = next else { return };
+                    info = next;
+                }
+                if let Some(m) = info.methods.iter().find(|m| m.name == send.handler && m.fallible.is_none()) {
+                    self.add_expr_row(at, call, &m.ret);
                 }
             });
         }

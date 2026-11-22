@@ -2408,6 +2408,9 @@ impl Snapshot {
                         correspondence.merged_stdlib_node(id.0).map(hale_syntax::ast::NodeId)
                     });
                 }
+                // and the direct calls the intra-locus rewrite made of sends,
+                // which the checker never walked
+                expr_types.add_direct_sends(&stage.program, &stage.intra_locus, &scope.top);
                 view.expr_types = Some(expr_types);
                 Ok(view)
             })

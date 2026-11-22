@@ -615,6 +615,57 @@ fn a_chain_s_nodes_have_rows_of_their_own() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "3\n20\ntrue\n3\n");
 }
 
+/// A send the intra-locus rewrite turns into a direct call has rows for
+/// the nodes the call is made of. The rewrite is lowering's, after the
+/// check, and builds `self.<field>.<handler>(value)` (a child subscribes)
+/// or `self.<handler>(value)` (the publisher does) at the send's span: its
+/// `self` and its field had no row, and lowering typed them itself. They
+/// are typed from the scope's declarations, as the checker types them
+/// (`hale_types::typed_bodies::ExprTypes::add_direct_sends`).
+#[test]
+fn a_direct_send_s_nodes_have_rows() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Ping { seq: Int = 0; }\n\
+               topic Tick { payload: Ping; subject: \"direct.tick\"; }\n\
+               topic Beat { payload: Ping; subject: \"direct.beat\"; }\n\
+               locus Sub {\n\
+                   params { acc: Int = 0; }\n\
+                   bus { subscribe Tick as on_tick; }\n\
+                   fn on_tick(p: Ping) { self.acc = self.acc + p.seq; }\n\
+                   fn sum() -> Int { return self.acc; }\n\
+               }\n\
+               locus Pub {\n\
+                   params { sub: Sub = Sub { }; n: Int = 0; }\n\
+                   bus { publish Tick; publish Beat; subscribe Beat as on_beat; }\n\
+                   fn on_beat(p: Ping) { self.n = self.n + p.seq; }\n\
+                   fn go() {\n\
+                       Tick <- Ping { seq: 3 };\n\
+                       Beat <- Ping { seq: 4 };\n\
+                   }\n\
+                   fn total() -> Int { return self.sub.sum() + self.n; }\n\
+               }\n\
+               main locus App { params { pub: Pub = Pub { }; } }\n\
+               fn main() {\n\
+                   let app = App { };\n\
+                   app.pub.go();\n\
+                   println(app.pub.total());\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_direct_send_rows");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n");
+}
+
 /// A call of a method beside a param of its name, and of a generic enum's
 /// monomorph's variant spelled by its mangled name, have rows: the check
 /// typed both calls `Unknown` (the first's callee as the param, the
