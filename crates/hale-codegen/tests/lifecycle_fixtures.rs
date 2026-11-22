@@ -710,7 +710,10 @@ const CONTROLS: &[Control] = &[
         baseline_passes: true,
     },
     // The deferred-pool-join regression's shape: teardown reaches the
-    // worker's fields with its run() still going.
+    // worker's fields with its run() still going. The skip holds the
+    // worker's run open until its Drain is entered (the trace runtime's
+    // PoolJoin hold, GH #2177), so the edge is seen however the threads
+    // are scheduled, not only when main outruns the run's sleep.
     Control {
         name: "pool_join_removed",
         covers: ObligationKind::PoolJoin,

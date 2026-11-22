@@ -37347,9 +37347,19 @@ void lotus_bus_dispatch_wire_inbound(const char *subject,
  * cancels no queued run, so the pools' teardown names the cell a worker
  * never dequeued); `<Kind>.<Point>` drops
  * that one event line and nothing else.
+ *
+ * `PoolJoin` also forces the schedule the missing join permits (GH
+ * #2177): a run on a pool holds its end (the `Run Completed` line, and
+ * with it everything after the body) until teardown has entered its
+ * instance's Drain, so the control sees teardown reach a live worker
+ * however the threads are scheduled. Without that, a run that returned
+ * before main got there left the control nothing but the missing join.
+ * The hold gives up after LOTUS_LC_RUN_HOLD_MS, so an instance never
+ * drained cannot hang a run; the trace then shows the order it took.
  * =================================================================== */
 #define LOTUS_LC_SLOTS (1u << 18)
 #define LOTUS_LC_TOMB ((void *)1)
+#define LOTUS_LC_RUN_HOLD_MS 10000
 
 typedef struct {
     void *key;          /* the instance's struct; NULL empty, TOMB retired */
@@ -37359,6 +37369,7 @@ typedef struct {
     _Atomic uint32_t inc;
     _Atomic int running; /* Run entered and not ended: the parked coro's name */
     _Atomic(const char *) reclaim_spine; /* survives deferred/coroutine completion */
+    _Atomic int drained; /* Drain entered: releases a run held by the PoolJoin skip */
 } lotus_lc_slot_t;
 
 static lotus_lc_slot_t g_lc_slots[LOTUS_LC_SLOTS];
@@ -37419,6 +37430,7 @@ static lotus_lc_slot_t *lotus_lc_subject(void *self, const char *type) {
                 atomic_store_explicit(&s->inc, 0, memory_order_relaxed);
                 atomic_store_explicit(&s->running, 0, memory_order_relaxed);
                 atomic_store_explicit(&s->reclaim_spine, NULL, memory_order_relaxed);
+                atomic_store_explicit(&s->drained, 0, memory_order_relaxed);
                 s->inst = __atomic_add_fetch(&g_lc_next_inst, 1,
                                              __ATOMIC_RELAXED);
                 atomic_store_explicit(&s->ready, 1, memory_order_release);
@@ -37487,17 +37499,32 @@ int32_t lotus_lc_enter(const char *kind, void *self, const char *spine,
     return 1;
 }
 
+/* The PoolJoin skip's hold (see above): a pool run's end waits for
+ * its instance's Drain to be entered, or for the bound. */
+static void lotus_lc_hold_run_end(lotus_lc_slot_t *s) {
+    struct timespec ms = {0, 1000000};
+    for (int i = 0; i < LOTUS_LC_RUN_HOLD_MS; i++) {
+        if (atomic_load_explicit(&s->drained, memory_order_acquire)) return;
+        nanosleep(&ms, NULL);
+    }
+}
+
 /* One event line: a completion, or a terminal, or an Entered whose
  * step the runtime performs itself. */
 void lotus_lc_ev(const char *kind, const char *point, void *self,
                  const char *spine, const char *type) {
     lotus_lc_slot_t *s = lotus_lc_subject(self, type);
     int entered = strcmp(point, "Entered") == 0;
+    if (s && g_current_pool_tls && strcmp(kind, "Run") == 0 &&
+        strcmp(point, "Completed") == 0 && lotus_lc_skips("PoolJoin"))
+        lotus_lc_hold_run_end(s);
     if (s && entered && strcmp(kind, "Restart") == 0)
         atomic_fetch_add_explicit(&s->inc, 1, memory_order_relaxed);
     if (s && strcmp(kind, "Run") == 0)
         atomic_store_explicit(&s->running, entered, memory_order_relaxed);
     lotus_lc_emit(kind, point, s, spine);
+    if (s && entered && strcmp(kind, "Drain") == 0)
+        atomic_store_explicit(&s->drained, 1, memory_order_release);
     if (s && entered && strcmp(kind, "Reclaim") == 0)
         atomic_store_explicit(&s->reclaim_spine, spine, memory_order_relaxed);
     if (s && strcmp(kind, "Reclaim") == 0 && strcmp(point, "Completed") == 0)
