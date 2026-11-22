@@ -473,15 +473,18 @@ fn the_burn_down_only_moves_forward() {
 
 /// The knob itself. On, a program that reaches a value lowering types
 /// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. A range loop's variable (`for i in 1..=3`) has no row
-/// of its own today (family 4 `ident`, `unknown`): when it has one, this
-/// test takes another site that has none, until there is none and the
-/// knob goes. (It took an element chain's accumulator until the chain's
-/// nodes had rows of their own.)
+/// family and why. A whole-set chain terminal written as a statement
+/// (`v.take(2).reverse_into(r);`) has no row of its own today (family 6
+/// `or`, `unknown`): when it has one, this test takes another site that
+/// has none, until there is none and the knob goes. (It took an element
+/// chain's accumulator until the chain's nodes had rows of their own, and
+/// then a range loop's variable until the check bound it.)
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
-    let src = "fn main() { let mut acc = 1; for i in 1..=3 { acc = acc * i; } println(acc); }\n";
+    let src = "@form(vec)\nlocus Nums { capacity { heap items of Int; } }\n\
+               fn main() { let v = Nums { }; v.push(1); v.push(2); v.push(3); let r = Nums { }; \
+               v.take(2).reverse_into(r); println(r.len()); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);

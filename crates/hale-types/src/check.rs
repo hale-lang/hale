@@ -17584,6 +17584,8 @@ impl<'a> Checker<'a> {
                 // permissive binding.
                 let elem = if handled {
                     form_cell
+                } else if let Expr::Range { lo, hi, .. } = iter {
+                    self.range_loop_var(lo, hi)
                 } else {
                     match real_field.unwrap_or_else(|| self.check_expr(iter)) {
                         Ty::Bounded(e, _) | Ty::Array(e, _) => *e,
@@ -22728,6 +22730,34 @@ impl<'a> Checker<'a> {
         let template = self.generic_fns.get(mangled).copied()?;
         let written: Vec<&str> = std::iter::once(unscoped_alias(key[0])).chain(key[1..].iter().copied()).collect();
         Some((mangled.to_string(), written.join("::"), template))
+    }
+
+    /// GH #2111: the variable of a range loop (`for i in lo..hi`), which
+    /// lowering binds as the `Int` it counts (`lower_for_range`): a range's
+    /// bounds are `Int`s, and the build refuses others ("for-range bounds
+    /// must be Int"). It was bound `Unknown`, so the check held `i` to
+    /// nothing. A bound of another primitive is refused here, as the build
+    /// refuses it; a bound the check cannot type keeps the permissive
+    /// binding.
+    fn range_loop_var(&mut self, lo: &Expr, hi: &Expr) -> Ty {
+        let int = Ty::Prim(PrimType::Int);
+        let (lt, ht) = (self.check_expr(lo), self.check_expr(hi));
+        let (la, ha) = (self.through_aliases(lt.clone()), self.through_aliases(ht.clone()));
+        if matches!(la, Ty::Unknown) || matches!(ha, Ty::Unknown) {
+            return Ty::Unknown;
+        }
+        for (t, shown, e) in [(&la, &lt, lo), (&ha, &ht, hi)] {
+            if matches!(t, Ty::Prim(p) if *p != PrimType::Int) {
+                self.diags.push(Diag::ty(
+                    e.span(),
+                    format!("a range loop's bounds are `Int`s; this one is `{}`", shown.display()),
+                ));
+                return Ty::Unknown;
+            }
+        }
+        // a distinct integer (`type Count = distinct Int;`) is no `Int` to
+        // the check, and keeps the permissive binding
+        if la == int && ha == int { int } else { Ty::Unknown }
     }
 
     /// The declared type of the const an imported seed's `alias::C`

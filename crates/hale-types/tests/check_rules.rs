@@ -3268,3 +3268,32 @@ mod unstarted_main_locus_tests {
         assert!(refusals(&check(&src)).is_empty());
     }
 }
+
+mod range_loop_tests {
+    use super::*;
+    use hale_syntax::parse_source;
+
+    fn messages(src: &str) -> Vec<String> {
+        let p = parse_source(src).expect("parses");
+        check_program(&p).into_iter().map(|d| d.message).collect()
+    }
+
+    /// GH #2111: a range loop's variable is the `Int` lowering binds it as.
+    /// It was bound `Unknown`, so the check held it to nothing: `let s:
+    /// String = j` built and held the count in a `String` local.
+    #[test]
+    fn a_range_loop_s_variable_is_an_int() {
+        let m = messages("fn main() {\n    for j in 0..2 { let s: String = j; println(s); }\n}\n");
+        assert_eq!(m, vec!["let `s`: expected `String`, got `Int`".to_string()]);
+        let clean = messages("fn main() {\n    let mut acc = 1;\n    for i in 1..=3 { acc = acc * i; }\n    println(acc);\n}\n");
+        assert!(clean.is_empty(), "{clean:?}");
+    }
+
+    /// And its bounds are `Int`s, as the build has them ("for-range bounds
+    /// must be Int"), which refused what the check passed.
+    #[test]
+    fn a_range_loop_s_bounds_are_ints() {
+        let m = messages("fn main() {\n    for k in 0.5..2.0 { println(k); }\n}\n");
+        assert_eq!(m, vec!["a range loop's bounds are `Int`s; this one is `Float`".to_string()]);
+    }
+}
