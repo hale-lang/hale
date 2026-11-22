@@ -281,6 +281,7 @@ crates/hale-codegen/tests/async_io_recv_into_park.rs#1 81110b55437dd3ef
 crates/hale-codegen/tests/async_io_recv_into_park.rs#2 31a161ac5ff3dfee
 crates/hale-codegen/tests/async_io_shutdown_parked.rs#0 366113ad184676ea
 crates/hale-codegen/tests/asyncio_sleep_park.rs#0 a24267ab8ee4ce8c
+crates/hale-codegen/tests/asyncio_sweep_once.rs#0 37ae0c331dc7bc91
 crates/hale-codegen/tests/base64url.rs#0 f21fbc665a9c2254
 crates/hale-codegen/tests/binding_birth_fail.rs#1 faa43d4f30d86c66
 crates/hale-codegen/tests/binding_birth_fail.rs#3 a8f86e0a5300f491

@@ -11533,6 +11533,11 @@ typedef struct lotus_coro {
      * loop that re-parks without ever reading `draining` is abandoned
      * at the shutdown as before, not resumed forever. */
     int               park_shutdown_cuts;
+    /* GH #2183: the expiry sweep that last resumed this coroutine
+     * (`lotus_coop_pool_t.sweep_seq`). A sweep resumes a coroutine at
+     * most once: one that parks again during it is due, at the
+     * earliest, in the next sweep, after the pool has drained a cell. */
+    uint64_t          swept_seq;
     /* Handler invocation parameters captured at coro creation. The
      * thunk reads them after swapcontext and tail-calls the handler. */
     void             *handler;
@@ -12214,6 +12219,10 @@ typedef struct lotus_coop_pool {
      * modes so RESUME/EXPIRE records name their coro across runs. */
     lotus_coro_t     *ready_head;
     uint64_t          coro_birth_seq;
+    /* GH #2183: numbers the drain's expiry sweeps (a coroutine records
+     * the one that resumed it in `swept_seq`). Starts at 0; the first
+     * sweep is 1, so a fresh coroutine's 0 never matches. */
+    uint64_t          sweep_seq;
     /* Review round (phase 6): the tape ran dry on this pool — live
      * async work from here on is a named coverage class, never a
      * silent fallback. */
@@ -12374,6 +12383,7 @@ lotus_coop_pool_t *lotus_coop_pool_register(const char *name) {
     p->free_count       = 0;
     p->ready_head       = NULL;
     p->coro_birth_seq   = 0;
+    p->sweep_seq        = 0;
     p->rp_tape_dry      = 0;
     p->rp_start_ord     = 0;
     p->rp_retired[0]    = 0;
@@ -14358,6 +14368,7 @@ static lotus_coro_t *lotus_coro_alloc(lotus_coop_pool_t *p,
     c->park_pre_stop    = 0;
     c->park_wait_frame  = 0;
     c->park_shutdown_cuts = 0;
+    c->swept_seq   = 0;
     c->handler     = cell->handler;
     c->self_ptr    = cell->self_ptr;
     /* Payload ownership is taken only once this slot is certain to run
@@ -15161,9 +15172,22 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
          * resumed by readiness in the same pass is already detached,
          * so it can't be double-resumed. Restart the scan from
          * parked_head after each resume: the resumed coro may have
-         * re-parked (mutating the list) before yielding back. */
+         * re-parked (mutating the list) before yielding back.
+         *
+         * GH #2183: the sweep reads the clock and the drain flag ONCE,
+         * and resumes each coroutine at most once. It resumes the parks
+         * that were due when it began; a park made during it (a resumed
+         * coroutine that sleeps again) waits for the next sweep, after
+         * the pool has drained a cell. It used to read the clock before
+         * each resume, so two coroutines whose round (work, then a short
+         * sleep) outlasted their sleep passed the worker back and forth
+         * — each one's sleep ran out while the other worked — and the
+         * sweep never ended: the cell their loops waited for (the answer
+         * to an ask, a `go`) was never drained. */
+        int64_t now = lotus_now_mono_ns();
+        int draining = lotus_process_draining();
+        uint64_t sweep = ++p->sweep_seq;
         for (;;) {
-            int64_t now = lotus_now_mono_ns();
             /* GH #1039: the drain expires every TIMED park already in
              * progress when it began, and one begun during it by a
              * watching run() that has not seen it yet — a `sleep`
@@ -15174,11 +15198,14 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
              * plain accept, a recv with no timeout) by the same rule,
              * and the park answers 1, which its caller turns into its
              * closed outcome; a tree's drain leaves it parked. */
-            int draining = lotus_process_draining();
             lotus_coro_t *expired = NULL;
             lotus_coro_t **epp = &p->parked_head;
             while (*epp) {
                 lotus_coro_t *ec = *epp;
+                if (ec->swept_seq == sweep) {   /* resumed in this sweep */
+                    epp = &ec->next;
+                    continue;
+                }
                 int cut = lotus_coro_drain_due(ec, draining);
                 if (cut || (ec->park_deadline_ns > 0
                             && now >= ec->park_deadline_ns)) {
@@ -15196,6 +15223,7 @@ static int lotus_coop_pool_drain_one_async(lotus_coop_pool_t *p) {
             expired->next           = NULL;
             expired->parked_fd      = -1;
             expired->park_timed_out = 1;
+            expired->swept_seq      = sweep;
             lotus_async_note_live_action(p);
             lotus_async_rec_step(LOTUS_REC_ASYNC_EXPIRE,
                                  expired->birth_ord);

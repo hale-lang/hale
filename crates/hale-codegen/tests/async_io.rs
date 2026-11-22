@@ -1,4 +1,4 @@
-//! The `async_io` integration-test binary: 17 test files of this area, kept
+//! The `async_io` integration-test binary: 19 test files of this area, kept
 //! where they are (their paths, names and history unchanged) and built as
 //! modules of one binary, so the crate links once for the area instead of
 //! once per file. Each file is a module; a test's name is `<file>::<fn>`.
@@ -17,6 +17,8 @@ mod async_io_udp_multi_reader;
 mod async_io_udp_recv_in_handler;
 #[path = "asyncio_sleep_park.rs"]
 mod asyncio_sleep_park;
+#[path = "asyncio_sweep_once.rs"]
+mod asyncio_sweep_once;
 #[path = "coop_pool_basic.rs"]
 mod coop_pool_basic;
 #[path = "coop_pool_multi_locus.rs"]
