@@ -473,14 +473,18 @@ fn the_burn_down_only_moves_forward() {
 
 /// The knob itself. On, a program that reaches a value lowering types
 /// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. A chain (`xs.filter(...).count()`) is desugared after
-/// the check, so its accumulator has no row of its own today: when the
-/// desugar moves before the check (GH #2111's rewrites), this test takes
-/// another site that has none, until there is none and the knob goes.
+/// family and why. A whole-set chain terminal written as a statement
+/// (`v.take(2).reverse_into(r);`) has no row of its own today (family 6
+/// `or`, `unknown`): when it has one, this test takes another site that
+/// has none, until there is none and the knob goes. (It took an element
+/// chain's accumulator until the chain's nodes had rows of their own, and
+/// then a range loop's variable until the check bound it.)
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
-    let src = "fn main() { let xs = [1, 2, 3]; println(xs.filter(it > 1).count()); }\n";
+    let src = "@form(vec)\nlocus Nums { capacity { heap items of Int; } }\n\
+               fn main() { let v = Nums { }; v.push(1); v.push(2); v.push(3); let r = Nums { }; \
+               v.take(2).reverse_into(r); println(r.len()); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);
@@ -566,4 +570,38 @@ fn a_place_decides_what_names_no_type_of_its_own() {
         .expect("it builds");
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n7\n8\n3s\n");
+}
+
+/// An element chain's nodes have rows of their own. The desugar builds
+/// them before the check, but every one at the chain's span, and a row's
+/// key told a literal or a block only by its span: the chain's counter
+/// `0` and its flag `true`, and its `{ …; n }` and its `or { break; }`,
+/// were one key with two answers, so `Unknown`. A literal is keyed by its
+/// class too, and a block by whether it gives a value
+/// (`hale_types::typed_bodies::expr_name`).
+#[test]
+fn a_chain_s_nodes_have_rows_of_their_own() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "fn main() {\n\
+                   let xs = [1, 2, 3, 4];\n\
+                   println(xs.filter(it > 1).count());\n\
+                   println(xs.map(it * 2).sum());\n\
+                   println(xs.any(it > 3));\n\
+                   let f = xs.filter(it > 2).first() or 0;\n\
+                   println(f);\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_chain_rows");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "3\n20\ntrue\n3\n");
 }
