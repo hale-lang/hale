@@ -4862,9 +4862,10 @@ fn an_if_whose_then_arm_leaves_is_its_else_arm_s_value() {
 
 /// GH #2111 (phase 1): a field written through a capacity cell is a field
 /// of the record the cell holds, its slot's element, and is typed as one.
-/// The cell has no value-level type in the check (F.22), and the field
-/// written through it had none either, so a write of the wrong type, or of
-/// a field the record does not declare, checked and the build refused it.
+/// The cell had no value-level type in the check (F.22; it is a
+/// `Ty::Cell` of its slot's element now), and the field written through it
+/// had none either, so a write of the wrong type, or of a field the record
+/// does not declare, checked and the build refused it.
 #[test]
 fn a_field_written_through_a_capacity_cell_is_the_element_s_field() {
     let program = |write: &str| {

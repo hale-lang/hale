@@ -17073,13 +17073,16 @@ impl<'a> Checker<'a> {
     /// slot takes `acquire()` and `release(c)`, a heap slot `alloc()` and
     /// `free(c)`, and a cell is released only into the slot it came from.
     /// The build refused each of these with no location.
-    fn check_capacity_slot_call(&mut self, callee: &Expr, args: &[Expr], call_span: Span) {
-        let Expr::Field { receiver, name: method, .. } = callee else { return };
-        let Expr::Field { receiver: me, name: slot_name, .. } = receiver.as_ref() else { return };
+    /// The cell a `gives` call hands out, typed (GH #2111): a slot's cells
+    /// are `Ty::Cell` of its element, from this locus and slot, as lowering
+    /// builds them; `None` for any other call.
+    fn check_capacity_slot_call(&mut self, callee: &Expr, args: &[Expr], call_span: Span) -> Option<Ty> {
+        let Expr::Field { receiver, name: method, .. } = callee else { return None };
+        let Expr::Field { receiver: me, name: slot_name, .. } = receiver.as_ref() else { return None };
         if !matches!(me.as_ref(), Expr::KwSelf(_)) {
-            return;
+            return None;
         }
-        let Some(slot) = self.self_capacity_slot(&slot_name.name) else { return };
+        let Some(slot) = self.self_capacity_slot(&slot_name.name) else { return None };
         let (kind, gives, takes, other) = match slot.kind {
             CapacitySlotKind::Pool => ("pool", "acquire", "release", "a heap slot's"),
             CapacitySlotKind::Heap => ("heap", "alloc", "free", "a pool slot's"),
@@ -17099,7 +17102,7 @@ impl<'a> Checker<'a> {
                     back = if kind == "pool" { "return" } else { "release" },
                 ),
             ));
-            return;
+            return None;
         }
         let want = if m == gives { 0 } else { 1 };
         if args.len() != want {
@@ -17112,7 +17115,14 @@ impl<'a> Checker<'a> {
                     args.len()
                 ),
             ));
-            return;
+            return None;
+        }
+        if m == gives {
+            return Some(Ty::Cell {
+                elem: Box::new(self.resolve_te(&slot.elem_ty)),
+                locus: self.locus_decl.map(|l| l.name.name.clone()).unwrap_or_default(),
+                slot: slot.name.name.clone(),
+            });
         }
         if m == takes {
             if let Some(origin) = self.cell_of(&args[0]) {
@@ -17128,6 +17138,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        None
     }
 
     /// GH #1569: a fn's name read as a value anywhere the programs write
@@ -18766,10 +18777,10 @@ impl<'a> Checker<'a> {
     }
 
     fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
-        // F.22: a cell has no value-level type (`Unknown`), but a field
-        // written through it is a field of the record it holds, its
-        // slot's element, and is typed as one (GH #2111: the place's row,
-        // which lowering reads).
+        // F.22: a field written through a cell is a field of the record
+        // it holds, its slot's element, and is typed as one (GH #2111: the
+        // place's row, which lowering reads): the cell's type says the
+        // element, and a local the check bound `Unknown` its origin.
         let mut cell_elem = None;
         let mut ty = if lv.head.name == "self" {
             self.note_self(lv.head.span);
@@ -18789,8 +18800,12 @@ impl<'a> Checker<'a> {
         } else {
             self.note_scoped_place(crate::typed_bodies::place_name_key(&lv.head), &ty);
         }
-        if let (Ty::Unknown, Some(elem), false) = (&ty, cell_elem, lv.tail.is_empty()) {
-            ty = elem;
+        if !lv.tail.is_empty() {
+            match (&ty, cell_elem) {
+                (Ty::Cell { elem, .. }, _) => ty = (**elem).clone(),
+                (Ty::Unknown, Some(elem)) => ty = elem,
+                _ => {}
+            }
         }
         // The place as written up to the segment at hand, for a hint.
         let mut spelled = lv.head.name.clone();
@@ -19774,6 +19789,8 @@ impl<'a> Checker<'a> {
 
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
         match ty {
+            // a cell's field is its element's (F.22, v1.x-2)
+            Ty::Cell { elem, .. } => self.field_ty(elem, name),
             // Numeric tuple field access: `t.0`, `t.1`. Parser
             // stores the digit string as the field name, so we
             // recognize it as a usize index here.
@@ -25203,7 +25220,9 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                self.check_capacity_slot_call(callee, args, *call_span);
+                if let Some(cell) = self.check_capacity_slot_call(callee, args, *call_span) {
+                    return cell;
+                }
                 self.check_hashmap_bump(callee);
                 if let Expr::Ident(id) = callee.as_ref() {
                     // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
@@ -27925,18 +27944,28 @@ impl<'a> Checker<'a> {
         for g in &template.generics {
             let Some(bound) = bindings.get(&g.name.name) else { continue };
             if let Some(what) = unnameable_generic_arg(bound) {
+                // a cell is no type a program spells (F.22): it is passed
+                // as its fields, or to a fn over its element
+                let fix = match bound {
+                    Ty::Cell { elem, .. } => format!(
+                        "Pass the cell's fields, or write the fn over the element type `{}`",
+                        elem.display()
+                    ),
+                    _ => format!(
+                        "Wrap the value in a declared type (`type Wrapped {{ v: {}; }}`), or write the fn \
+                         over the concrete type",
+                        bound.display()
+                    ),
+                };
                 self.diags.push(Diag::ty(
                     callee_span,
                     format!(
                         "generic fn `{}`: this call makes `{}` `{}`, {what}, and hale can't compile a \
                          generic fn specialized at one yet: a generic argument is a primitive or a \
-                         declared type (a struct, an enum, an alias, a locus or an interface). Wrap \
-                         the value in a declared type (`type Wrapped {{ v: {}; }}`), or write the fn \
-                         over the concrete type",
+                         declared type (a struct, an enum, an alias, a locus or an interface). {fix}",
                         shown,
                         g.name.name,
                         bound.display(),
-                        bound.display()
                     ),
                 ));
             }
@@ -28517,7 +28546,7 @@ impl<'a> Checker<'a> {
                 // synthesized types).
                 _ => PrintShape::Unseen,
             },
-            Ty::Unknown => PrintShape::Unseen,
+            Ty::Unknown | Ty::Cell { .. } => PrintShape::Unseen,
             Ty::Array(_, None)
             | Ty::Projection(..)
             | Ty::Function { .. }
@@ -29111,7 +29140,7 @@ impl<'a> Checker<'a> {
     /// generic parameter is not).
     fn ty_is_nameable(&self, t: &Ty) -> bool {
         match t {
-            Ty::Unknown => false,
+            Ty::Unknown | Ty::Cell { .. } => false,
             Ty::Named(n) => self.top.symbols.contains_key(n),
             Ty::Array(e, _) | Ty::Bounded(e, _) | Ty::Projection(_, e) => self.ty_is_nameable(e),
             Ty::Tuple(ts) => ts.iter().all(|t| self.ty_is_nameable(t)),
@@ -30658,6 +30687,7 @@ fn unnameable_generic_arg(t: &Ty) -> Option<&'static str> {
         Ty::Tuple(_) => Some("a tuple"),
         Ty::Function { .. } => Some("a fn type"),
         Ty::Bounded(..) => Some("a `bounded` buffer"),
+        Ty::Cell { .. } => Some("a capacity slot's cell"),
         Ty::Prim(p) if crate::ty::generic_arg_mangle_token(*p).is_none() => Some("a primitive with no generic form"),
         _ => None,
     }

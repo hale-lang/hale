@@ -892,7 +892,7 @@ impl<'a> Bodies<'a> {
                 Ty::Bounded(..) => return Class::Inline,
                 Ty::Tuple(..) | Ty::Array(..) => return Class::Value,
                 Ty::Function { .. } => return Class::FnValue,
-                Ty::Unknown => return Class::Unknown,
+                Ty::Unknown | Ty::Cell { .. } => return Class::Unknown,
                 Ty::Named(n) => match self.top.lookup(n) {
                     Some(TopSymbol::Locus(_)) if self.form_loci.contains(n) => {
                         return Class::Form(self.view_form_loci.contains(n))
@@ -991,7 +991,7 @@ impl<'a> Bodies<'a> {
             Ty::Prim(Str | StringView) => out.strings = true,
             Ty::Prim(Bytes | BytesView) => out.bytes = true,
             Ty::Prim(_) | Ty::Unit | Ty::Function { .. } => {}
-            Ty::Unknown => out.opaque = true,
+            Ty::Unknown | Ty::Cell { .. } => out.opaque = true,
             Ty::Projection(_, inner) => self.reach(inner, out),
             Ty::Fallible { success, .. } => self.reach(success, out),
             Ty::Array(e, _) | Ty::Bounded(e, _) => {
