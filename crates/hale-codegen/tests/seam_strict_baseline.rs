@@ -482,25 +482,21 @@ fn the_burn_down_only_moves_forward() {
 
 /// The knob itself. On, a program that reaches a value lowering types
 /// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. A `match` used as a value whose every arm leaves
-/// (`let v = match n { 0 -> { return 10; }, … };`) has no row of its own
-/// today (family 6 `match`, `unknown`): when it has one, this test takes
-/// another site that has none, until there is none and the knob goes. (It
-/// took an element chain's accumulator until the chain's nodes had rows of
-/// their own, then a range loop's variable until the check bound it, and
-/// then a whole-set chain terminal's `or` until its key named what it
-/// handles.)
+/// family and why. A generic locus's param default spelled with its
+/// type's template name (`wrapped: Box<T> = Box { value: 7 }`) has a row
+/// with no layout today (family 5 `struct`, the template `Box`): when it
+/// has one, this test takes another site that has none, until there is
+/// none and the knob goes. (It took an element chain's accumulator until
+/// the chain's nodes had rows of their own, then a range loop's variable
+/// until the check bound it, then a whole-set chain terminal's `or` until
+/// its key named what it handles, and then a `match` whose every arm
+/// leaves until the check recorded it as giving no value.)
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
-    let src = "fn all_arms(n: Int) -> Int {\n\
-                   let v = match n {\n\
-                       0 -> { return 10; },\n\
-                       _ -> { match n { 1 -> { return 11; }, _ -> { return 12; }, } },\n\
-                   };\n\
-                   return v;\n\
-               }\n\
-               fn main() { println(all_arms(1)); }\n";
+    let src = "type Box<T> { value: T = 0; }\n\
+               locus Holder<T> { params { wrapped: Box<T> = Box { value: 7 }; } }\n\
+               fn main() { let h: Holder<Int> = Holder { }; println(h.wrapped.value); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);
@@ -509,7 +505,7 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
     assert!(!out.exists(), "nothing is emitted");
     let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
     let at = rows.iter().find(|r| !r.stdlib).unwrap_or_else(|| panic!("a site of the program is named: {err}"));
-    assert_eq!(at.in_fn, "all_arms", "{err}");
+    assert_eq!(at.kind, "struct", "{err}");
     assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
 }
 
@@ -975,6 +971,44 @@ fn a_variant_binder_of_a_monomorph_has_a_row() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "4\n-7\n11\n");
 }
 
+/// A `match` whose every arm leaves, used where a value goes (a `let`'s
+/// initializer, an `or` block's trailing `match`), gives no value: the
+/// check records it `()`, the row lowering reads as "builds no value", as
+/// it reads an `or { return x; }` block's. It recorded it `Unknown`, which
+/// lowering read as a missing row; the check still holds it `Unknown`,
+/// legal where a diverging expression is.
+#[test]
+fn a_match_whose_every_arm_leaves_gives_no_value() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "fn risky(n: Int) -> Int fallible(String) { if n > 0 { fail \"pos\"; } return n; }\n\
+               fn all_arms(n: Int) -> Int {\n\
+                   let v = match n {\n\
+                       0 -> { return 10; },\n\
+                       _ -> { match n { 1 -> { return 11; }, _ -> { return 12; }, } },\n\
+                   };\n\
+                   return v;\n\
+               }\n\
+               fn or_leaving(n: Int) -> Int {\n\
+                   let v = risky(n) or { match err { \"pos\" -> { return 100; }, _ -> { return 200; }, } };\n\
+                   return v + 1;\n\
+               }\n\
+               fn main() { println(all_arms(1)); println(or_leaving(1)); println(or_leaving(0)); }\n";
+    let out = harness::unique_bin("seam_strict_leaving_match");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "11\n100\n1\n");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)
@@ -1097,3 +1131,4 @@ fn a_stdlib_default_has_rows_where_it_is_evaluated() {
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "-1\nlocal\n");
 }
+
