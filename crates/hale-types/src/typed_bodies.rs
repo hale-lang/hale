@@ -1036,6 +1036,12 @@ pub struct ViewTypes {
     /// field (GH #1984): the field's name and type. Lowering reads the
     /// field it walks under the receiver's span ([`ExprTypes`]).
     anchors: std::collections::HashMap<usize, (String, Ty)>,
+    /// GH #2111: rows of nodes lowering builds at a node of the program,
+    /// by that node, keyed as [`ExprTypes`]' rows are within a body: where
+    /// the check decides what lowering builds (an `or raise` a `@raise fn`
+    /// converts, built as `or fail conv(err)`; a fallible handler's
+    /// implicit `or raise`), it types what is built ([`Self::note_built`]).
+    built: std::collections::HashMap<usize, Vec<((u32, u32, u8, u64), Ty)>>,
     /// The declaration reads a method as a value (`let f = k.get;`): a
     /// call through a fn value may hide the receiver it was read from.
     method_values: bool,
@@ -1132,6 +1138,20 @@ impl ViewTypes {
         note(&mut self.anchors, node(receiver), (field.to_string(), ty), || (field.to_string(), Ty::Unknown));
     }
 
+    /// GH #2111: `built`, a node lowering builds at `at`'s site (in its
+    /// body), is typed `ty`. Its key is the one lowering looks the built
+    /// node up by. Two answers at one key are `Unknown`.
+    pub fn note_built(&mut self, at: &Expr, built: &Expr, ty: Ty) {
+        let sp = built.span();
+        let key = (sp.start.0, sp.end.0, expr_kind(built), expr_name(built));
+        let rows = self.built.entry(node(at)).or_default();
+        match rows.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, held)) if *held != ty => *held = Ty::Unknown,
+            Some(_) => {}
+            None => rows.push((key, ty)),
+        }
+    }
+
     /// GH #2111: a read of a local or a parameter, typed `ty`.
     pub fn note_read(&mut self, e: &Expr, ty: Ty) {
         note(&mut self.reads, node(e), ty, || Ty::Unknown);
@@ -1182,6 +1202,7 @@ impl ViewTypes {
             callees: move_rows(&self.callees, &map),
             reads: move_rows(&self.reads, &map),
             anchors: move_rows(&self.anchors, &map),
+            built: move_rows(&self.built, &map),
             method_values: self.method_values,
         }
     }
@@ -1193,6 +1214,7 @@ impl ViewTypes {
             && self.callees.is_empty()
             && self.reads.is_empty()
             && self.anchors.is_empty()
+            && self.built.is_empty()
     }
 }
 
@@ -1691,6 +1713,10 @@ impl ExprTypes {
                 // an assignment target's index segment, by its place row
                 if let Some(ty) = v.places.get(&node(e)) {
                     add(place_index_key(e), ty);
+                }
+                // and what lowering builds at it
+                for (key, ty) in v.built.get(&node(e)).into_iter().flatten() {
+                    add(*key, ty);
                 }
             });
         }
