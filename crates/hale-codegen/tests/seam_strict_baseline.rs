@@ -932,6 +932,45 @@ fn a_chain_s_blocks_and_ors_have_rows_of_their_own() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "cd\n3\n");
 }
 
+/// A `.Variant` pattern's binder of a generic enum's monomorph has a row:
+/// `.Some(x)` against a `Value<Int>` (spelled so, through an alias, or in a
+/// generic body's `Int` specialization) binds `x` an `Int`. The check found
+/// a variant's values only in a declared enum, so it bound `x` `Unknown`.
+#[test]
+fn a_variant_binder_of_a_monomorph_has_a_row() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Value<T> = enum { Some(T), None };\n\
+               type IntValue = Value<Int>;\n\
+               fn unwrap_or(v: Value<Int>, d: Int) -> Int {\n\
+                   return match v { .Some(x) -> x, .None -> d };\n\
+               }\n\
+               fn aliased(v: IntValue) -> Int {\n\
+                   if let .Some(x) = v { x } else { -7 }\n\
+               }\n\
+               fn get<T>(v: Value<T>, d: T) -> T {\n\
+                   return match v { .Some(x) -> x, .None -> d };\n\
+               }\n\
+               fn main() {\n\
+                   println(unwrap_or(Value_Int::Some(4), 0));\n\
+                   println(aliased(Value_Int::None));\n\
+                   println(get(Value_Int::Some(11), 0));\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_variant_binders");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "4\n-7\n11\n");
+}
+
 /// A `match` whose every arm leaves, used where a value goes (a `let`'s
 /// initializer, an `or` block's trailing `match`), gives no value: the
 /// check records it `()`, the row lowering reads as "builds no value", as

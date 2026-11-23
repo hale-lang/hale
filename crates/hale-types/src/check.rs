@@ -18089,12 +18089,7 @@ impl<'a> Checker<'a> {
             Pattern::Binding(id) => self.note_view_binding(id, ty, None),
             Pattern::Constructor { path, args, .. } => {
                 let Some(variant) = path.segments.last() else { return };
-                let named = |n: &str| match self.top.symbols.get(n) {
-                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
-                        vs.iter().find(|v| v.name == variant.name).map(|v| v.fields.clone())
-                    }
-                    _ => None,
-                };
+                let named = |n: &str| self.variant_fields(n, &variant.name);
                 let fields = match ty {
                     Ty::Named(n) => named(n),
                     _ => None,
@@ -20356,12 +20351,7 @@ impl<'a> Checker<'a> {
             Pattern::Binding(id) => out.push((id.name.clone(), ty.clone(), id.span)),
             Pattern::Constructor { path, args, .. } => {
                 let Some(variant) = path.segments.last() else { return };
-                let named = |n: &str| match self.top.symbols.get(n) {
-                    Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
-                        vs.iter().find(|v| v.name == variant.name).map(|v| v.fields.clone())
-                    }
-                    _ => None,
-                };
+                let named = |n: &str| self.variant_fields(n, &variant.name);
                 let fields = match ty {
                     Ty::Named(n) => named(n),
                     _ => None,
@@ -20697,11 +20687,30 @@ impl<'a> Checker<'a> {
     /// as a constructor pattern's are read; none for one refused.
     fn dot_variant_fields(&self, span: Span, variant: &str) -> Vec<Ty> {
         let Some(e) = self.dot_resolution.get(&(span.start.0, span.end.0)) else { return Vec::new() };
-        match self.top.symbols.get(e) {
-            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(vs), .. })) => {
-                vs.iter().find(|v| v.name == variant).map(|v| v.fields.clone()).unwrap_or_default()
+        self.variant_fields(e, variant).unwrap_or_default()
+    }
+
+    /// The values the variant `variant` of the enum `enum_name` carries,
+    /// by their types: a declared enum's, or a generic enum's monomorph's
+    /// (`Value_Int`) with its parameters bound (GH #2111: a binder of a
+    /// monomorph's variant was typed `Unknown`). `None` for no such enum or
+    /// variant.
+    fn variant_fields(&self, enum_name: &str, variant: &str) -> Option<Vec<Ty>> {
+        match self.top.symbols.get(enum_name) {
+            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) => {
+                variants.iter().find(|v| v.name == variant).map(|v| v.fields.clone())
             }
-            _ => Vec::new(),
+            Some(_) => None,
+            None => match self.resolve_generic_monomorph(enum_name) {
+                Some((GenericTemplate::Type(decl), bindings)) => match &decl.body {
+                    TypeDeclBody::Enum(variants) => variants
+                        .iter()
+                        .find(|v| v.name.name == variant)
+                        .map(|v| v.fields.iter().map(|te| self.monomorph_field_ty(te, &bindings)).collect()),
+                    _ => None,
+                },
+                _ => None,
+            },
         }
     }
 
@@ -26020,22 +26029,7 @@ impl<'a> Checker<'a> {
                         // carries its template's values, the parameters
                         // bound, as the payload-less `Value_Int::None` is
                         // that monomorph.
-                        let declared = match self.top.symbols.get(&enum_name) {
-                            Some(TopSymbol::Type(TypeInfo { kind: TypeKind::Enum(variants), .. })) => {
-                                variants.iter().find(|v| v.name == *variant_name).map(|v| v.fields.clone())
-                            }
-                            Some(_) => None,
-                            None => match self.resolve_generic_monomorph(&enum_name) {
-                                Some((GenericTemplate::Type(decl), bindings)) => match &decl.body {
-                                    TypeDeclBody::Enum(variants) => variants
-                                        .iter()
-                                        .find(|v| v.name.name == *variant_name)
-                                        .map(|v| v.fields.iter().map(|te| self.monomorph_field_ty(te, &bindings)).collect()),
-                                    _ => None,
-                                },
-                                _ => None,
-                            },
-                        };
+                        let declared = self.variant_fields(&enum_name, variant_name);
                         if let Some(fields) = declared {
                             let variant_name = variant_name.clone();
                             // A variant carries its declared values:
