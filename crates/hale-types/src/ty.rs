@@ -28,6 +28,13 @@ pub enum Ty {
         params: Vec<Ty>,
         ret: Box<Ty>,
     },
+    /// F.22: a cell of a capacity slot, `self.<slot>.acquire()` from a
+    /// `pool <slot> of T` or `alloc()` from a `heap <slot> of T`: a handle
+    /// to a `T` in the slot, released only into the slot it came from
+    /// (`locus`, `slot`). No program spells it; the check gives it to the
+    /// cell a slot hands out (GH #2111), and lowering lays it out as the
+    /// cell it builds.
+    Cell { elem: Box<Ty>, locus: String, slot: String },
     /// Unit / no value. The implicit return type of statements
     /// and functions without `-> ...`.
     Unit,
@@ -55,6 +62,7 @@ impl Ty {
         match self {
             Ty::Prim(p) => prim_name(*p).to_string(),
             Ty::Named(n) => n.clone(),
+            Ty::Cell { elem, slot, .. } => format!("a cell of `{slot}` ({})", elem.display()),
             Ty::Bounded(e, n) => {
                 format!("bounded[{}; {}]", e.display(), n)
             }
@@ -100,7 +108,9 @@ impl Ty {
     /// emits the per-element fat-pointer coercion at the
     /// destination's known type. G20 (2026-05-23).
     pub fn assignable_from(&self, other: &Ty) -> bool {
-        if matches!(self, Ty::Unknown) || matches!(other, Ty::Unknown) {
+        // a cell is held to nothing but its release, as before it had a
+        // type (`Checker::cell_of` judges where it goes back)
+        if matches!(self, Ty::Unknown | Ty::Cell { .. }) || matches!(other, Ty::Unknown | Ty::Cell { .. }) {
             return true;
         }
         match (self, other) {
@@ -487,6 +497,7 @@ fn is_flat_shapeable_inner(
         Ty::Projection(_, _)
         | Ty::Function { .. }
         | Ty::Fallible { .. }
+        | Ty::Cell { .. }
         | Ty::Unknown => false,
     }
 }

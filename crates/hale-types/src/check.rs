@@ -17073,13 +17073,16 @@ impl<'a> Checker<'a> {
     /// slot takes `acquire()` and `release(c)`, a heap slot `alloc()` and
     /// `free(c)`, and a cell is released only into the slot it came from.
     /// The build refused each of these with no location.
-    fn check_capacity_slot_call(&mut self, callee: &Expr, args: &[Expr], call_span: Span) {
-        let Expr::Field { receiver, name: method, .. } = callee else { return };
-        let Expr::Field { receiver: me, name: slot_name, .. } = receiver.as_ref() else { return };
+    /// The cell a `gives` call hands out, typed (GH #2111): a slot's cells
+    /// are `Ty::Cell` of its element, from this locus and slot, as lowering
+    /// builds them; `None` for any other call.
+    fn check_capacity_slot_call(&mut self, callee: &Expr, args: &[Expr], call_span: Span) -> Option<Ty> {
+        let Expr::Field { receiver, name: method, .. } = callee else { return None };
+        let Expr::Field { receiver: me, name: slot_name, .. } = receiver.as_ref() else { return None };
         if !matches!(me.as_ref(), Expr::KwSelf(_)) {
-            return;
+            return None;
         }
-        let Some(slot) = self.self_capacity_slot(&slot_name.name) else { return };
+        let Some(slot) = self.self_capacity_slot(&slot_name.name) else { return None };
         let (kind, gives, takes, other) = match slot.kind {
             CapacitySlotKind::Pool => ("pool", "acquire", "release", "a heap slot's"),
             CapacitySlotKind::Heap => ("heap", "alloc", "free", "a pool slot's"),
@@ -17099,7 +17102,7 @@ impl<'a> Checker<'a> {
                     back = if kind == "pool" { "return" } else { "release" },
                 ),
             ));
-            return;
+            return None;
         }
         let want = if m == gives { 0 } else { 1 };
         if args.len() != want {
@@ -17112,7 +17115,14 @@ impl<'a> Checker<'a> {
                     args.len()
                 ),
             ));
-            return;
+            return None;
+        }
+        if m == gives {
+            return Some(Ty::Cell {
+                elem: Box::new(self.resolve_te(&slot.elem_ty)),
+                locus: self.locus_decl.map(|l| l.name.name.clone()).unwrap_or_default(),
+                slot: slot.name.name.clone(),
+            });
         }
         if m == takes {
             if let Some(origin) = self.cell_of(&args[0]) {
@@ -17128,6 +17138,7 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        None
     }
 
     /// GH #1569: a fn's name read as a value anywhere the programs write
@@ -19763,6 +19774,8 @@ impl<'a> Checker<'a> {
 
     fn field_ty(&self, ty: &Ty, name: &str) -> Option<Ty> {
         match ty {
+            // a cell's field is its element's (F.22, v1.x-2)
+            Ty::Cell { elem, .. } => self.field_ty(elem, name),
             // Numeric tuple field access: `t.0`, `t.1`. Parser
             // stores the digit string as the field name, so we
             // recognize it as a usize index here.
@@ -25192,7 +25205,9 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
-                self.check_capacity_slot_call(callee, args, *call_span);
+                if let Some(cell) = self.check_capacity_slot_call(callee, args, *call_span) {
+                    return cell;
+                }
                 self.check_hashmap_bump(callee);
                 if let Expr::Ident(id) = callee.as_ref() {
                     // GH #1076 (U2, U3): `Session(n)`, `OrderId(n)`,
@@ -28506,7 +28521,7 @@ impl<'a> Checker<'a> {
                 // synthesized types).
                 _ => PrintShape::Unseen,
             },
-            Ty::Unknown => PrintShape::Unseen,
+            Ty::Unknown | Ty::Cell { .. } => PrintShape::Unseen,
             Ty::Array(_, None)
             | Ty::Projection(..)
             | Ty::Function { .. }
@@ -29100,7 +29115,7 @@ impl<'a> Checker<'a> {
     /// generic parameter is not).
     fn ty_is_nameable(&self, t: &Ty) -> bool {
         match t {
-            Ty::Unknown => false,
+            Ty::Unknown | Ty::Cell { .. } => false,
             Ty::Named(n) => self.top.symbols.contains_key(n),
             Ty::Array(e, _) | Ty::Bounded(e, _) | Ty::Projection(_, e) => self.ty_is_nameable(e),
             Ty::Tuple(ts) => ts.iter().all(|t| self.ty_is_nameable(t)),
