@@ -3319,6 +3319,25 @@ mod callee_row_tests {
         assert_eq!(messages(src), vec!["let `s`: expected `String`, got `Int`".to_string()]);
     }
 
+    /// A `.Variant` pattern's binder against a generic enum's monomorph is
+    /// the monomorph's value (`.Some(x)` against a `Value<Int>` binds an
+    /// `Int`), directly and through an alias. The check found a variant's values only in a declared enum,
+    /// bound the binder `Unknown` and held it to nothing; the build refused
+    /// the program at the match ("match expression arms have mismatched
+    /// types: Int vs String").
+    #[test]
+    fn a_variant_binder_of_a_monomorph_is_its_value() {
+        let src = "type Value<T> = enum { Some(T), None };\n\
+                   type IntValue = Value<Int>;\n\
+                   fn f(v: Value<Int>) -> String {\n    return match v { .Some(x) -> { let s: String = x; s }, .None -> \"n\" };\n}\n\
+                   fn g(v: IntValue) -> String {\n    if let .Some(y) = v { let t: String = y; t } else { \"n\" }\n}\n\
+                   fn main() { println(f(Value_Int::Some(1))); println(g(Value_Int::None)); }\n";
+        assert_eq!(
+            messages(src),
+            vec!["let `s`: expected `String`, got `Int`".to_string(), "let `t`: expected `String`, got `Int`".to_string()]
+        );
+    }
+
     /// A generic enum's monomorph spelled by its mangled name carries its
     /// template's values with the parameters bound: `Value_Int::Some(..)`
     /// is a `Value_Int`, and its value an `Int`, as the build has it
