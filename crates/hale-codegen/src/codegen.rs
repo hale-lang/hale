@@ -26585,6 +26585,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let (Literal::Int(n), CodegenTy::U64) = (lit, want) {
             return Ok((self.context.i64_type().const_int(*n as u64, false).into(), CodegenTy::U64));
         }
+        // and a literal past `Int` against one, as it is spelled (GH #2111)
+        if let (Literal::U64(n), CodegenTy::U64) = (lit, want) {
+            return Ok((self.context.i64_type().const_int(*n, false).into(), want.clone()));
+        }
         // GH #2132: and against a narrower integer, at its width
         if let (Literal::Int(n), CodegenTy::Narrow(p)) = (lit, want) {
             return Ok((self.narrow_int_type(*p).const_int(*n as u64, true).into(), want.clone()));

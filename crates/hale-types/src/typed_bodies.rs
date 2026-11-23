@@ -1458,13 +1458,19 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
                             }
                         }
                     }
-                    // GH #2111: a closure's assertion, its own body
+                    // GH #2111: a closure's assertion, its own body, and its
+                    // `epoch duration(e)`, lowered there where it is armed
                     LocusMember::Closure(c) => {
                         out.body = c.id;
                         if let Some(a) = &c.assertion {
                             expr(&a.left, out);
                             expr(&a.right, out);
                             expr(&a.tolerance, out);
+                        }
+                        for clause in &c.clauses {
+                            if let hale_syntax::ast::ClosureClause::Epoch(hale_syntax::ast::EpochSpec::Duration(e)) = clause {
+                                expr(e, out);
+                            }
                         }
                     }
                     _ => {}
