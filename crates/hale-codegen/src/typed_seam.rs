@@ -236,7 +236,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return Some(&m.args);
             }
         }
-        let cs = self.current_self.as_ref()?;
+        // a locus's param defaults are its own text, lowered where it is
+        // built: their specialization is the built locus's
+        // (`params_init_self`), not the enclosing method's
+        let cs = match (&self.params_init_self, self.in_params_default) {
+            (Some(built), true) => built,
+            _ => self.current_self.as_ref()?,
+        };
         let m = self.typed.monomorphs().named(&cs.locus_name)?;
         (m.kind == hale_types::typed_bodies::TemplateKind::Locus).then_some(m.args.as_slice())
     }
