@@ -10546,6 +10546,17 @@ const BLOCK_TRAILING_MATCH_LEAVES: &str = "this block ends in a `match` whose ev
      `fail`, `break` or an endless loop), so the block has no value: give an arm a value, or end the \
      block with `return` (spec/semantics.md § `match`, as a block's value)";
 
+/// GH #2111: a `match` whose every arm leaves, or a block whose trailing
+/// `match` does, used where a value goes: it never gives one.
+fn never_gives_value(e: &Expr) -> bool {
+    let leaves = |m: &MatchStmt| !m.arms.is_empty() && m.arms.iter().all(match_arm_leaves);
+    match e {
+        Expr::Match(m) => leaves(m),
+        Expr::Block(b) => b.tail.is_none() && matches!(b.stmts.last(), Some(Stmt::Match(m)) if leaves(m)),
+        _ => false,
+    }
+}
+
 /// Does this match arm leave without producing a value? An expression
 /// arm is a value; a block arm leaves when `block_leaves` says so.
 fn match_arm_leaves(arm: &MatchArm) -> bool {
@@ -23646,6 +23657,14 @@ impl<'a> Checker<'a> {
             Ty::Fallible { success, .. } if handling == Handling::Bare => *success,
             ty => ty,
         };
+        // GH #2111: a `match`, or a block ending in one, whose every arm
+        // leaves gives no value: it is checked as `Unknown`, legal where a
+        // diverging expression is, and recorded `()`, the row lowering reads
+        // as "builds no value" (as it reads an `or { return x; }` block's)
+        if ty == Ty::Unknown && never_gives_value(expr) {
+            let _ = self.note_expr_ty(expr, Ty::Unit);
+            return ty;
+        }
         self.note_expr_ty(expr, ty)
     }
 
