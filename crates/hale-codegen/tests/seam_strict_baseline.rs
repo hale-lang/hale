@@ -1065,6 +1065,22 @@ fn a_param_default_built_in_a_generic_fn_reads_the_built_locus_s_rows() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n");
 }
 
+/// Each exposure's generated param has rows of its own. The API expansion
+/// builds an exposure's param from text, `… rows: __RpcSurface_<id> { } …`,
+/// and parsed every exposure's at one range: two exposures' surface
+/// literals were at one span of the main locus's body, one row key with two
+/// types (`__RpcSurface_3` and `__RpcSurface_4`), `Unknown`. Each exposure's
+/// is parsed at a range of its own. `tests/hale/api/witness_test.hl` serves
+/// several surfaces from one main locus.
+#[test]
+fn each_exposure_s_generated_param_has_rows_of_its_own() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let entry = repo_root().join("tests/hale/api/witness_test.hl");
+    let rows = missing_rows("witness_test", &entry, &strict).expect("it lowers");
+    let program: Vec<_> = rows.iter().filter(|(_, r)| !r.stdlib).collect();
+    assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)
@@ -1187,4 +1203,5 @@ fn a_stdlib_default_has_rows_where_it_is_evaluated() {
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "-1\nlocal\n");
 }
+
 
