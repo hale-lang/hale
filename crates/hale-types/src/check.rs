@@ -18218,6 +18218,11 @@ impl<'a> Checker<'a> {
             // GH #1995 E2: each alternative of an or-pattern is checked
             // as the arm's whole pattern would be.
             for alt in resolved_pattern.alternatives() {
+                // GH #2111: a literal pattern is lowered as a literal of the
+                // scrutinee's type, which this holds it to
+                if let (Pattern::Literal(lit, span), true) = (alt, self.records_views()) {
+                    self.views.note_built(&stmt.scrutinee, &Expr::Literal(lit.clone(), *span), scrut_ty.clone());
+                }
                 self.check_set_pattern(alt, &scrut_ty);
                 self.check_bare_variant_pattern(alt, &scrut_ty);
                 self.check_pattern_variants(alt);
