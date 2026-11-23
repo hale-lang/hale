@@ -81,7 +81,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// site is counted by `seam_strict_baseline`, and goes when its
     /// lowering takes `e`'s type from the row.
     pub(crate) fn seam_fallback(&self, e: &Expr) {
-        if self.seam_strict {
+        // a row of `()` is the checker's answer: the expression gives no
+        // value (a `match` whose every arm leaves), and none is typed
+        if self.seam_strict && !self.row_is_unit(e) {
             let _ = self.ty_at(e);
         }
     }
