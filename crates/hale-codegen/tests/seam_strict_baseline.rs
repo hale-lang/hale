@@ -708,6 +708,67 @@ fn a_loop_over_a_form_or_the_children_asks_its_receiver_s_row() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n11\n30\n");
 }
 
+/// What lowering builds where an error is raised has rows: an `or raise` a
+/// `@raise fn` converts is built as `or fail conv(err)` at the `raise`, and
+/// a fallible handler's implicit `or raise` as `handler(err) or raise` at
+/// the handler. The check decides both (`judge_raise`, GH #1951) and now
+/// types what is built there (`ViewTypes::note_built`): the conversion's
+/// call and its `err`, and the handler's `or`.
+#[test]
+fn what_lowering_builds_where_an_error_is_raised_has_rows() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type ParseError2 { at: Int; text: String; }\n\
+               type FetchError { url: String; }\n\
+               type AppError = ParseError2 | FetchError;\n\
+               type Report { code: Int; detail: String; }\n\
+               fn parse(s: String) -> Int fallible(ParseError2) {\n\
+                   if s == \"bad\" { fail ParseError2 { at: 3, text: s }; }\n\
+                   return len(s);\n\
+               }\n\
+               fn fetch(url: String) -> String fallible(FetchError) {\n\
+                   if url == \"\" { fail FetchError { url: \"<none>\" }; }\n\
+                   return url;\n\
+               }\n\
+               fn reparse(e: FetchError) -> String fallible(ParseError2) {\n\
+                   fail ParseError2 { at: 0, text: \"retry \" + e.url };\n\
+               }\n\
+               @raise fn report_from_parse(e: ParseError2) -> Report {\n\
+                   return Report { code: 400 + e.at, detail: \"parse: \" + e.text };\n\
+               }\n\
+               fn checked(s: String) -> Int fallible(Report) {\n\
+                   let n = parse(s) or raise;\n\
+                   return n * 10;\n\
+               }\n\
+               fn refetch(url: String) -> String fallible(Report) {\n\
+                   let body = fetch(url) or reparse(err);\n\
+                   return body;\n\
+               }\n\
+               fn load_again(url: String) -> String fallible(AppError) {\n\
+                   let body = fetch(url) or reparse(err);\n\
+                   return body;\n\
+               }\n\
+               fn main() {\n\
+                   println(checked(\"abcd\") or -1);\n\
+                   println(checked(\"bad\") or err.code);\n\
+                   println(refetch(\"\") or err.detail);\n\
+                   println(load_again(\"x\") or \"e\");\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_raise_rows");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "40\n403\nparse: retry <none>\nx\n");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)

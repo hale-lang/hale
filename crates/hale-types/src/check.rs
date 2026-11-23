@@ -20906,7 +20906,7 @@ impl<'a> Checker<'a> {
     /// recorded at `at` for lowering, which writes the raise as the `or
     /// fail` it stands for. Two conversions are refused at `at`, naming
     /// both; `false` is no route at all, which the caller words.
-    fn judge_raise(&mut self, want: &Ty, got: &Ty, at: Span) -> bool {
+    fn judge_raise(&mut self, want: &Ty, got: &Ty, at: Span, site_node: &Expr) -> bool {
         use crate::typed_bodies::RaiseConversion;
         if want.assignable_from(got) {
             return true;
@@ -20943,6 +20943,20 @@ impl<'a> Checker<'a> {
                 }
             }
         };
+        // GH #2111: a `@raise fn` is called where the raise is, as `or fail
+        // conv(err)` (`lower_or_raise`): the call and its `err` are built
+        // there, typed as the conversion's result and the error it takes
+        if let (RaiseConversion::Convert(name), true) = (&conversion, self.records_views()) {
+            let err = Expr::Ident(hale_syntax::ast::Ident::new("err", at));
+            let call = Expr::Call {
+                callee: Box::new(Expr::Ident(hale_syntax::ast::Ident::new(name.clone(), at))),
+                args: vec![err.clone()],
+                span: at,
+                id: hale_syntax::ast::NodeId::NONE,
+            };
+            self.views.note_built(site_node, &call, want.clone());
+            self.views.note_built(site_node, &err, got.clone());
+        }
         if self.specializing.is_none() {
             let site = self.site(SiteKind::value(at));
             self.typed.raise(self.body, site, conversion);
@@ -27387,7 +27401,7 @@ impl<'a> Checker<'a> {
                             _ => *span,
                         };
                         if let Some((_, expected)) = self.fallible_ctx.clone() {
-                            if !self.judge_raise(&expected, &payload, raised_at) {
+                            if !self.judge_raise(&expected, &payload, raised_at, expr) {
                                 let (want, got) = (expected.display(), payload.display());
                                 let set = if self.set_members(&expected).is_some() {
                                     format!("add `{got}` to the set `{want}`")
@@ -27587,6 +27601,17 @@ impl<'a> Checker<'a> {
                             payload: h_payload,
                         } = &rhs_ty
                         {
+                            // GH #2111: lowering builds the implicit `or
+                            // raise` as a node at the handler, `rhs or
+                            // raise`, whose value is the handler's success
+                            if self.records_views() {
+                                let wrapped = Expr::Or {
+                                    inner: Box::new((**rhs).clone()),
+                                    disposition: OrDisposition::Raise(rhs.span()),
+                                    span: rhs.span(),
+                                };
+                                self.views.note_built(rhs, &wrapped, (**h_success).clone());
+                            }
                             if !value_discarded
                                 && !success.assignable_from(h_success)
                             {
@@ -27623,7 +27648,7 @@ impl<'a> Checker<'a> {
                                     // at the handler (where lowering writes
                                     // it).
                                     let (expected_payload, h_payload) = (expected_payload.clone(), (**h_payload).clone());
-                                    if !self.judge_raise(&expected_payload, &h_payload, rhs.span()) {
+                                    if !self.judge_raise(&expected_payload, &h_payload, rhs.span(), rhs) {
                                         self.diags.push(Diag::ty(
                                             *span,
                                             format!(
