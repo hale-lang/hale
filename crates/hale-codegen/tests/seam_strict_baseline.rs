@@ -799,6 +799,47 @@ fn what_lowering_builds_where_an_error_is_raised_has_rows() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "40\n403\nparse: retry <none>\nx\n");
 }
 
+/// What the program's prelude lowers for the main locus's `bindings { }`
+/// has rows, in that locus's body: an adapter's literal and its
+/// initializers (the checker checks the literal as an expression of a free
+/// fn, and keeps its rows for the prelude), and a `unix(path)` binding's
+/// transport literal (typed from the binding's row). The prelude was lowered
+/// in no body at all, so each was a missing row.
+#[test]
+fn what_the_prelude_lowers_for_the_bindings_has_rows() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Note { n: Int = 0; }\n\
+               type Wire { subject: String = \"\"; data: Bytes = b\"\"; }\n\
+               topic Lost { payload: Note; subject: \"lost\"; }\n\
+               topic Beat { payload: Note; subject: \"beat\"; }\n\
+               topic Q { payload: Wire; subject: \"q\"; }\n\
+               locus Fwd {\n\
+                   params { tag: String = \"\"; }\n\
+                   bus { publish Q; }\n\
+                   fn send(subject: String, bytes: Bytes) { Q <- Wire { subject: self.tag + subject, data: bytes }; }\n\
+               }\n\
+               main locus App {\n\
+                   bindings {\n\
+                       Lost: Fwd { tag: \"t-\" + \"x\" };\n\
+                       Beat: unix(\"/tmp/hale-seam-prelude.sock\", role: connect);\n\
+                   }\n\
+                   bus { publish Lost; publish Beat; }\n\
+                   run() { }\n\
+               }\n\
+               fn main() { App { }; }\n";
+    let out = harness::unique_bin("seam_strict_prelude_rows");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    build_opts::build_source(src, &out, &build_opts::options()).expect("it builds");
+    let _ = std::fs::remove_file(&out);
+}
+
 /// A literal lowering lowers outside an expression of the program has a
 /// row: a match arm's literal pattern (`1min` against a `Duration`), which
 /// the check holds to the scrutinee's type and so types as it, and a

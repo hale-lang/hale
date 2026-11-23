@@ -1389,6 +1389,7 @@ fn walk_bundle(
         fallible_ctx: None,
         return_ctx: None,
         in_fn_main: false,
+        in_binding_prelude: false,
         strict_callees,
         strict_idents,
         or_value_discarded: false,
@@ -11488,6 +11489,9 @@ struct Checker<'a> {
     /// `return n;` is the process exit code (spec/runtime.md) although
     /// it declares no return type.
     in_fn_main: bool,
+    /// GH #2111: checking a literal the program's prelude lowers for a
+    /// binding: every row also goes to the `views` column's `prelude`.
+    in_binding_prelude: bool,
     strict_callees: bool, // F.18: on for every command's program, off for a library caller's partial program
     /// GH #721: on for a whole program — every import resolved, so a
     /// bare identifier nothing binds is a typo rather than a name a
@@ -15511,31 +15515,35 @@ impl<'a> Checker<'a> {
                 // `violate`, a publish, an unknown name, a field of the
                 // wrong type. Each such diagnostic says why it applies.
                 for entry in &bb.entries {
-                    let TransportSpec::Adapter { locus, inits, span } = &entry.transport else { continue };
-                    let lit = Expr::Struct {
-                        path: QualifiedName {
-                            segments: locus.name.split("::").map(|seg| Ident::new(seg, locus.span)).collect(),
-                            span: locus.span,
-                        },
-                        inits: inits.clone(),
-                        span: *span,
-                        id: NodeId::NONE,
+                    let adapter = match &entry.transport {
+                        TransportSpec::Adapter { locus, inits, span } => Some((locus, inits, *span)),
+                        _ => None,
                     };
+                    if adapter.is_none() && entry.codec.is_none() {
+                        continue;
+                    }
                     let prev_locus = self.current_locus.take();
                     let prev_fallible = self.fallible_ctx.take();
                     let prev_return = self.return_ctx.take();
                     let prev_main = std::mem::replace(&mut self.in_fn_main, false);
-                    let before = self.diags.len();
-                    self.locals.push();
-                    let _ = self.check_expr(&lit);
-                    self.locals.pop();
-                    let main = prev_locus.map_or_else(|| "the main locus".to_string(), |l| l.name.clone());
-                    for d in &mut self.diags[before..] {
-                        d.message = format!(
-                            "adapter binding for topic `{}`: the `{}` literal is built by the program's \
-                             prelude, before `{}`, as an expression of a free fn is: {}",
-                            entry.topic.name, locus.name, main, d.message
-                        );
+                    if let Some((locus, inits, span)) = adapter {
+                        let before = self.diags.len();
+                        self.check_binding_literal(locus, inits, span);
+                        let main = prev_locus.as_ref().map_or_else(|| "the main locus".to_string(), |l| l.name.clone());
+                        for d in &mut self.diags[before..] {
+                            d.message = format!(
+                                "adapter binding for topic `{}`: the `{}` literal is built by the program's \
+                                 prelude, before `{}`, as an expression of a free fn is: {}",
+                                entry.topic.name, locus.name, main, d.message
+                            );
+                        }
+                    }
+                    // GH #2111: a codec's literal is lowered there too; it is
+                    // typed for that, and judged by `validate_bindings`
+                    if let Some(codec) = &entry.codec {
+                        let before = self.diags.len();
+                        self.check_binding_literal(&codec.locus, &codec.inits, codec.span);
+                        self.diags.truncate(before);
                     }
                     self.current_locus = prev_locus;
                     self.fallible_ctx = prev_fallible;
@@ -23651,6 +23659,9 @@ impl<'a> Checker<'a> {
         if self.met_row(expr) {
             return ty;
         }
+        if self.in_binding_prelude && self.records_views() {
+            self.views.note_prelude(expr, ty.clone());
+        }
         if self.records_views() {
             self.note_view_expr(expr, &ty);
         } else if let Some(scope) = self.expr_scope() {
@@ -23729,6 +23740,32 @@ impl<'a> Checker<'a> {
     /// walk types the template's sites again under its arguments, and a
     /// default walked where it is evaluated is another declaration's
     /// text: neither records.
+    /// A literal the program's prelude builds for a binding (an adapter's,
+    /// a codec's), checked as an expression of a free fn is, with no
+    /// local in scope. Its rows go to the `views` column's `prelude`
+    /// (GH #2111): its initializers' as typed, and the literal's own under
+    /// the literal lowering builds (`binding_rows::binding_literal`).
+    fn check_binding_literal(&mut self, locus: &Ident, inits: &[StructInit], span: Span) -> Ty {
+        let lit = Expr::Struct {
+            path: QualifiedName {
+                segments: locus.name.split("::").map(|seg| Ident::new(seg, locus.span)).collect(),
+                span: locus.span,
+            },
+            inits: inits.to_vec(),
+            span,
+            id: NodeId::NONE,
+        };
+        self.locals.push();
+        self.in_binding_prelude = true;
+        let ty = self.check_expr(&lit);
+        self.in_binding_prelude = false;
+        self.locals.pop();
+        if self.records_views() {
+            self.views.note_prelude(&crate::binding_rows::binding_literal(locus, inits), ty.clone());
+        }
+        ty
+    }
+
     fn records_views(&self) -> bool {
         self.specializing.is_none()
             && self.struct_defaults_typing.is_empty()

@@ -2423,6 +2423,17 @@ impl Snapshot {
                 // and the direct calls the intra-locus rewrite made of sends,
                 // which the checker never walked
                 expr_types.add_direct_sends(&stage.program, &stage.intra_locus, &scope.top);
+                // and the transports the prelude builds for `unix(path)`
+                // bindings, by their rows (the checked programs' loci keep
+                // their ids in the merged mint)
+                let bindings = self.demand_bindings().map_err(Clone::clone)?;
+                for program in self.bundle().programs.values() {
+                    for item in &program.items {
+                        if let hale_syntax::ast::TopDecl::Locus(l) = item {
+                            expr_types.add_unix_transports(l, bindings);
+                        }
+                    }
+                }
                 view.expr_types = Some(expr_types);
                 Ok(view)
             })
