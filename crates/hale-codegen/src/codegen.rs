@@ -1205,6 +1205,13 @@ pub struct BuildOptions {
     /// every such site ([`CodegenError::MissingRows`]). The measure of
     /// how much typing lowering still does itself; off, nothing changes.
     pub seam_strict: bool,
+    /// GH #2111: the build ends when lowering does, its verdict given
+    /// (a [`CodegenError::MissingRows`] refusal under `seam_strict`):
+    /// nothing is verified, optimized, emitted or linked, and no output is
+    /// written. For a survey of lowering over many programs
+    /// (`seam_strict_baseline`), whose cost was the full build of every
+    /// program lowering accepted.
+    pub lower_only: bool,
     /// The lifecycle trace (F.40 phase 3, L2; `HALE_LIFECYCLE_TRACE`):
     /// the runtime is compiled with `LOTUS_LIFECYCLE_TRACE` and the
     /// emitted lifecycle steps call into it, so the binary writes one
@@ -1292,6 +1299,7 @@ impl BuildOptions {
             di_trace: Default::default(),
             dispatch_trace: Default::default(),
             seam_strict: Default::default(),
+            lower_only: Default::default(),
             lifecycle_trace: Default::default(),
             time_phases: Default::default(),
             cc_warnings: Default::default(),
@@ -2558,6 +2566,9 @@ fn build_resolved_lowered(
     // GH #2111 strict mode: lowering is done; what it typed without the
     // checker's row refuses the build before anything is emitted.
     cx.refuse_missing_rows()?;
+    if options.lower_only {
+        return Ok(());
+    }
 
     // Debug info must be finalized before the module is verified /
     // optimized — unresolved temporary MDNodes otherwise abort the

@@ -358,7 +358,9 @@ const WORKER_STACK: usize = 256 << 20;
 
 #[test]
 fn the_burn_down_only_moves_forward() {
-    let options = BuildOptions { seam_strict: true, ..build_opts::options() };
+    // lowering's verdict is all the survey reads: the build stops there
+    // (a program lowering accepts would otherwise be optimized and linked)
+    let options = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
     let programs = programs();
     assert!(programs.len() > 400, "the corpus, tests/hale and dna/tests: found {}", programs.len());
 
