@@ -358,7 +358,9 @@ const WORKER_STACK: usize = 256 << 20;
 
 #[test]
 fn the_burn_down_only_moves_forward() {
-    let options = BuildOptions { seam_strict: true, ..build_opts::options() };
+    // lowering's verdict is all the survey reads: the build stops there
+    // (a program lowering accepts would otherwise be optimized and linked)
+    let options = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
     let programs = programs();
     assert!(programs.len() > 400, "the corpus, tests/hale and dna/tests: found {}", programs.len());
 
@@ -1063,6 +1065,39 @@ fn a_param_default_built_in_a_generic_fn_reads_the_built_locus_s_rows() {
         .expect("it builds");
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n");
+}
+
+/// A send's subject that is a value the send reads (`subj <- …`, the
+/// logger's `"log." + path` built at run time) has a row. The check looked
+/// a subject up as a topic or a wire-subject literal only, and never typed
+/// one that is neither, which lowering reads as a `String`.
+#[test]
+fn a_send_s_read_subject_has_a_row() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "locus Sink {\n\
+                   params { seen: Int = 0; }\n\
+                   bus { subscribe \"log.**\" as on_event of type std::log::LogEvent; }\n\
+                   fn on_event(e: std::log::LogEvent) { self.seen = self.seen + 1; }\n\
+               }\n\
+               main locus App {\n\
+                   params {\n\
+                       sink: Sink = Sink { };\n\
+                       log: std::log::Logger = std::log::Logger { name: \"app\", min_severity: 2 };\n\
+                   }\n\
+                   run() { self.log.info(\"hello\"); }\n\
+               }\n\
+               fn main() { App { }; }\n";
+    let out = harness::unique_bin("seam_strict_send_subject");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let subject: Vec<_> = rows.iter().filter(|r| r.in_fn.ends_with(".emit") || !r.stdlib).collect();
+            assert!(subject.is_empty(), "the logger's subject and the program's sites have rows: {subject:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    build_opts::build_source(src, &out, &build_opts::options()).expect("it builds");
+    let _ = std::fs::remove_file(&out);
 }
 
 /// A capacity slot's cell has a type: `self.<slot>.acquire()` from a pool
