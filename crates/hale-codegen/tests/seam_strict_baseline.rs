@@ -840,6 +840,50 @@ fn what_the_prelude_lowers_for_the_bindings_has_rows() {
     let _ = std::fs::remove_file(&out);
 }
 
+/// A literal lowering lowers outside an expression of the program has a
+/// row: a match arm's literal pattern (`1min` against a `Duration`), which
+/// the check holds to the scrutinee's type and so types as it, and a
+/// closure's `epoch duration(20ms)`, which the check typed but the rows'
+/// visitor never visited. A `U64` pattern past `Int` is built at the
+/// scrutinee's type, as an `Int` one already was.
+#[test]
+fn a_pattern_s_and_an_epoch_s_literals_have_rows() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "locus Beat {\n\
+                   params { n: Int = 1; }\n\
+                   closure tick {\n\
+                       self.n ~~ 1 within 0;\n\
+                       epoch duration(20ms);\n\
+                   }\n\
+                   run() { }\n\
+               }\n\
+               fn kind(d: Duration) -> Int {\n\
+                   return match d { 1min -> 1, _ -> 0 };\n\
+               }\n\
+               fn big(u: U64) -> Int {\n\
+                   return match u { 18446744073709551615 -> 2, _ -> 0 };\n\
+               }\n\
+               fn main() {\n\
+                   println(kind(60s));\n\
+                   println(big(U64::max()));\n\
+                   Beat { };\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_pattern_literals");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n2\n");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)
