@@ -13,5 +13,4 @@ measure	value+type lowerings	378
 measure	CodegenTy built in an expression	986
 measure	seam fallbacks (static)	29
 measure	seam reads	33
-total	1
-5	struct	generated	unknown	1
+total	0
