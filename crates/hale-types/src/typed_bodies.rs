@@ -1036,6 +1036,11 @@ pub struct ViewTypes {
     /// field (GH #1984): the field's name and type. Lowering reads the
     /// field it walks under the receiver's span ([`ExprTypes`]).
     anchors: std::collections::HashMap<usize, (String, Ty)>,
+    /// GH #2111: rows of what the program's prelude lowers for this
+    /// locus's `bindings { }` (an adapter's or a codec's literal and its
+    /// initializers), which no body holds: keyed as [`ExprTypes`]' rows
+    /// are, added in the locus's own body ([`Self::note_prelude`]).
+    prelude: Vec<((u32, u32, u8, u64), Ty)>,
     /// GH #2111: rows of nodes lowering builds at a node of the program,
     /// by that node, keyed as [`ExprTypes`]' rows are within a body: where
     /// the check decides what lowering builds (an `or raise` a `@raise fn`
@@ -1138,6 +1143,18 @@ impl ViewTypes {
         note(&mut self.anchors, node(receiver), (field.to_string(), ty), || (field.to_string(), Ty::Unknown));
     }
 
+    /// GH #2111: `e`, lowered by the program's prelude for this locus's
+    /// bindings, is typed `ty`. Two answers at one key are `Unknown`.
+    pub fn note_prelude(&mut self, e: &Expr, ty: Ty) {
+        let sp = e.span();
+        let key = (sp.start.0, sp.end.0, expr_kind(e), expr_name(e));
+        match self.prelude.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, held)) if *held != ty => *held = Ty::Unknown,
+            Some(_) => {}
+            None => self.prelude.push((key, ty)),
+        }
+    }
+
     /// GH #2111: `built`, a node lowering builds at `at`'s site (in its
     /// body), is typed `ty`. Its key is the one lowering looks the built
     /// node up by. Two answers at one key are `Unknown`.
@@ -1202,6 +1219,7 @@ impl ViewTypes {
             callees: move_rows(&self.callees, &map),
             reads: move_rows(&self.reads, &map),
             anchors: move_rows(&self.anchors, &map),
+            prelude: self.prelude.clone(),
             built: move_rows(&self.built, &map),
             method_values: self.method_values,
         }
@@ -1214,6 +1232,7 @@ impl ViewTypes {
             && self.callees.is_empty()
             && self.reads.is_empty()
             && self.anchors.is_empty()
+            && self.prelude.is_empty()
             && self.built.is_empty()
     }
 }
@@ -1689,6 +1708,14 @@ impl ExprTypes {
         body: &dyn Fn(NodeId) -> Option<NodeId>,
     ) {
         for (item, v) in program.items.iter().zip(views) {
+            // what the prelude lowers for a locus's bindings, in its body
+            if let (hale_syntax::ast::TopDecl::Locus(l), false) = (item, v.prelude.is_empty()) {
+                if let Some(at) = body(l.id) {
+                    for (key, ty) in &v.prelude {
+                        self.add_row(at, *key, ty);
+                    }
+                }
+            }
             visit_view_nodes(item, &mut |at, n| {
                 let Some(at) = body(at) else { return };
                 let mut add = |key: (u32, u32, u8, u64), ty: &Ty| self.add_row(at, key, ty);
@@ -1730,6 +1757,28 @@ impl ExprTypes {
             Some(_) => {}
             None => {
                 self.rows.insert((at.0, start, end, kind, name), ty.clone());
+            }
+        }
+    }
+
+    /// GH #2111: the rows of what the prelude lowers for the entry locus
+    /// `locus`'s `unix(path)` bindings, in its body: each transport's
+    /// literal (`binding_rows::unix_transport_literal`), its locus, and
+    /// the literal's strings. The binding's row names the locus.
+    pub fn add_unix_transports(&mut self, locus: &hale_syntax::ast::LocusDecl, rows: &crate::binding_rows::BindingRows) {
+        use crate::capability::Transport;
+        for m in &locus.members {
+            let hale_syntax::ast::LocusMember::Bindings(b) = m else { continue };
+            for entry in &b.entries {
+                let Some(row) = rows.for_entry(entry) else { continue };
+                let (Transport::Unix, Some(transport)) = (row.transport, row.loss_locus) else { continue };
+                let lit = crate::binding_rows::unix_transport_literal(transport, "", "", entry.topic.span);
+                self.add_expr_row(locus.id, &lit, &Ty::Named(transport.to_string()));
+                if let Expr::Struct { inits, .. } = &lit {
+                    for init in inits {
+                        self.add_expr_row(locus.id, &init.value, &Ty::Prim(hale_syntax::ast::PrimType::String));
+                    }
+                }
             }
         }
     }

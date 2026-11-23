@@ -11924,6 +11924,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     }
 
     fn emit_bindings_prelude(&mut self) -> Result<(), CodegenError> {
+        // GH #2111: what the prelude builds for the entry locus's bindings
+        // has its rows in that locus's body (the checker's `prelude`
+        // column, `ExprTypes::add_unix_transports`)
+        match self.entry_locus {
+            Some(l) => self.in_body(l.id, |cx| cx.emit_bindings_prelude_at()),
+            None => Ok(()),
+        }
+    }
+
+    fn emit_bindings_prelude_at(&mut self) -> Result<(), CodegenError> {
         // Each binding entry is decided by its row (F.40 phase 3, P2):
         // the transport kind, the role, the codec and whether the bundle
         // produces the topic are the row's, and the entry's own text
@@ -12262,25 +12272,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         listen: bool,
         span: hale_syntax::Span,
     ) -> Result<(), CodegenError> {
-        let url = format!("unix://{}", path);
-        let str_init = |name: &str, value: &str| StructInit {
-            name: Ident::new(name, span),
-            value: Expr::Literal(Literal::String(value.to_string()), span),
-            span,
-        };
-        let locus_lit = Expr::Struct {
-            id: hale_syntax::ast::NodeId::NONE,
-            path: QualifiedName {
-                segments: vec![Ident::new(locus_name, span)],
-                span,
-            },
-            inits: vec![
-                str_init("subject", subject),
-                str_init("url", &url),
-                str_init("path", path),
-            ],
-            span,
-        };
+        let locus_lit = hale_types::binding_rows::unix_transport_literal(locus_name, subject, path, span);
         if self.user_loci.get(locus_name).is_none() {
             return Err(CodegenError::Unsupported(format!(
                 "binding for topic `{}`: stdlib transport locus `{}` \
@@ -12663,16 +12655,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // generic monomorphization isn't relevant here (adapter
         // loci are concrete by construction), but a bare-name path
         // is what the rest of the pipeline expects.
-        let locus_path = QualifiedName {
-            segments: vec![locus.clone()],
-            span: locus.span,
-        };
-        let locus_lit = Expr::Struct {
-            id: hale_syntax::ast::NodeId::NONE,
-            path: locus_path,
-            inits: inits.to_vec(),
-            span: locus.span,
-        };
+        let locus_lit = hale_types::binding_rows::binding_literal(locus, inits);
 
         // GH #921 A2: codegen builds this literal; there is no
         // source expression to key a table row on. Its owner is
@@ -12810,16 +12793,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         locus: &Ident,
         inits: &[StructInit],
     ) -> Result<PointerValue<'ctx>, CodegenError> {
-        let locus_path = QualifiedName {
-            segments: vec![locus.clone()],
-            span: locus.span,
-        };
-        let locus_lit = Expr::Struct {
-            id: hale_syntax::ast::NodeId::NONE,
-            path: locus_path,
-            inits: inits.to_vec(),
-            span: locus.span,
-        };
+        let locus_lit = hale_types::binding_rows::binding_literal(locus, inits);
 
         // GH #921 A2: as for the adapter prelude above — a
         // literal codegen builds, whose owner A3 arranges here.

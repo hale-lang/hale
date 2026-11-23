@@ -254,3 +254,35 @@ pub fn derive_binding_rows(bundle: &Bundle<'_>, top: &TopScope) -> BindingRows {
     }
     BindingRows { rows }
 }
+
+/// GH #2111: the literal the program's prelude lowers for a binding's
+/// adapter or codec (`T: Adapter { … }`, `codec: C { … }`), as lowering
+/// builds it: the locus's name as one segment, at its span. The checker
+/// keys the literal's row by it, so the two sides name one node alike.
+pub fn binding_literal(locus: &hale_syntax::ast::Ident, inits: &[hale_syntax::ast::StructInit]) -> hale_syntax::ast::Expr {
+    use hale_syntax::ast::{Expr, NodeId, QualifiedName};
+    Expr::Struct {
+        id: NodeId::NONE,
+        path: QualifiedName { segments: vec![locus.clone()], span: locus.span },
+        inits: inits.to_vec(),
+        span: locus.span,
+    }
+}
+
+/// GH #2111: the literal the prelude lowers for a `T: unix(path)` binding
+/// (GH #233): its transport locus `locus`, built at `span` (the entry's
+/// topic) with its subject, its URL and its path.
+pub fn unix_transport_literal(locus: &str, subject: &str, path: &str, span: hale_syntax::Span) -> hale_syntax::ast::Expr {
+    use hale_syntax::ast::{Expr, Ident, Literal, NodeId, QualifiedName, StructInit};
+    let init = |name: &str, value: String| StructInit {
+        name: Ident::new(name, span),
+        value: Expr::Literal(Literal::String(value), span),
+        span,
+    };
+    Expr::Struct {
+        id: NodeId::NONE,
+        path: QualifiedName { segments: vec![Ident::new(locus, span)], span },
+        inits: vec![init("subject", subject.to_string()), init("url", format!("unix://{path}")), init("path", path.to_string())],
+        span,
+    }
+}
