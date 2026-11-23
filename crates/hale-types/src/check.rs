@@ -18777,10 +18777,10 @@ impl<'a> Checker<'a> {
     }
 
     fn lvalue_ty(&mut self, lv: &LValue) -> Ty {
-        // F.22: a cell has no value-level type (`Unknown`), but a field
-        // written through it is a field of the record it holds, its
-        // slot's element, and is typed as one (GH #2111: the place's row,
-        // which lowering reads).
+        // F.22: a field written through a cell is a field of the record
+        // it holds, its slot's element, and is typed as one (GH #2111: the
+        // place's row, which lowering reads): the cell's type says the
+        // element, and a local the check bound `Unknown` its origin.
         let mut cell_elem = None;
         let mut ty = if lv.head.name == "self" {
             self.note_self(lv.head.span);
@@ -18800,8 +18800,12 @@ impl<'a> Checker<'a> {
         } else {
             self.note_scoped_place(crate::typed_bodies::place_name_key(&lv.head), &ty);
         }
-        if let (Ty::Unknown, Some(elem), false) = (&ty, cell_elem, lv.tail.is_empty()) {
-            ty = elem;
+        if !lv.tail.is_empty() {
+            match (&ty, cell_elem) {
+                (Ty::Cell { elem, .. }, _) => ty = (**elem).clone(),
+                (Ty::Unknown, Some(elem)) => ty = elem,
+                _ => {}
+            }
         }
         // The place as written up to the segment at hand, for a hint.
         let mut spelled = lv.head.name.clone();
