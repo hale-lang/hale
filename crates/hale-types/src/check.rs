@@ -18414,6 +18414,17 @@ impl<'a> Checker<'a> {
         // topic is the one the subject names in the topic rows — a
         // literal by the wire subject it delivers on, a topic reference
         // by its name — and both directions are validated.
+        // GH #2111: a subject that is neither a topic nor a wire-subject
+        // literal is a value the send reads (`subj <- …`, a `String` built
+        // at run time), typed as any expression is, which lowering reads
+        let read = match subject {
+            Expr::Ident(id) => self.locals.lookup(&id.name).is_some(),
+            Expr::Literal(..) | Expr::Path(_) | Expr::Path2 { .. } => false,
+            _ => true,
+        };
+        if read {
+            let _ = self.check_expr(subject);
+        }
         let target_topic: Option<(String, Option<UnmatchedPolicy>, bool)> =
             match subject {
                 // a literal send delivers on its bytes: only the topic
