@@ -1549,7 +1549,8 @@ pub fn anchor_key(receiver: &Expr, field: &str) -> (u32, u32, u8, u64) {
 /// gives many nodes one span, and the names tell them apart (`xs` from
 /// `__n`, `b.items` from `b.items.len`). A local's, a field's, a path's
 /// last segment, a call's callee's, an operator's own with its operands'
-/// kinds; nothing for the rest.
+/// kinds, a value block's tail's, an `or`'s handled expression's; nothing
+/// for the rest.
 pub fn expr_name(e: &Expr) -> u64 {
     match e {
         Expr::Ident(i) => fnv(&i.name),
@@ -1561,7 +1562,7 @@ pub fn expr_name(e: &Expr) -> u64 {
         // class (its counter's `0` from its flag's `true`; a numeric one's
         // variant is left out, which a later rewrite may change: `5` held
         // at a `U64`), a block by whether it gives a value (the chain's
-        // `{ …; n }` from its `or { break; }`).
+        // `{ …; n }` from its `or { break; }`) and by what (below).
         Expr::Literal(l, _) => match l {
             Literal::Int(_)
             | Literal::U64(_)
@@ -1574,7 +1575,15 @@ pub fn expr_name(e: &Expr) -> u64 {
             Literal::Bytes(_) => 3,
             Literal::Nil => 4,
         },
-        Expr::Block(b) => u64::from(b.tail.is_some()),
+        // a block that gives a value by its tail too (an element chain's
+        // `{ …; best }` and `{ …; key }` are at the chain's span, of two
+        // types), and an `or` by what it handles (a chain's `push(r, x) or
+        // …` beside another of its `or`s)
+        Expr::Block(b) => match b.tail.as_deref() {
+            None => 0,
+            Some(t) => 1 | u64::from(expr_kind(t)) << 8 | expr_name(t).rotate_left(16),
+        },
+        Expr::Or { inner, .. } => u64::from(expr_kind(inner)) << 8 | expr_name(inner).rotate_left(16),
         // an operator by itself and its operands' kinds: an element
         // chain's counter step `ctr + 1`, its bound `ctr >= lim` and its
         // sum's `acc + fin` are all at the chain's span, of three types

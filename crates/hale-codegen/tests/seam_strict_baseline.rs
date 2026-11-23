@@ -482,18 +482,25 @@ fn the_burn_down_only_moves_forward() {
 
 /// The knob itself. On, a program that reaches a value lowering types
 /// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. A whole-set chain terminal written as a statement
-/// (`v.take(2).reverse_into(r);`) has no row of its own today (family 6
-/// `or`, `unknown`): when it has one, this test takes another site that
-/// has none, until there is none and the knob goes. (It took an element
-/// chain's accumulator until the chain's nodes had rows of their own, and
-/// then a range loop's variable until the check bound it.)
+/// family and why. A `match` used as a value whose every arm leaves
+/// (`let v = match n { 0 -> { return 10; }, … };`) has no row of its own
+/// today (family 6 `match`, `unknown`): when it has one, this test takes
+/// another site that has none, until there is none and the knob goes. (It
+/// took an element chain's accumulator until the chain's nodes had rows of
+/// their own, then a range loop's variable until the check bound it, and
+/// then a whole-set chain terminal's `or` until its key named what it
+/// handles.)
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
-    let src = "@form(vec)\nlocus Nums { capacity { heap items of Int; } }\n\
-               fn main() { let v = Nums { }; v.push(1); v.push(2); v.push(3); let r = Nums { }; \
-               v.take(2).reverse_into(r); println(r.len()); }\n";
+    let src = "fn all_arms(n: Int) -> Int {\n\
+                   let v = match n {\n\
+                       0 -> { return 10; },\n\
+                       _ -> { match n { 1 -> { return 11; }, _ -> { return 12; }, } },\n\
+                   };\n\
+                   return v;\n\
+               }\n\
+               fn main() { println(all_arms(1)); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);
@@ -502,7 +509,7 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
     assert!(!out.exists(), "nothing is emitted");
     let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
     let at = rows.iter().find(|r| !r.stdlib).unwrap_or_else(|| panic!("a site of the program is named: {err}"));
-    assert_eq!(at.in_fn, "main", "{err}");
+    assert_eq!(at.in_fn, "all_arms", "{err}");
     assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
 }
 
@@ -882,6 +889,51 @@ fn a_pattern_s_and_an_epoch_s_literals_have_rows() {
         .expect("it builds");
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n2\n");
+}
+
+/// An element chain's value blocks and `or`s have rows of their own. A
+/// chain builds them at its span, and a key told a block only by whether it
+/// gives a value and an `or` not at all: `max(it.qty)` gives its element
+/// from one value block and compares its key from another, and
+/// `reverse_into(r)` has an `or` beside another. A value block is keyed by
+/// its tail too, and an `or` by what it handles
+/// (`hale_types::typed_bodies::expr_name`).
+#[test]
+fn a_chain_s_blocks_and_ors_have_rows_of_their_own() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Line { sku: String = \"\"; qty: Int = 0; }\n\
+               type Ledger { entries: bounded[Line; 4]; }\n\
+               @form(vec)\n\
+               locus Nums { capacity { heap items of Int; } }\n\
+               fn main() {\n\
+                   let l = Ledger { };\n\
+                   push(l.entries, Line { sku: \"ab\", qty: 2 }) or discard;\n\
+                   push(l.entries, Line { sku: \"cd\", qty: 7 }) or discard;\n\
+                   let top = l.entries.max(it.qty) or Line { };\n\
+                   println(top.sku);\n\
+                   let v = Nums { };\n\
+                   v.push(1);\n\
+                   v.push(2);\n\
+                   v.push(3);\n\
+                   v.push(4);\n\
+                   let r = Nums { };\n\
+                   v.take(3).reverse_into(r);\n\
+                   println(r.get(0) or -1);\n\
+               }\n";
+    let out = harness::unique_bin("seam_strict_chain_blocks");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "cd\n3\n");
 }
 
 /// A `.Variant` pattern's binder of a generic enum's monomorph has a row:
