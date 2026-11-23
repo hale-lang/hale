@@ -27282,8 +27282,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     // — the same fn pointer `apply(add3)` makes for a
                     // same-seed fn.
                     if self.module.get_function(&mangled).is_some() {
-                        let id = Expr::Ident(Ident::new(mangled, qn.span));
-                        return self.lower_expr(&id, scope);
+                        return self.path_fn_value(e, &mangled);
                     }
                 }
                 // A Hale-bodied stdlib fn used as a value
@@ -27293,8 +27292,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // no body to point at; the check refuses it.
                 if let Some(mangled) = hale_types::stdlib_bodies::mangled_locus_name(&segs) {
                     if self.module.get_function(mangled).is_some() {
-                        let id = Expr::Ident(Ident::new(mangled, qn.span));
-                        return self.lower_expr(&id, scope);
+                        return self.path_fn_value(e, mangled);
                     }
                 }
                 Err(CodegenError::Unsupported(format!(

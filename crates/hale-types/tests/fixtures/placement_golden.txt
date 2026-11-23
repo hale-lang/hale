@@ -1718,6 +1718,13 @@ row	App@literal1	App	main	default
 row	App@literal1.host	Host	pool:web	entry	off owner
 dynamic	Waiter	on pool:web	in the seed
 
+== crates/hale-codegen/tests/asyncio_sweep_once.rs#adf87071
+root	App
+domain	pool:io	async_io
+row	App@literal1	App	main	default
+row	App@literal1.a	Spinner	pool:io	entry	off owner
+row	App@literal1.b	Spinner	pool:io	entry	off owner
+
 == crates/hale-codegen/tests/binding_birth_fail.rs#7d938778
 root	App
 row	App@literal1	App	main	default
