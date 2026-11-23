@@ -1039,6 +1039,32 @@ fn a_generic_locus_s_param_default_reads_its_monomorph_s_rows() {
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n");
 }
 
+/// The built locus's specialization wins over the enclosing generic fn's:
+/// `make<U>` building a `Holder<Int>` lowers its `Box { value: 7 }` default
+/// as `Holder_Int`'s, not with `make_String`'s own arguments.
+#[test]
+fn a_param_default_built_in_a_generic_fn_reads_the_built_locus_s_rows() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type Box<T> { value: T = 0; }\n\
+               locus Holder<T> { params { wrapped: Box<T> = Box { value: 7 }; } }\n\
+               fn make<U>(x: U) -> Int { let h: Holder<Int> = Holder { }; return h.wrapped.value; }\n\
+               fn main() { println(make(\"hello\")); }\n";
+    let out = harness::unique_bin("seam_strict_template_default_in_generic_fn");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "7\n");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)

@@ -230,6 +230,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// locus's monomorph the current `self` is. The checker walks each
     /// monomorph's body under its arguments, and lowering reads that walk.
     fn specialization_args(&self) -> Option<&'p [Ty]> {
+        // a locus's param defaults are its own text, lowered where it is
+        // built: their specialization is the built locus's
+        // (`params_init_self`), or none for a locus that is no monomorph,
+        // whatever the enclosing fn's or method's is
+        if let (Some(built), true) = (&self.params_init_self, self.in_params_default) {
+            let m = self.typed.monomorphs().named(&built.locus_name)?;
+            return (m.kind == hale_types::typed_bodies::TemplateKind::Locus).then_some(m.args.as_slice());
+        }
         if let Some((_, args)) = &self.current_specialization {
             // the args live as long as the specialization being lowered;
             // read them through the monomorph table, which lives as long
@@ -238,13 +246,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return Some(&m.args);
             }
         }
-        // a locus's param defaults are its own text, lowered where it is
-        // built: their specialization is the built locus's
-        // (`params_init_self`), not the enclosing method's
-        let cs = match (&self.params_init_self, self.in_params_default) {
-            (Some(built), true) => built,
-            _ => self.current_self.as_ref()?,
-        };
+        let cs = self.current_self.as_ref()?;
         let m = self.typed.monomorphs().named(&cs.locus_name)?;
         (m.kind == hale_types::typed_bodies::TemplateKind::Locus).then_some(m.args.as_slice())
     }
