@@ -19563,7 +19563,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // the statement
             Stmt::Expr(call @ Expr::Call { .. })
                 if self.owner_table.is_aggregate_call(call)
-                    && self.ty_or_fallback(call).is_some_and(|t| crate::locus::dissolve::composite_loci(&t).is_some()) =>
+                    && self
+                        .ty_required(call, "the checker's type of this call, which hands back an aggregate of loci")
+                        .is_some_and(|t| crate::locus::dissolve::composite_loci(&t).is_some()) =>
             {
                 let mark = self.deferred_dissolves.last().map_or(0, |f| f.len());
                 self.aggregate_discarded = true;
@@ -24411,7 +24413,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // where the iterand statically types as bounded — counted
         // loop over the live slots [0, len).
         if !is_self_children {
-            if let Some(CodegenTy::Bounded(belem, bcap)) = self.ty_or_fallback(iter) {
+            if let Some(CodegenTy::Bounded(belem, bcap)) = self.ty_required(iter, "the checker's type of this loop's iterand") {
                 return self.lower_for_bounded(var_name, iter, belem.as_ref().clone(), bcap, body, owned, scope);
             }
         }
@@ -26910,8 +26912,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.owner_table.entry_of(e).map(|x| &x.owner),
                     Some(crate::ownership::Owner::Binding(_) | crate::ownership::Owner::FrameTemp(_))
                 );
-                let ret = self.ty_or_fallback(e).filter(|t| crate::locus::dissolve::composite_loci(t).is_some());
-                if let (true, true, Some(ret_ty)) = (frame_owned, self.owner_table.is_aggregate_call(e), ret) {
+                // the call's type is asked of an aggregate call only, where
+                // it is read
+                let aggregate = frame_owned && self.owner_table.is_aggregate_call(e);
+                let ret = aggregate
+                    .then(|| self.ty_required(e, "the checker's type of this call, which hands back an aggregate of loci"))
+                    .flatten()
+                    .filter(|t| crate::locus::dissolve::composite_loci(t).is_some());
+                if let (true, Some(ret_ty)) = (aggregate, ret) {
                     let children: Vec<(u32, String)> = crate::locus::dissolve::composite_loci(&ret_ty)
                         .unwrap_or_default()
                         .into_iter()
@@ -27101,7 +27109,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // the checker's row of it says; GH #2132: so is one whose
                 // place is a narrower integer, at its width (the check held
                 // it to the range)
-                let ty = match self.ty_or_fallback(e) {
+                let ty = match self.ty_required(e, "the checker's type of this integer literal") {
                     Some(t @ (CodegenTy::U64 | CodegenTy::Narrow(_))) => t,
                     _ => CodegenTy::Int,
                 };

@@ -217,8 +217,8 @@ fn codegen_sources() -> BTreeMap<PathBuf, String> {
 /// - `CodegenTy built in an expression`: lines that build a `CodegenTy`
 ///   variant, not match one;
 /// - `seam fallbacks (static)`: the sites that take lowering's own path
-///   where the checker's row is missing (`Cx::seam_fallback`,
-///   `Cx::ty_or_fallback`), reached by a test or not;
+///   where the checker's row is missing (`Cx::seam_fallback`), reached by a
+///   test or not;
 ///
 /// all of which may only go down; and `seam reads`, the reads of the
 /// checker's type outside the seam itself (`Cx::ty_at`, and the ones that
@@ -293,7 +293,7 @@ fn static_measures() -> Vec<(&'static str, usize, bool)> {
                 built += 1;
             }
             if !seam {
-                fallbacks += code.matches(".seam_fallback(").count() + code.matches(".ty_or_fallback(").count();
+                fallbacks += code.matches(".seam_fallback(").count();
                 reads += [".ty_at(", ".call_result(", ".ty_required(", ".place_ty(", ".row_is_unit("].iter().map(|r| code.matches(r).count()).sum::<usize>();
             }
         }

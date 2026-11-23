@@ -40,14 +40,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// [`Cx::ty_at`] at a site that takes another path where the checker
-    /// left no row: one of the seam's fallbacks (GH #2111), counted by
-    /// `seam_strict_baseline`. A site moves to `ty_at` when it refuses a
-    /// missing row instead.
-    pub(crate) fn ty_or_fallback(&self, e: &Expr) -> Option<CodegenTy> {
-        self.ty_at(e)
-    }
-
     /// GH #2111: the checker's type of `e`, which lowering requires: a read
     /// that takes no other path. With no row (or a type with no layout)
     /// it answers `None` so that the caller's lowering can go on, and the
