@@ -27944,18 +27944,28 @@ impl<'a> Checker<'a> {
         for g in &template.generics {
             let Some(bound) = bindings.get(&g.name.name) else { continue };
             if let Some(what) = unnameable_generic_arg(bound) {
+                // a cell is no type a program spells (F.22): it is passed
+                // as its fields, or to a fn over its element
+                let fix = match bound {
+                    Ty::Cell { elem, .. } => format!(
+                        "Pass the cell's fields, or write the fn over the element type `{}`",
+                        elem.display()
+                    ),
+                    _ => format!(
+                        "Wrap the value in a declared type (`type Wrapped {{ v: {}; }}`), or write the fn \
+                         over the concrete type",
+                        bound.display()
+                    ),
+                };
                 self.diags.push(Diag::ty(
                     callee_span,
                     format!(
                         "generic fn `{}`: this call makes `{}` `{}`, {what}, and hale can't compile a \
                          generic fn specialized at one yet: a generic argument is a primitive or a \
-                         declared type (a struct, an enum, an alias, a locus or an interface). Wrap \
-                         the value in a declared type (`type Wrapped {{ v: {}; }}`), or write the fn \
-                         over the concrete type",
+                         declared type (a struct, an enum, an alias, a locus or an interface). {fix}",
                         shown,
                         g.name.name,
                         bound.display(),
-                        bound.display()
                     ),
                 ));
             }
@@ -30677,6 +30687,7 @@ fn unnameable_generic_arg(t: &Ty) -> Option<&'static str> {
         Ty::Tuple(_) => Some("a tuple"),
         Ty::Function { .. } => Some("a fn type"),
         Ty::Bounded(..) => Some("a `bounded` buffer"),
+        Ty::Cell { .. } => Some("a capacity slot's cell"),
         Ty::Prim(p) if crate::ty::generic_arg_mangle_token(*p).is_none() => Some("a primitive with no generic form"),
         _ => None,
     }
