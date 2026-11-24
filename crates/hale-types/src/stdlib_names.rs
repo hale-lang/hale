@@ -16,26 +16,6 @@ use hale_syntax::ast::{Program, TopDecl};
 use hale_syntax::error::{Diag, SpanOrigin};
 use hale_syntax::Span;
 
-/// A declaration's text without its positions (`Pos(12)`) or the
-/// snapshot's identities (`NodeId(7)`): two declarations with the
-/// same text compare equal wherever they sit.
-fn shape(d: &TopDecl) -> String {
-    let mut text = format!("{:?}", d);
-    for open in ["Pos(", "NodeId("] {
-        let mut out = String::with_capacity(text.len());
-        let mut rest = text.as_str();
-        while let Some(at) = rest.find(open) {
-            let digits = &rest[at + open.len()..];
-            let n = digits.bytes().take_while(u8::is_ascii_digit).count();
-            out.push_str(&rest[..at + open.len()]);
-            rest = &digits[n..];
-        }
-        out.push_str(rest);
-        text = out;
-    }
-    text
-}
-
 /// Every top-level declaration, the kinds the program's own duplicate
 /// rule covers (resolve.rs, "duplicate top-level name"): one namespace.
 fn declared<'p>(items: &'p [TopDecl], out: &mut Vec<(String, Span, &'static str, &'p TopDecl)>) {
@@ -64,15 +44,17 @@ pub fn stdlib_name_diags(programs: &BTreeMap<String, &Program>) -> Vec<Diag> {
 
 /// [`stdlib_name_diags`] against a given stdlib program: `std_prog`'s own
 /// duplicates, and each declaration in `programs` that reuses one of its
-/// names (one identical to the stdlib's is the stdlib's own seed).
+/// names, one identical to the stdlib's included: the stdlib's own seed
+/// checked as a program declares the name a second time, which the merge
+/// would hold twice (GH #2111).
 pub fn name_diags(std_prog: &Program, programs: &BTreeMap<String, &Program>) -> Vec<Diag> {
     let mut std_decls = Vec::new();
     declared(&std_prog.items, &mut std_decls);
     let mut diags = Vec::new();
-    let mut first: BTreeMap<String, (Span, &'static str, &TopDecl)> = BTreeMap::new();
-    for (name, span, kind, decl) in std_decls {
+    let mut first: BTreeMap<String, (Span, &'static str)> = BTreeMap::new();
+    for (name, span, kind, _) in std_decls {
         match first.get(&name) {
-            Some((at, _, _)) => diags.push(Diag {
+            Some((at, _)) => diags.push(Diag {
                 origin: SpanOrigin::Stdlib,
                 ..Diag::ty(
                     span,
@@ -83,20 +65,15 @@ pub fn name_diags(std_prog: &Program, programs: &BTreeMap<String, &Program>) -> 
                 .with_stdlib_related(*at, "the earlier declaration")
             }),
             None => {
-                first.insert(name, (span, kind, decl));
+                first.insert(name, (span, kind));
             }
         }
     }
     for program in programs.values() {
         let mut mine = Vec::new();
         declared(&program.items, &mut mine);
-        for (name, span, kind, decl) in mine {
-            if let Some((at, std_kind, std_decl)) = first.get(&name) {
-                // the stdlib's own seed, checked as a program (the corpus
-                // harvests them): the same declaration, not a second one
-                if shape(decl) == shape(std_decl) {
-                    continue;
-                }
+        for (name, span, kind, _) in mine {
+            if let Some((at, std_kind)) = first.get(&name) {
                 diags.push(
                     Diag::ty(
                         span,

@@ -61,17 +61,23 @@ fn a_program_locus_named_like_a_stdlib_locus_is_refused() {
     );
 }
 
-/// The stdlib's own seed, checked as a program, is the same declaration
-/// and not a second one; and a program's own names are untouched.
+/// The stdlib's own seed, checked as a program, declares its names a
+/// second time: the merge would hold the stdlib's declaration and the
+/// seed's under one name, so it is refused as any reuse is (GH #2111). A
+/// program's own names are untouched.
 #[test]
-fn the_stdlibs_own_declaration_and_ordinary_names_are_clean() {
+fn the_stdlibs_own_declaration_checked_again_is_refused_and_ordinary_names_are_clean() {
     let std_src = "locus __StdConn {\n    params { fd: Int = 0; }\n}\n";
     let std_prog = parse_source(std_src).expect("parse");
     // the same text again, at other positions
     let same = parse_source(&format!("\n\n{std_src}")).expect("parse");
-    let mine = parse_source("locus Conn {\n    params { fd: Int = 0; }\n}\n").expect("parse");
     let mut programs = BTreeMap::new();
     programs.insert("std_seed.hl".to_string(), &same);
+    let diags = name_diags(&std_prog, &programs);
+    assert_eq!(diags.len(), 1, "{:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>());
+    assert!(diags[0].message.contains("the stdlib's internal name"), "{}", diags[0].message);
+    let mine = parse_source("locus Conn {\n    params { fd: Int = 0; }\n}\n").expect("parse");
+    let mut programs = BTreeMap::new();
     programs.insert("app.hl".to_string(), &mine);
     let diags = name_diags(&std_prog, &programs);
     assert!(diags.is_empty(), "{:?}", diags.iter().map(|d| &d.message).collect::<Vec<_>>());

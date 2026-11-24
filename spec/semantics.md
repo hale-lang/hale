@@ -6738,11 +6738,14 @@ internal names (`std::http::Server` is the locus `__StdHttpServer`).
 A program declaration of any kind that reuses one of those names is
 the same duplicate-name error, in the same one namespace: `hale
 check` refuses it where it stands and names the stdlib's
-declaration. The stdlib's own source checked as a program declares
-the same thing again, not a second thing, and is not refused; and a
-library's names reach an importer mangled (`__lib_…`), so only a
-library checked on its own can meet one. The stdlib itself declares
-each name once, which its own test holds it to.
+declaration. The stdlib's own source checked as a program is refused
+the same way: it declares each of those names a second time, and the
+program it would build holds the stdlib's declaration and its own under
+one name (a stdlib module is never a program of its own; its bodies are
+built as the stdlib's in every program that reaches them). A library's
+names reach an importer mangled (`__lib_…`), so only a library checked
+on its own can meet one. The stdlib itself declares each name once,
+which its own test holds it to.
 
 A seed's entry point is its `fn main` (or the `main locus` that one
 instantiates).
