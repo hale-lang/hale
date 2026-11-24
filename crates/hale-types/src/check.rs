@@ -18241,8 +18241,8 @@ impl<'a> Checker<'a> {
             for alt in resolved_pattern.alternatives() {
                 // GH #2111: a literal pattern is lowered as a literal of the
                 // scrutinee's type, which this holds it to
-                if let (Pattern::Literal(lit, span), true) = (alt, self.records_views()) {
-                    self.views.note_built(&stmt.scrutinee, &Expr::Literal(lit.clone(), *span), scrut_ty.clone());
+                if self.records_views() {
+                    self.note_pattern_literals(&stmt.scrutinee, alt, &scrut_ty);
                 }
                 self.check_set_pattern(alt, &scrut_ty);
                 self.check_bare_variant_pattern(alt, &scrut_ty);
@@ -23160,6 +23160,23 @@ impl<'a> Checker<'a> {
     /// Scoped per seed by GH #762 / #746 rather than here: a head
     /// another seed declares and this one does not is that rule's,
     /// reported by the CLI before the table can answer it.
+    /// GH #2111: each literal of `pat`, matched against a value of `ty`,
+    /// is lowered as a literal of the type it is matched against: the
+    /// scrutinee's, or a tuple's part's in a tuple's sub-pattern.
+    fn note_pattern_literals(&mut self, scrutinee: &Expr, pat: &Pattern, ty: &Ty) {
+        match (pat, self.through_aliases(ty.clone())) {
+            (Pattern::Literal(lit, span), _) => {
+                self.views.note_built(scrutinee, &Expr::Literal(lit.clone(), *span), ty.clone());
+            }
+            (Pattern::Tuple(parts, _), Ty::Tuple(tys)) if parts.len() == tys.len() => {
+                for (p, t) in parts.iter().zip(&tys) {
+                    self.note_pattern_literals(scrutinee, p, t);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Whether `path` is one of [`UNPREFIXED_STDLIB_PATHS`], written
     /// where nothing the program declares or imports names its head.
     fn unprefixed_stdlib_path(&self, path: &QualifiedName) -> bool {
