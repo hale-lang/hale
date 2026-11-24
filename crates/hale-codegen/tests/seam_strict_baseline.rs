@@ -484,31 +484,26 @@ fn the_burn_down_only_moves_forward() {
 
 /// The knob itself. On, a program that reaches a value lowering types
 /// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. A self-publish to a handler that takes a
-/// `std::api::Context` is rewritten after the check into a direct call
-/// passing `std::api::local_context()` (GH #1108), and that call has no
-/// row today (family 9 `call`), so this test's program is that one. When
-/// it has one, this test takes another site that has none, until there is
-/// none and the knob goes. (It took an element chain's accumulator until
-/// the chain's nodes had rows of their own, then a range loop's variable
-/// until the check bound it, then a whole-set chain terminal's `or` until
-/// its key named what it handles, then a `match` whose every arm leaves
-/// until the check recorded it as giving no value, then a generic locus's
-/// param default until lowering read it in the built monomorph, then a
-/// pool slot's `acquire()` until the check typed a cell, and then a
-/// quantity literal in a tuple's sub-pattern until the check typed a
-/// sub-pattern's literals.)
+/// family and why. Every check-clean program the burn-down builds has its
+/// rows; a locus param of a record whose every field has a default is
+/// given a `T { }` lowering synthesizes after the check (B7 / G19), which
+/// the check refuses to omit (`missing field`), so this test's program,
+/// built past the check, is that one. (It took an element chain's
+/// accumulator until the chain's nodes had rows of their own, then a range
+/// loop's variable until the check bound it, then a whole-set chain
+/// terminal's `or` until its key named what it handles, then a `match`
+/// whose every arm leaves until the check recorded it as giving no value,
+/// then a generic locus's param default until lowering read it in the
+/// built monomorph, then a pool slot's `acquire()` until the check typed a
+/// cell, then a quantity literal in a tuple's sub-pattern until the check
+/// typed a sub-pattern's literals, and then a direct send's
+/// `local_context()` until the check typed the call the rewrite makes.)
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
-    let src = "type Ping { n: Int; }\n\
-               topic Pings { payload: Ping; subject: \"solo.ping\"; }\n\
-               locus Solo {\n\
-                   bus { subscribe Pings as on_ping; publish Pings; }\n\
-                   fn on_ping(p: Ping, ctx: std::api::Context) { println(ctx.via + \" \" + to_string(p.n)); }\n\
-                   run() { Pings <- Ping { n: 3 }; }\n\
-               }\n\
-               fn main() { Solo { }; }\n";
+    let src = "type Cfg { host: String = \"localhost\"; port: Int = 8080; }\n\
+               locus Server { params { cfg: Cfg; } fn show() { println(self.cfg.port); } }\n\
+               fn main() { let s = Server { }; s.show(); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);
@@ -516,8 +511,7 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let err = build_opts::build_source(src, &out, &strict).expect_err("on, it is refused");
     assert!(!out.exists(), "nothing is emitted");
     let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
-    let at = rows.iter().find(|r| !r.stdlib).unwrap_or_else(|| panic!("a site of the program is named: {err}"));
-    assert_eq!(at.kind, "call", "{err}");
+    let at = rows.iter().find(|r| !r.stdlib && r.kind == "struct").unwrap_or_else(|| panic!("the synthesized literal is named: {err}"));
     assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
 }
 
@@ -548,8 +542,10 @@ fn a_sub_pattern_s_literals_have_rows() {
 
 /// Values lowering lowers that the check left untyped, or never visited:
 /// a restart bound, a shm write's binder, an unascribed param's array of
-/// loci, a generic record's array-of-instantiation field, and the
-/// unprefixed `time::` calls. Each has its row.
+/// loci, a generic record's array-of-instantiation field, the unprefixed
+/// `time::` calls, a generic locus's field of a fn type named by an alias
+/// called, the `local_context()` a direct send passes, and a batch
+/// handler's `Drain<T>` and its elements. Each has its row.
 #[test]
 fn what_the_check_left_untyped_has_rows() {
     let strict = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
@@ -627,6 +623,66 @@ fn main() {
     if e > 20ms { println("ok"); }
 }
 "#),
+        ("generic fn-typed field called", r#"type Callback = fn(H) -> Int;
+locus Hook<T> { params { cb: T; } fn fire(h: H) -> Int { return self.cb(h); } }
+fn reset(h: H) -> Int { return 7; }
+locus H {
+    params { n: Int = 1; }
+    fn generic() -> Int {
+        let hk: Hook<Callback> = Hook { cb: reset };
+        return hk.fire(self);
+    }
+}
+fn main() { let h = H { }; println(h.generic()); }
+"#),
+        ("context of a direct send", r#"type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "solo.ping"; }
+locus Solo {
+    bus { subscribe Pings as on_ping; publish Pings; }
+    fn on_ping(p: Ping, ctx: std::api::Context) { println(ctx.via + " " + to_string(p.n)); }
+    run() { Pings <- Ping { n: 3 }; }
+}
+fn main() { Solo { }; }
+"#),
+        ("batch handler's Drain", r#"
+        type Tick { px: Int; sz: Int; }
+        topic Quotes { payload: Tick; subject: "quotes-x"; }
+
+        locus Agg {
+            params { total: Int = 0; }
+            bus { subscribe Quotes as on_quotes; }
+            fn on_quotes(feed: Drain<Tick>) {
+                for t in feed {
+                    self.total = self.total + t.px;
+                }
+                println("agg total=", self.total);
+            }
+        }
+
+        locus Feed {
+            bus { publish Quotes; }
+            birth() {
+                Quotes <- Tick { px: 10, sz: 1 };
+                Quotes <- Tick { px: 20, sz: 2 };
+                Quotes <- Tick { px: 30, sz: 3 };
+            }
+        }
+
+        main locus App {
+            bindings {
+                Quotes: shm_ring("/hale_scratch_drain", slot_count: 1024, on_overflow: drop) where zero_copy;
+            }
+        }
+
+        fn main() {
+            App { };
+            Agg { };
+            Feed { };
+            // Give the batch reader thread time to receive + dispatch
+            // the published batch before the process exits.
+            time::sleep(500ms);
+        }
+    "#),
         ("shm write binder", r#"
         ring_layout ForeignRing {
             magic 0x52494E47464D5431;

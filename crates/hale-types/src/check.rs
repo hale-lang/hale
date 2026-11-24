@@ -17618,6 +17618,11 @@ impl<'a> Checker<'a> {
                 } else {
                     match real_field.unwrap_or_else(|| self.check_expr(iter)) {
                         Ty::Bounded(e, _) | Ty::Array(e, _) => *e,
+                        // GH #2111: a batch handler's `Drain<T>` (spelled
+                        // as its monomorph, `Drain_T`) hands out `T`s
+                        Ty::Named(n) if n.strip_prefix("Drain_").is_some_and(|t| self.known.contains_key(t)) => {
+                            Ty::Named(n["Drain_".len()..].to_string())
+                        }
                         // GH #1995 (G12): a String is no sequence, and
                         // the build refused the loop ("for-loop iterator
                         // must be an array") after the check passed it.
@@ -26314,6 +26319,9 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
+                // a fn type named by an alias (`type Callback = fn(H) ->
+                // Int`, a generic field bound to it) is that fn type
+                let callee_ty = self.through_aliases(callee_ty);
                 let expected: Vec<Ty> = match &callee_ty {
                     Ty::Function { params, .. } => params.clone(),
                     _ => Vec::new(),

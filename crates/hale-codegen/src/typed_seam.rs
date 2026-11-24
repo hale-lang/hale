@@ -271,6 +271,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Ty::Cell { elem, locus, slot } = t {
             return Some(CodegenTy::Cell(Box::new(self.layout_of(elem)?), Some((locus.clone(), slot.clone()))));
         }
+        // A batch handler's `Drain<T>` is spelled as its monomorph
+        // (`Drain_T`), which no declaration declares: the run of `T`s
+        // lowering hands the handler
+        if let Ty::Named(n) = t {
+            if let Some(elem) = n.strip_prefix("Drain_").filter(|e| self.user_types.contains_key(*e)) {
+                return Some(CodegenTy::Drain(Box::new(self.layout_of(&Ty::Named(elem.to_string()))?)));
+            }
+        }
         let te = spelled(t)?;
         self.type_expr_to_codegen_ty(&te).ok()
     }
