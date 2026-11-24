@@ -258,6 +258,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 return self.type_expr_to_codegen_ty(&TypeExpr::Primitive(int, hale_syntax::Span::new(0, 0))).ok();
             }
         }
+        // A capacity slot's cell is a type no declaration spells: the cell
+        // lowering builds, of its element, from its locus and slot (F.22)
+        if let Ty::Cell { elem, locus, slot } = t {
+            return Some(CodegenTy::Cell(Box::new(self.layout_of(elem)?), Some((locus.clone(), slot.clone()))));
+        }
         let te = spelled(t)?;
         self.type_expr_to_codegen_ty(&te).ok()
     }
@@ -290,7 +295,7 @@ fn spelled(t: &Ty) -> Option<TypeExpr> {
         },
         Ty::Fallible { success, .. } => spelled(success)?,
         Ty::Unit => TypeExpr::Tuple(Vec::new(), span),
-        Ty::Projection(..) | Ty::Unknown => return None,
+        Ty::Projection(..) | Ty::Cell { .. } | Ty::Unknown => return None,
     })
 }
 

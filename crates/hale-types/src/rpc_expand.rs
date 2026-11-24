@@ -1768,7 +1768,7 @@ pub fn expand(
             digest = q(&hale_model::surface::digest_text(plan.digest)),
             bound = site.bound,
         );
-        let Some(mut generated) = parse_params(&src) else { continue };
+        let Some(mut generated) = parse_params(&src, id) else { continue };
         if let ParamInit::Value(Expr::Struct { inits, .. }) = &mut generated.init {
             let mut push = |name: &str, value: Expr| {
                 inits.push(StructInit { name: Ident::new(name, span), value, span });
@@ -2323,8 +2323,12 @@ fn push_placement(l: &mut LocusDecl, entry: hale_syntax::ast::PlacementEntry, sp
     }
 }
 
-fn parse_params(src: &str) -> Option<ParamDecl> {
-    let prog = parse_source_at(src, API_SYNTH_BASE + 0x0200_0000).ok()?;
+/// The param `src` declares, parsed for the exposure `id` at a range of
+/// its own (GH #2111): two exposures' params are the same text but for
+/// their names, and at one span their literals (`__RpcSurface_<id> { }`)
+/// were one row key with two types.
+fn parse_params(src: &str, id: i64) -> Option<ParamDecl> {
+    let prog = parse_source_at(src, API_SYNTH_BASE + 0x0200_0000 + id as u32 * 0x1_0000).ok()?;
     for item in prog.items {
         if let TopDecl::Locus(l) = item {
             for m in l.members {

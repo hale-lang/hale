@@ -336,7 +336,7 @@ fn expand_alias_ty(
             success: Box::new(expand_alias_ty(success, aliases, seen, cyclic)),
             payload: Box::new(expand_alias_ty(payload, aliases, seen, cyclic)),
         },
-        Ty::Prim(_) | Ty::Unit | Ty::Unknown => ty.clone(),
+        Ty::Prim(_) | Ty::Unit | Ty::Unknown | Ty::Cell { .. } => ty.clone(),
     }
 }
 

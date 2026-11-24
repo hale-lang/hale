@@ -484,23 +484,23 @@ fn the_burn_down_only_moves_forward() {
 
 /// The knob itself. On, a program that reaches a value lowering types
 /// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. A pool slot's `acquire()` has no row today (family 2
-/// `call`, `unknown`): the check has no type for a cell. When it has one,
-/// this test takes another site that has none, until there is none and
-/// the knob goes. (It took an element chain's accumulator until the
-/// chain's nodes had rows of their own, then a range loop's variable until
-/// the check bound it, then a whole-set chain terminal's `or` until its key
-/// named what it handles, then a `match` whose every arm leaves until the
-/// check recorded it as giving no value, and then a generic locus's param
-/// default until lowering read it in the built monomorph.)
+/// family and why. A quantity literal in a tuple's sub-pattern (`(1, 1min)
+/// -> …` against a `(Int, Duration)`) has no row today (family 7
+/// `literal`): the corpus has no site left without one, so this test's
+/// program is its own. When it has one, this test takes another site that
+/// has none, until there is none and the knob goes. (It took an element
+/// chain's accumulator until the chain's nodes had rows of their own, then
+/// a range loop's variable until the check bound it, then a whole-set
+/// chain terminal's `or` until its key named what it handles, then a
+/// `match` whose every arm leaves until the check recorded it as giving no
+/// value, then a generic locus's param default until lowering read it in
+/// the built monomorph, and then a pool slot's `acquire()` until the check
+/// typed a cell.)
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
-    let src = "locus Slots {\n\
-                   capacity { pool entries of Int; }\n\
-                   run() { let c = self.entries.acquire(); self.entries.release(c); }\n\
-               }\n\
-               fn main() { Slots { }; }\n";
+    let src = "fn f(t: (Int, Duration)) -> Int { return match t { (1, 1min) -> 1, _ -> 0 }; }\n\
+               fn main() { println(f((1, 60s))); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);
@@ -509,7 +509,7 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
     assert!(!out.exists(), "nothing is emitted");
     let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
     let at = rows.iter().find(|r| !r.stdlib).unwrap_or_else(|| panic!("a site of the program is named: {err}"));
-    assert_eq!(at.kind, "call", "{err}");
+    assert_eq!(at.kind, "literal", "{err}");
     assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
 }
 
@@ -1100,6 +1100,59 @@ fn a_send_s_read_subject_has_a_row() {
     let _ = std::fs::remove_file(&out);
 }
 
+/// Each exposure's generated param has rows of its own. The API expansion
+/// builds an exposure's param from text, `… rows: __RpcSurface_<id> { } …`,
+/// and parsed every exposure's at one range: two exposures' surface
+/// literals were at one span of the main locus's body, one row key with two
+/// types (`__RpcSurface_3` and `__RpcSurface_4`), `Unknown`. Each exposure's
+/// is parsed at a range of its own. `tests/hale/api/witness_test.hl` serves
+/// several surfaces from one main locus.
+#[test]
+fn each_exposure_s_generated_param_has_rows_of_its_own() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let entry = repo_root().join("tests/hale/api/witness_test.hl");
+    let rows = missing_rows("witness_test", &entry, &strict).expect("it lowers");
+    let program: Vec<_> = rows.iter().filter(|(_, r)| !r.stdlib).collect();
+    assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+}
+
+/// A capacity slot's cell has a type: `self.<slot>.acquire()` from a pool
+/// and `alloc()` from a heap give a cell of the slot's element, from this
+/// locus and slot, as lowering builds it, and a cell of a record reads and
+/// writes its element's fields. The check typed the call `Unknown` and the
+/// local bound to it with it.
+#[test]
+fn a_slot_s_cell_has_a_type() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "type R { a: Int = 0; }\n\
+               locus Slots {\n\
+                   capacity { pool entries of Int; heap cells of R; }\n\
+                   run() {\n\
+                       let c = self.entries.acquire();\n\
+                       self.entries.release(c);\n\
+                       let r = self.cells.alloc();\n\
+                       r.a = 3;\n\
+                       println(r.a + 1);\n\
+                       self.cells.free(r);\n\
+                   }\n\
+               }\n\
+               fn main() { Slots { }; }\n";
+    let out = harness::unique_bin("seam_strict_slot_cells");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "4\n");
+}
+
 /// A send the intra-locus rewrite turns into a direct call has rows for
 /// the nodes the call is made of. The rewrite is lowering's, after the
 /// check, and builds `self.<field>.<handler>(value)` (a child subscribes)
@@ -1222,4 +1275,5 @@ fn a_stdlib_default_has_rows_where_it_is_evaluated() {
     let _ = std::fs::remove_file(&out);
     assert_eq!(String::from_utf8_lossy(&ran.stdout), "-1\nlocal\n");
 }
+
 

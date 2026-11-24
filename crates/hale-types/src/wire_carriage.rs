@@ -179,7 +179,7 @@ fn ty_shape(ty: &Ty, top: &TopScope) -> Result<Option<WireShape>, &'static str> 
         Ty::Tuple(_) => WireShape::Tuple,
         Ty::Function { .. } => return Err(refusal::FN_VALUE),
         Ty::Projection(..) => return Err(refusal::PROJECTION),
-        Ty::Unit | Ty::Fallible { .. } | Ty::Unknown => return Ok(None),
+        Ty::Unit | Ty::Fallible { .. } | Ty::Cell { .. } | Ty::Unknown => return Ok(None),
     }))
 }
 

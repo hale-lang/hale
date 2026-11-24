@@ -3319,6 +3319,29 @@ mod callee_row_tests {
         assert_eq!(messages(src), vec!["let `s`: expected `String`, got `Int`".to_string()]);
     }
 
+    /// A capacity slot's cell is no generic argument: a specialization is
+    /// declared under a name its type arguments spell, and no type spells a
+    /// cell (F.22), so the build refused `id(self.entries.acquire())` ("a
+    /// generic fn specialized at … : a generic argument is a primitive or a
+    /// declared type") after the check, which typed the cell (GH #2111),
+    /// accepted it. Refused at the call.
+    #[test]
+    fn a_cell_is_no_generic_argument() {
+        let src = "type Entry { key: Int = 0; }\n\
+                   fn id<T>(x: T) -> T { return x; }\n\
+                   locus L {\n    capacity { pool entries of Entry; }\n    \
+                   run() { let c = id(self.entries.acquire()); self.entries.release(c); }\n}\n\
+                   fn main() { L { }; }\n";
+        let msgs = messages(src);
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(
+            msgs[0].starts_with("generic fn `id`: this call makes `T` `a cell of `entries` (Entry)`, a capacity slot's cell")
+                && msgs[0].ends_with("Pass the cell's fields, or write the fn over the element type `Entry`"),
+            "{}",
+            msgs[0]
+        );
+    }
+
     /// A `.Variant` pattern's binder against a generic enum's monomorph is
     /// the monomorph's value (`.Some(x)` against a `Value<Int>` binds an
     /// `Int`), directly and through an alias. The check found a variant's values only in a declared enum,

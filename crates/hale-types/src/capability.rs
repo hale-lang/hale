@@ -345,7 +345,7 @@ impl FfiTypeClass {
             Ty::Tuple(_) => FfiTypeClass::Tuple,
             Ty::Function { .. } => FfiTypeClass::Function,
             Ty::Fallible { .. } => FfiTypeClass::Fallible,
-            Ty::Unknown => FfiTypeClass::Unknown,
+            Ty::Unknown | Ty::Cell { .. } => FfiTypeClass::Unknown,
         }
     }
 }
