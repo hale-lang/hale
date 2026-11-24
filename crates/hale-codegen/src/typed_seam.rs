@@ -24,6 +24,10 @@ use hale_types::typed_bodies::{expr_kind, expr_name};
 
 use crate::codegen::{CodegenError, CodegenTy, Cx, MissingRow};
 
+/// What a call that hands back an aggregate of loci asks of the checker
+/// ([`Cx::ty_required`]): its type, whose loci its owner tears down.
+pub(crate) const AGGREGATE_CALL: &str = "the checker's type of this call, which hands back an aggregate of loci";
+
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The checker's type of `e`, an expression of the body being lowered,
     /// as a layout: `None` outside every body, where the checker recorded
@@ -38,14 +42,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 None
             }
         }
-    }
-
-    /// [`Cx::ty_at`] at a site that takes another path where the checker
-    /// left no row: one of the seam's fallbacks (GH #2111), counted by
-    /// `seam_strict_baseline`. A site moves to `ty_at` when it refuses a
-    /// missing row instead.
-    pub(crate) fn ty_or_fallback(&self, e: &Expr) -> Option<CodegenTy> {
-        self.ty_at(e)
     }
 
     /// GH #2111: the checker's type of `e`, which lowering requires: a read
@@ -172,17 +168,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// site; and under strict mode every expression lowering typed without
     /// the checker's row, refused together.
     pub(crate) fn refuse_missing_rows(&self) -> Result<(), CodegenError> {
-        if let Some((what, at)) = self.required_misses.borrow().first() {
-            return Err(CodegenError::missing_row("expression_typing", what, Some(*at)));
-        }
-        if !self.seam_strict {
-            return Ok(());
-        }
+        // under strict mode a required read's miss is one of the rows
+        // (`ty_required` asks `ty_at`), listed with the others
         let rows: Vec<MissingRow> = self.seam_misses.borrow().values().cloned().collect();
-        if rows.is_empty() {
-            return Ok(());
+        if self.seam_strict && !rows.is_empty() {
+            return Err(CodegenError::MissingRows(rows));
         }
-        Err(CodegenError::MissingRows(rows))
+        match self.required_misses.borrow().first() {
+            Some((what, at)) => Err(CodegenError::missing_row("expression_typing", what, Some(*at))),
+            None => Ok(()),
+        }
     }
 
     /// GH #2111: the checker's type of the assignment target `target`, a
