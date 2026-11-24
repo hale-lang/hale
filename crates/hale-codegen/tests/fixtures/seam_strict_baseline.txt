@@ -11,7 +11,7 @@
 measure	static typers	9
 measure	value+type lowerings	378
 measure	CodegenTy built in an expression	986
-measure	seam fallbacks (static)	25
+measure	seam fallbacks (static)	26
 measure	seam reads	37
 total	69
 2	call	program	unknown	3
