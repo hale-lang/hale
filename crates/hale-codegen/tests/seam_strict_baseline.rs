@@ -89,12 +89,21 @@ fn programs() -> Vec<(String, Source)> {
 /// one the checker accepts, with `fn main() { }` added where it has
 /// none; not one that imports a sibling seed (the harvester holds one
 /// seed at a time), declares an `@ffi` host import (whose host side is
-/// the test's) or selects wasm32. They reach code no seed on disk does:
-/// stdlib modules, synthesized defaults, generated handlers.
+/// the test's), selects wasm32, or is a stdlib module itself. They reach
+/// code no seed on disk does: stdlib bodies, synthesized defaults,
+/// generated handlers.
 fn embedded() -> Vec<(String, hale_syntax::ast::Program)> {
     let mut out = Vec::new();
     for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
         if p.source.contains("import \"") || p.source.contains("@ffi(") {
+            continue;
+        }
+        // A stdlib module is no program: its bodies are lowered as the
+        // stdlib's in every program, from the stdlib's own walk, and built
+        // as a seed of its own it declares the stdlib's names a second
+        // time, so lowering reads the stdlib's copy against the seed's
+        // rows (GH #2111)
+        if p.origin.starts_with("crates/hale-stdlib/") {
             continue;
         }
         let Ok(mut program) = hale_syntax::parse_source(&p.source) else { continue };
