@@ -117,7 +117,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         // locus it is lowered for, where the checker typed the interface
         if let (Some(m), Expr::Ident(id), Ty::Named(n)) = (&self.current_accept_interface, e, ty) {
             if id.name == m.param && *n == m.iface {
-                return Ok(CodegenTy::LocusRef(m.child.clone()));
+                return self.layout_of(&Ty::Named(m.child.clone())).ok_or("no layout");
             }
         }
         self.layout_of(ty).ok_or("no layout")

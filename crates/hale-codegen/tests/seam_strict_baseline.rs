@@ -562,23 +562,25 @@ fn the_burn_down_only_moves_forward() {
 
 /// The knob itself. On, a program that reaches a value lowering types
 /// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. A quantity literal in a tuple's sub-pattern (`(1, 1min)
-/// -> …` against a `(Int, Duration)`) has no row today (family 7
-/// `literal`): the corpus has no site left without one, so this test's
-/// program is its own. When it has one, this test takes another site that
-/// has none, until there is none and the knob goes. (It took an element
-/// chain's accumulator until the chain's nodes had rows of their own, then
-/// a range loop's variable until the check bound it, then a whole-set
-/// chain terminal's `or` until its key named what it handles, then a
-/// `match` whose every arm leaves until the check recorded it as giving no
-/// value, then a generic locus's param default until lowering read it in
-/// the built monomorph, and then a pool slot's `acquire()` until the check
-/// typed a cell.)
+/// family and why. A locus param of a record whose every field has a
+/// default is given a `T { }` lowering synthesizes after the check (B7 /
+/// G19), which the check refuses to omit (`missing field`), so this test's
+/// program, built past the check, is that one. When it has a row, this test
+/// takes another site that has none, until there is none and the knob goes.
+/// (It took an element chain's accumulator until the chain's nodes had rows
+/// of their own, then a range loop's variable until the check bound it,
+/// then a whole-set chain terminal's `or` until its key named what it
+/// handles, then a `match` whose every arm leaves until the check recorded
+/// it as giving no value, then a generic locus's param default until
+/// lowering read it in the built monomorph, then a pool slot's `acquire()`
+/// until the check typed a cell, and then a quantity literal in a tuple's
+/// sub-pattern until lowering built it as its conversion's target.)
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
-    let src = "fn f(t: (Int, Duration)) -> Int { return match t { (1, 1min) -> 1, _ -> 0 }; }\n\
-               fn main() { println(f((1, 60s))); }\n";
+    let src = "type Cfg { host: String = \"localhost\"; port: Int = 8080; }\n\
+               locus Server { params { cfg: Cfg; } fn show() { println(self.cfg.port); } }\n\
+               fn main() { let s = Server { }; s.show(); }\n";
     let out = harness::unique_bin("seam_strict_off");
     build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
     let _ = std::fs::remove_file(&out);
@@ -586,8 +588,7 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let err = build_opts::build_source(src, &out, &strict).expect_err("on, it is refused");
     assert!(!out.exists(), "nothing is emitted");
     let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
-    let at = rows.iter().find(|r| !r.stdlib).unwrap_or_else(|| panic!("a site of the program is named: {err}"));
-    assert_eq!(at.kind, "literal", "{err}");
+    let at = rows.iter().find(|r| !r.stdlib && r.kind == "struct").unwrap_or_else(|| panic!("the synthesized literal is named: {err}"));
     assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
 }
 
