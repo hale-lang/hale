@@ -295,7 +295,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// one body only, and a stdlib body's spans start at 0 like the first
     /// user file's, so the stdlib's bodies, which the checker records no
     /// row for, find none. Outside every declaration's body, no row.
-    fn row(&self, kind: SiteKind) -> Option<&'p ConversionRow> {
+    pub(crate) fn row(&self, kind: SiteKind) -> Option<&'p ConversionRow> {
         self.typed.conversion_in(self.current_body?, &self.site(kind))
     }
 
