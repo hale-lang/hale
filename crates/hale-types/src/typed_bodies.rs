@@ -1355,7 +1355,13 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
             }
             Stmt::Return(e, _) => e.iter().for_each(|e| expr(e, out)),
             Stmt::Fail { value, .. } => expr(value, out),
-            Stmt::Recovery { args, .. } => args.iter().for_each(|e| expr(e, out)),
+            Stmt::Recovery { args, modifier, .. } => {
+                args.iter().for_each(|e| expr(e, out));
+                // `restart(c) for N`'s bound, lowered where the statement runs
+                if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
+                    expr(e, out);
+                }
+            }
             Stmt::Violate { payload, .. } => payload.iter().for_each(|e| expr(e, out)),
             Stmt::Send { subject, value, or_disposition, .. } => {
                 expr(subject, out);
