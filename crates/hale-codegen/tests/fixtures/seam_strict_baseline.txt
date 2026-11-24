@@ -3,7 +3,7 @@
 # go up, every other measure only down. The corpus rows below may grow within their class;
 # a class (family, kind, where, reason) absent here may not appear.
 # `total` and the rows below it: expressions lowering types without the checker's row
-# (strict mode) over the corpus, tests/hale and dna/tests, as
+# (strict mode) over the corpus, tests/hale, dna/tests and the embedded programs, as
 # family<TAB>kind<TAB>where<TAB>reason<TAB>count. A site counts once however many programs
 # reach it; `generated` is a node with no place in any file (code a rewrite generated).
 # A total of zero is not the end of phase 1: it ends with strict the only mode, the knob
@@ -13,4 +13,19 @@ measure	value+type lowerings	378
 measure	CodegenTy built in an expression	986
 measure	seam fallbacks (static)	25
 measure	seam reads	37
-total	0
+total	69
+2	call	program	unknown	3
+3	field	program	no layout	3
+3	field	program	no row	2
+3	field	program	unknown	4
+3	index	program	unknown	5
+4	ident	program	unknown	4
+5	array	program	no layout	5
+5	struct	stdlib	no row	1
+5	tuple	program	no layout	2
+7	binary	program	no row	2
+7	binary	program	unknown	1
+7	literal	program	no row	2
+7	literal	stdlib	no row	29
+7	unary	stdlib	no row	5
+9	call	program	no row	1

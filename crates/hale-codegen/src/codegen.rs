@@ -27099,9 +27099,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Literal(Literal::Int(n), _) => {
                 // GH #2121: a literal whose place is a `U64` is one, as
                 // the checker's row of it says; GH #2132: so is one whose
-                // place is a narrower integer, at its width (the check held
-                // it to the range)
-                let ty = match self.ty_required(e, "the checker's type of this integer literal") {
+                // place is a narrower integer, at its width. Not required
+                // yet: some have no row (the literal's fallback above)
+                let ty = match self.ty_at(e) {
                     Some(t @ (CodegenTy::U64 | CodegenTy::Narrow(_))) => t,
                     _ => CodegenTy::Int,
                 };

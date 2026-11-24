@@ -168,17 +168,16 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// site; and under strict mode every expression lowering typed without
     /// the checker's row, refused together.
     pub(crate) fn refuse_missing_rows(&self) -> Result<(), CodegenError> {
-        if let Some((what, at)) = self.required_misses.borrow().first() {
-            return Err(CodegenError::missing_row("expression_typing", what, Some(*at)));
-        }
-        if !self.seam_strict {
-            return Ok(());
-        }
+        // under strict mode a required read's miss is one of the rows
+        // (`ty_required` asks `ty_at`), listed with the others
         let rows: Vec<MissingRow> = self.seam_misses.borrow().values().cloned().collect();
-        if rows.is_empty() {
-            return Ok(());
+        if self.seam_strict && !rows.is_empty() {
+            return Err(CodegenError::MissingRows(rows));
         }
-        Err(CodegenError::MissingRows(rows))
+        match self.required_misses.borrow().first() {
+            Some((what, at)) => Err(CodegenError::missing_row("expression_typing", what, Some(*at))),
+            None => Ok(()),
+        }
     }
 
     /// GH #2111: the checker's type of the assignment target `target`, a
