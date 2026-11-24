@@ -591,6 +591,35 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
     assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
 }
 
+/// A locus literal in a record's field default (`type Box { k: Int =
+/// n(App { }); }`, built by `Box { }`): the locus's own param defaults
+/// (`w: Worker = Worker { }`) are its text, typed in its body on no
+/// evaluation path, and lowering read them on the field's evaluation path,
+/// where they have no row.
+#[test]
+fn a_locus_default_in_a_field_default_reads_its_own_rows() {
+    let strict = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
+    let src = r#"locus Worker { run() { print("worker"); } }
+main locus App {
+    params { w: Worker = Worker { }; }
+    run() { print("app"); }
+}
+fn n(a: App) -> Int { return 1; }
+type Box { k: Int = n(App { }); }
+fn main() { for i in 0..3 { let b = Box { }; } }
+"#;
+    let out = harness::unique_bin("seam_strict_locus_default_in_a_default");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it lowers: {e}"),
+    }
+    let _ = std::fs::remove_file(&out);
+}
+
 /// A substitute block that leaves (`f() or { return x; }`) is no value:
 /// the checker types it `()` and accepts it beside the call's value only
 /// because it never ends. Lowering built it as a value, with a
