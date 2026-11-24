@@ -17271,7 +17271,15 @@ impl<'a> Checker<'a> {
                         }
                         // read as the interface it declares, as a
                         // parameter is (`resolve_param_te`)
-                        self.with_interfaces_named(te, want)
+                        let named = self.with_interfaces_named(te, want);
+                        // GH #2111: a composite literal of loci at an
+                        // ascription naming an interface is built holding
+                        // it (each element coerced), and its row says so;
+                        // the checker's own type of an interface is no type
+                        if matches!(value, Expr::Array(..) | Expr::ArrayRepeat { .. } | Expr::Tuple(..)) && Self::fully_known(&named) {
+                            self.meet_row(value, named.clone());
+                        }
+                        named
                     }
                     None => {
                         // GH #1995 S2: an argument of a text `for` source,
