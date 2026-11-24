@@ -6,9 +6,12 @@
 //! into a refusal (`CodegenError::MissingRows`), listing every one, before
 //! anything is emitted.
 //!
-//! This test builds every corpus example, every `tests/hale` program and
+//! This test builds every corpus example, every `tests/hale` program,
 //! every `dna/tests` fixture (found as `hale test` finds them, nested
-//! directories included) under strict mode, and counts the sites by
+//! directories included) and every program embedded in a Rust test that
+//! `corpus_check_build_agreement`'s sweep builds (the stdlib modules,
+//! synthesized defaults and generated code no seed on disk reaches)
+//! under strict mode, and counts the sites by
 //! the survey's family, the expression's kind, and where the site is: the
 //! stdlib, a program's files, or a node a rewrite after the check built
 //! (`generated`, with no place in any file). A site counts once however
@@ -52,6 +55,8 @@ use std::sync::Mutex;
 mod harness;
 #[path = "support/build.rs"]
 mod build_opts;
+#[path = "../../hale-types/tests/support/entries.rs"]
+mod entries;
 
 use hale_codegen::{BuildOptions, CodegenError, MissingRow};
 
@@ -63,10 +68,57 @@ fn baseline_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/seam_strict_baseline.txt")
 }
 
-/// Every program the burn-down covers: (its name in the report, its
+/// A program the burn-down builds: a seed on disk, by its entry, or a
+/// program embedded in a Rust test, parsed.
+enum Source {
+    Entry(PathBuf),
+    Embedded(hale_syntax::ast::Program),
+}
+
+/// Every program the burn-down covers, by its name in the report: the
+/// seeds on disk ([`seeds`]) and the programs embedded in the Rust tests
+/// that `corpus_check_build_agreement`'s sweep builds ([`embedded`]).
+fn programs() -> Vec<(String, Source)> {
+    let mut out: Vec<(String, Source)> = seeds().into_iter().map(|(n, p)| (n, Source::Entry(p))).collect();
+    out.extend(embedded().into_iter().map(|(n, p)| (n, Source::Embedded(p))));
+    out
+}
+
+/// The programs embedded in the Rust tests (`hale_corpus`) that
+/// `corpus_check_build_agreement`'s sweep builds, as it takes them: each
+/// one the checker accepts, with `fn main() { }` added where it has
+/// none; not one that imports a sibling seed (the harvester holds one
+/// seed at a time), declares an `@ffi` host import (whose host side is
+/// the test's) or selects wasm32. They reach code no seed on disk does:
+/// stdlib modules, synthesized defaults, generated handlers.
+fn embedded() -> Vec<(String, hale_syntax::ast::Program)> {
+    let mut out = Vec::new();
+    for p in hale_corpus::parseable(|s| hale_syntax::parse_source(s).is_ok()) {
+        if p.source.contains("import \"") || p.source.contains("@ffi(") {
+            continue;
+        }
+        let Ok(mut program) = hale_syntax::parse_source(&p.source) else { continue };
+        if entries::check_program(&program).iter().any(|d| d.is_error()) {
+            continue;
+        }
+        let mut bundle = BTreeMap::new();
+        bundle.insert(String::new(), &program);
+        if hale_types::capability::target_row(&hale_types::Bundle::new(bundle)).is_wasm32() {
+            continue;
+        }
+        if !program.items.iter().any(|i| matches!(i, hale_syntax::ast::TopDecl::Fn(f) if f.name.name == "main")) {
+            let stub = hale_syntax::parse_source("fn main() { }\n").expect("the synthetic entry point parses");
+            program.items.extend(stub.items);
+        }
+        out.push((p.origin, program));
+    }
+    out
+}
+
+/// The seeds on disk the burn-down covers: (its name in the report, its
 /// entry). A corpus example is its directory, a seed of every file in
 /// it; the others are a file and the imports it follows.
-fn programs() -> Vec<(String, PathBuf)> {
+fn seeds() -> Vec<(String, PathBuf)> {
     let root = repo_root();
     let mut out = Vec::new();
     let mut dir = |rel: &str, pick: &dyn Fn(&Path) -> bool| {
@@ -145,6 +197,26 @@ enum Place {
 /// Build `entry` under strict mode, as `hale build` loads it (the
 /// harness's configuration): its missing rows, each with its place, or
 /// why it did not reach the end of lowering.
+/// An embedded program's missing rows, under strict mode: a site of the
+/// program by its origin (`file.rs#N`) and offset. `None` for a program
+/// lowering refuses for another reason: `corpus_check_build_agreement`
+/// holds those to its own list.
+fn embedded_missing_rows(origin: &str, program: &hale_syntax::ast::Program, options: &BuildOptions) -> Option<Vec<(Place, MissingRow)>> {
+    let out = harness::unique_bin("seam_strict_embedded");
+    let r = build_opts::build_program(program, &out, &[], options);
+    let _ = std::fs::remove_file(&out);
+    let rows = match r {
+        Ok(()) => Vec::new(),
+        Err(CodegenError::MissingRows(rows)) => rows,
+        Err(_) => return None,
+    };
+    let place = |r: &MissingRow| {
+        let (a, b) = (r.span.start.0, r.span.end.0);
+        if r.stdlib { Place::Stdlib(a, b) } else { Place::File(PathBuf::from(origin), a, b) }
+    };
+    Some(rows.iter().map(|r| (place(r), r.clone())).collect())
+}
+
 fn missing_rows(name: &str, entry: &Path, options: &BuildOptions) -> Result<Vec<(Place, MissingRow)>, String> {
     use hale_frontend::snapshot::{LoadError, Snapshot};
     use hale_frontend::frontend::LoadMode;
@@ -217,8 +289,8 @@ fn codegen_sources() -> BTreeMap<PathBuf, String> {
 /// - `CodegenTy built in an expression`: lines that build a `CodegenTy`
 ///   variant, not match one;
 /// - `seam fallbacks (static)`: the sites that take lowering's own path
-///   where the checker's row is missing (`Cx::seam_fallback`,
-///   `Cx::ty_or_fallback`), reached by a test or not;
+///   where the checker's row is missing (`Cx::seam_fallback`), reached by a
+///   test or not;
 ///
 /// all of which may only go down; and `seam reads`, the reads of the
 /// checker's type outside the seam itself (`Cx::ty_at`, and the ones that
@@ -293,7 +365,7 @@ fn static_measures() -> Vec<(&'static str, usize, bool)> {
                 built += 1;
             }
             if !seam {
-                fallbacks += code.matches(".seam_fallback(").count() + code.matches(".ty_or_fallback(").count();
+                fallbacks += code.matches(".seam_fallback(").count();
                 reads += [".ty_at(", ".call_result(", ".ty_required(", ".place_ty(", ".row_is_unit("].iter().map(|r| code.matches(r).count()).sum::<usize>();
             }
         }
@@ -315,7 +387,7 @@ fn render(measures: &[(&'static str, usize, bool)], counts: &BTreeMap<Bucket, us
          # go up, every other measure only down. The corpus rows below may grow within their class;\n\
          # a class (family, kind, where, reason) absent here may not appear.\n\
          # `total` and the rows below it: expressions lowering types without the checker's row\n\
-         # (strict mode) over the corpus, tests/hale and dna/tests, as\n\
+         # (strict mode) over the corpus, tests/hale, dna/tests and the embedded programs, as\n\
          # family<TAB>kind<TAB>where<TAB>reason<TAB>count. A site counts once however many programs\n\
          # reach it; `generated` is a node with no place in any file (code a rewrite generated).\n\
          # A total of zero is not the end of phase 1: it ends with strict the only mode, the knob\n\
@@ -362,7 +434,9 @@ fn the_burn_down_only_moves_forward() {
     // (a program lowering accepts would otherwise be optimized and linked)
     let options = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
     let programs = programs();
-    assert!(programs.len() > 400, "the corpus, tests/hale and dna/tests: found {}", programs.len());
+    let seeds = programs.iter().filter(|(_, p)| matches!(p, Source::Entry(_))).count();
+    assert!(seeds > 400, "the corpus, tests/hale and dna/tests: found {seeds}");
+    assert!(programs.len() - seeds > 1000, "the embedded programs: found {}", programs.len() - seeds);
 
     let sites: Mutex<BTreeMap<(Place, &'static str), MissingRow>> = Mutex::new(BTreeMap::new());
     let failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -375,8 +449,12 @@ fn the_burn_down_only_moves_forward() {
                 .stack_size(WORKER_STACK)
                 .spawn_scoped(s, || loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some((name, entry)) = programs.get(i) else { break };
-                    match missing_rows(name, entry, &options) {
+                    let Some((name, source)) = programs.get(i) else { break };
+                    let rows = match source {
+                        Source::Entry(entry) => missing_rows(name, entry, &options),
+                        Source::Embedded(program) => Ok(embedded_missing_rows(name, program, &options).unwrap_or_default()),
+                    };
+                    match rows {
                         Ok(rows) => {
                             let mut sites = sites.lock().expect("the site table");
                             for (p, r) in rows {
