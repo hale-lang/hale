@@ -24,6 +24,10 @@ use hale_types::typed_bodies::{expr_kind, expr_name};
 
 use crate::codegen::{CodegenError, CodegenTy, Cx, MissingRow};
 
+/// What a call that hands back an aggregate of loci asks of the checker
+/// ([`Cx::ty_required`]): its type, whose loci its owner tears down.
+pub(crate) const AGGREGATE_CALL: &str = "the checker's type of this call, which hands back an aggregate of loci";
+
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The checker's type of `e`, an expression of the body being lowered,
     /// as a layout: `None` outside every body, where the checker recorded

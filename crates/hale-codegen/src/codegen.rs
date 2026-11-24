@@ -19563,9 +19563,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // the statement
             Stmt::Expr(call @ Expr::Call { .. })
                 if self.owner_table.is_aggregate_call(call)
-                    && self
-                        .ty_required(call, "the checker's type of this call, which hands back an aggregate of loci")
-                        .is_some_and(|t| crate::locus::dissolve::composite_loci(&t).is_some()) =>
+                    && self.ty_required(call, crate::typed_seam::AGGREGATE_CALL).is_some_and(|t| crate::locus::dissolve::composite_loci(&t).is_some()) =>
             {
                 let mark = self.deferred_dissolves.last().map_or(0, |f| f.len());
                 self.aggregate_discarded = true;
@@ -26912,14 +26910,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     self.owner_table.entry_of(e).map(|x| &x.owner),
                     Some(crate::ownership::Owner::Binding(_) | crate::ownership::Owner::FrameTemp(_))
                 );
-                // the call's type is asked of an aggregate call only, where
-                // it is read
-                let aggregate = frame_owned && self.owner_table.is_aggregate_call(e);
-                let ret = aggregate
-                    .then(|| self.ty_required(e, "the checker's type of this call, which hands back an aggregate of loci"))
-                    .flatten()
-                    .filter(|t| crate::locus::dissolve::composite_loci(t).is_some());
-                if let (true, Some(ret_ty)) = (aggregate, ret) {
+                let ret = (frame_owned && self.owner_table.is_aggregate_call(e)).then(|| self.ty_required(e, crate::typed_seam::AGGREGATE_CALL));
+                if let Some(ret_ty) = ret.flatten().filter(|t| crate::locus::dissolve::composite_loci(t).is_some()) {
                     let children: Vec<(u32, String)> = crate::locus::dissolve::composite_loci(&ret_ty)
                         .unwrap_or_default()
                         .into_iter()
