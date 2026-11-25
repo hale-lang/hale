@@ -19,10 +19,11 @@
 //!   regenerates the file with a one-line reason in its PR body), and the
 //!   fallback sites are held at none;
 //! - every corpus example, every `tests/hale` program, every `dna/tests`
-//!   fixture (found as `hale test` finds them) and every program embedded in
-//!   a Rust test that `corpus_check_build_agreement`'s sweep builds lowers
-//!   with every value typed by its row: none is refused for a missing row
-//!   or a disagreement.
+//!   fixture (found as `hale test` finds them), every program embedded in
+//!   a Rust test that `corpus_check_build_agreement`'s sweep builds and every
+//!   program a Rust test spells as a plain string (the CLI's claims build
+//!   many) lowers with every value typed by its row: none is refused for a
+//!   missing row or a disagreement.
 //!
 //! ```text
 //! cargo test --release -p hale-codegen --test seam_strict_baseline \
@@ -58,11 +59,160 @@ enum Source {
 }
 
 /// Every program the burn-down covers, by its name in the report: the
-/// seeds on disk ([`seeds`]) and the programs embedded in the Rust tests
-/// that `corpus_check_build_agreement`'s sweep builds ([`embedded`]).
+/// seeds on disk ([`seeds`]), the programs embedded in the Rust tests
+/// that `corpus_check_build_agreement`'s sweep builds ([`embedded`]), and
+/// the programs Rust tests spell as plain strings ([`plain_string_programs`]).
 fn programs() -> Vec<(String, Source)> {
     let mut out: Vec<(String, Source)> = seeds().into_iter().map(|(n, p)| (n, Source::Entry(p))).collect();
     out.extend(embedded().into_iter().map(|(n, p)| (n, Source::Embedded(p))));
+    let plain = plain_string_programs();
+    assert!(plain.len() > 500, "the programs spelled as plain strings: found {}", plain.len());
+    out.extend(plain.into_iter().map(|(n, p)| (n, Source::Embedded(p))));
+    out
+}
+
+/// The programs Rust tests spell as plain string literals (`"fn main() {
+/// … }\n\` continued line by line), which `hale_corpus` does not harvest
+/// (it reads `r#"…"#` literals): the CLI's claims and model tests build
+/// many of them, and a program only they reach met a missing row first in
+/// the merge queue (GH #2111). Taken as [`embedded`] takes a program: one
+/// the checker accepts, no sibling import, no `@ffi`, not wasm32, with a
+/// `fn main() { }` where it has none. A literal that is a `format!`
+/// template, or a piece of a `concat!`, does not parse alone and is left.
+fn plain_string_programs() -> Vec<(String, hale_syntax::ast::Program)> {
+    let root = repo_root();
+    let mut files = Vec::new();
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if p.is_dir() {
+                if name != "target" && !name.starts_with('.') {
+                    walk(&p, out);
+                }
+            } else if name.ends_with(".rs") && p.components().any(|c| c.as_os_str() == "tests") {
+                out.push(p);
+            }
+        }
+    }
+    walk(&root.join("crates"), &mut files);
+    files.sort();
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for f in files {
+        let Ok(text) = std::fs::read_to_string(&f) else { continue };
+        let name = f.strip_prefix(&root).unwrap_or(&f).display().to_string();
+        for (i, src) in plain_literals(&text).into_iter().enumerate() {
+            let looks = src.lines().any(|l| {
+                let t = l.trim_start();
+                t.starts_with("fn main") || t.starts_with("locus ") || t.starts_with("main locus")
+            });
+            if !looks || src.contains("import \"") || src.contains("@ffi(") || !seen.insert(src.clone()) {
+                continue;
+            }
+            let Ok(mut program) = hale_syntax::parse_source(&src) else { continue };
+            if entries::check_program(&program).iter().any(|d| d.is_error()) {
+                continue;
+            }
+            let mut bundle = BTreeMap::new();
+            bundle.insert(String::new(), &program);
+            if hale_types::capability::target_row(&hale_types::Bundle::new(bundle)).is_wasm32() {
+                continue;
+            }
+            if !program.items.iter().any(|i| matches!(i, hale_syntax::ast::TopDecl::Fn(f) if f.name.name == "main")) {
+                let stub = hale_syntax::parse_source("fn main() { }\n").expect("the synthetic entry point parses");
+                program.items.extend(stub.items);
+            }
+            out.push((format!("{name}#s{i}"), program));
+        }
+    }
+    out
+}
+
+/// Every plain (`"…"`, not raw) string literal of a Rust source, decoded:
+/// `\n`, `\t`, `\"`, `\\`, `\'`, `\0` and a line continuation (`\`
+/// at a line's end, the next line's leading whitespace skipped). A literal
+/// opened by `format!(` is a template, and is left out. Comments and char
+/// literals are skipped so a quote inside one opens no literal.
+fn plain_literals(text: &str) -> Vec<String> {
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'r' if b.get(i + 1) == Some(&b'#') || (b.get(i + 1) == Some(&b'"') && (i == 0 || !b[i - 1].is_ascii_alphanumeric())) => {
+                // a raw string: skip it whole
+                let mut j = i + 1;
+                let mut hashes = 0;
+                while b.get(j) == Some(&b'#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if b.get(j) != Some(&b'"') {
+                    i += 1;
+                    continue;
+                }
+                let close: String = std::iter::once('"').chain(std::iter::repeat('#').take(hashes)).collect();
+                match text[j + 1..].find(&close) {
+                    Some(e) => i = j + 1 + e + close.len(),
+                    None => break,
+                }
+            }
+            b'\'' => {
+                // a char literal (`'"'`, `'\\''`) or a lifetime
+                if b.get(i + 1) == Some(&b'\\') {
+                    i += 4;
+                } else if b.get(i + 2) == Some(&b'\'') {
+                    i += 3;
+                } else {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                let template = text[..i].trim_end().ends_with("format!(");
+                let mut s = String::new();
+                let mut j = i + 1;
+                let mut ok = true;
+                while j < b.len() && b[j] != b'"' {
+                    if b[j] == b'\\' {
+                        match b.get(j + 1) {
+                            Some(b'n') => s.push('\n'),
+                            Some(b't') => s.push('\t'),
+                            Some(b'r') => s.push('\r'),
+                            Some(b'0') => s.push('\0'),
+                            Some(b'"') => s.push('"'),
+                            Some(b'\'') => s.push('\''),
+                            Some(b'\\') => s.push('\\'),
+                            Some(b'\n') => {
+                                j += 2;
+                                while j < b.len() && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\n' || b[j] == b'\r') {
+                                    j += 1;
+                                }
+                                continue;
+                            }
+                            _ => ok = false,
+                        }
+                        j += 2;
+                    } else {
+                        let ch = text[j..].chars().next().expect("a char");
+                        s.push(ch);
+                        j += ch.len_utf8();
+                    }
+                }
+                if ok && !template {
+                    out.push(s);
+                }
+                i = j + 1;
+            }
+            _ => i += 1,
+        }
+    }
     out
 }
 
@@ -384,7 +534,7 @@ fn every_program_s_values_have_rows() {
     let programs = programs();
     let seeds = programs.iter().filter(|(_, p)| matches!(p, Source::Entry(_))).count();
     assert!(seeds > 400, "the corpus, tests/hale and dna/tests: found {seeds}");
-    assert!(programs.len() - seeds > 1000, "the embedded programs: found {}", programs.len() - seeds);
+    assert!(programs.len() - seeds > 1500, "the embedded programs: found {}", programs.len() - seeds);
 
     let failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
     let next = std::sync::atomic::AtomicUsize::new(0);

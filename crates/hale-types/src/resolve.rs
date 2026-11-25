@@ -1723,6 +1723,14 @@ pub(crate) fn resolve_type_expr_with(
                 // keeps the old tolerance.
                 let segs: Vec<&str> =
                     path.segments.iter().map(|s| s.name.as_str()).collect();
+                // GH #2111: the stdlib's time types spelled qualified
+                // (`std::time::Duration`) are the primitives they name, as
+                // a `let` annotation lowers them (spec/styleguide.md §7)
+                match segs.as_slice() {
+                    ["std", "time", "Duration"] => return Ty::Prim(PrimType::Duration),
+                    ["std", "time", "Time"] => return Ty::Prim(PrimType::Time),
+                    _ => {}
+                }
                 let renamed = hale_stdlib::PATH_RENAMES
                     .iter()
                     .find(|(p, _)| *p == segs.as_slice())
