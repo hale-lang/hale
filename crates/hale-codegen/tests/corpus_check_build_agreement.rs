@@ -3866,7 +3866,9 @@ fn the_generics_divergences_are_refused_by_the_check_not_the_build() {
                 "fn id<T>(x: T) -> T { return x; }\n\
                  fn main() { id(time::sleep(5ms)); }\n",
                 "time::sleep(5ms)",
-                "path call `time::sleep` is unresolved: the stdlib lives under the `std::` prefix",
+                // the unprefixed spelling is `std::time::sleep`, which gives
+                // no value (GH #2111)
+                "an argument to generic fn `id` needs a value",
             ),
             (
                 "type Box<T> { v: T; }\n\

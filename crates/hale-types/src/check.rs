@@ -17626,6 +17626,11 @@ impl<'a> Checker<'a> {
                 } else {
                     match real_field.unwrap_or_else(|| self.check_expr(iter)) {
                         Ty::Bounded(e, _) | Ty::Array(e, _) => *e,
+                        // GH #2111: a batch handler's `Drain<T>` (spelled
+                        // as its monomorph, `Drain_T`) hands out `T`s
+                        Ty::Named(n) if n.strip_prefix("Drain_").is_some_and(|t| self.known.contains_key(t)) => {
+                            Ty::Named(n["Drain_".len()..].to_string())
+                        }
                         // GH #1995 (G12): a String is no sequence, and
                         // the build refused the loop ("for-loop iterator
                         // must be an array") after the check passed it.
@@ -17929,10 +17934,14 @@ impl<'a> Checker<'a> {
                 }
                 // Bind the writable view over the body, then require the
                 // body to end with the Int byte count to commit.
+                // the writable view over the reserved slot (GH #2111: its
+                // binding and its reads have rows)
+                let view = Ty::Prim(PrimType::BytesMut);
                 self.locals.push();
+                self.note_view_binding(binding, &view, None);
                 self.locals.insert(
                     &binding.name,
-                    LocalSym { ty: Ty::Unknown, is_mut: false, cell: None, param_place: false, from_let: false },
+                    LocalSym { ty: view, is_mut: false, cell: None, param_place: false, from_let: false },
                 );
                 for s in &body.stmts {
                     self.check_stmt(s);
@@ -18256,8 +18265,8 @@ impl<'a> Checker<'a> {
             for alt in resolved_pattern.alternatives() {
                 // GH #2111: a literal pattern is lowered as a literal of the
                 // scrutinee's type, which this holds it to
-                if let (Pattern::Literal(lit, span), true) = (alt, self.records_views()) {
-                    self.views.note_built(&stmt.scrutinee, &Expr::Literal(lit.clone(), *span), scrut_ty.clone());
+                if self.records_views() {
+                    self.note_pattern_literals(&stmt.scrutinee, alt, &scrut_ty);
                 }
                 self.check_set_pattern(alt, &scrut_ty);
                 self.check_bare_variant_pattern(alt, &scrut_ty);
@@ -19779,6 +19788,16 @@ impl<'a> Checker<'a> {
             // 4]`) is that monomorph too, not the template with `T` unknown
             TypeExpr::Bounded { elem, cap, .. } => {
                 return Ty::Bounded(Box::new(self.monomorph_field_ty(elem, bindings)), *cap);
+            }
+            // and as an array's element (`[Holder<T>; 2]`) or a tuple's
+            // part (GH #2111)
+            TypeExpr::Array { elem, .. } => {
+                if let Ty::Array(_, n) = substitute_generic_ty(te, bindings, self.known) {
+                    return Ty::Array(Box::new(self.monomorph_field_ty(elem, bindings)), n);
+                }
+            }
+            TypeExpr::Tuple(parts, _) if !parts.is_empty() => {
+                return Ty::Tuple(parts.iter().map(|p| self.monomorph_field_ty(p, bindings)).collect());
             }
             _ => {}
         }
@@ -23186,6 +23205,35 @@ impl<'a> Checker<'a> {
     /// Scoped per seed by GH #762 / #746 rather than here: a head
     /// another seed declares and this one does not is that rule's,
     /// reported by the CLI before the table can answer it.
+    /// GH #2111: each literal of `pat`, matched against a value of `ty`,
+    /// is lowered as a literal of the type it is matched against: the
+    /// scrutinee's, or a tuple's part's in a tuple's sub-pattern.
+    fn note_pattern_literals(&mut self, scrutinee: &Expr, pat: &Pattern, ty: &Ty) {
+        match (pat, self.through_aliases(ty.clone())) {
+            (Pattern::Literal(lit, span), _) => {
+                self.views.note_built(scrutinee, &Expr::Literal(lit.clone(), *span), ty.clone());
+            }
+            (Pattern::Tuple(parts, _), Ty::Tuple(tys)) if parts.len() == tys.len() => {
+                for (p, t) in parts.iter().zip(&tys) {
+                    self.note_pattern_literals(scrutinee, p, t);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether `path` is one of [`UNPREFIXED_STDLIB_PATHS`], written
+    /// where nothing the program declares or imports names its head.
+    fn unprefixed_stdlib_path(&self, path: &QualifiedName) -> bool {
+        let [head, name] = path.segments.as_slice() else { return false };
+        let (head, name) = (head.name.as_str(), name.name.as_str());
+        UNPREFIXED_STDLIB_PATHS.iter().any(|(ns, f)| *ns == head && *f == name)
+            && !self.unresolved_import_aliases.contains(head)
+            && !self.type_name_is_declared(head)
+            && self.top.lookup(head).is_none()
+            && self.known.import_target(&format!("{head}::{name}")).is_none()
+    }
+
     fn unresolved_qualified(&self, path: &QualifiedName) -> Option<String> {
         if !self.strict_idents || path.segments.len() < 2 {
             return None;
@@ -25390,13 +25438,17 @@ impl<'a> Checker<'a> {
                 // so table incompleteness degrades to the status
                 // quo, never to a false error.
                 if let Expr::Path(qn) = callee.as_ref() {
-                    if qn.segments.first().map(|s| s.name.as_str())
+                    // GH #2111: the two unprefixed spellings codegen still
+                    // lowers (`time::sleep`, `time::monotonic`) are their
+                    // `std::` twins, typed as those are
+                    let legacy = self.unprefixed_stdlib_path(qn);
+                    if legacy || qn.segments.first().map(|s| s.name.as_str())
                         == Some("std")
                     {
-                        let segs: Vec<&str> = qn
-                            .segments
-                            .iter()
-                            .map(|s| s.name.as_str())
+                        let segs: Vec<&str> = legacy
+                            .then_some("std")
+                            .into_iter()
+                            .chain(qn.segments.iter().map(|s| s.name.as_str()))
                             .collect();
                         // GH #1995 S2: the text sources are `for` sources,
                         // and the desugar rewrote every loop over one, so a
@@ -26328,6 +26380,9 @@ impl<'a> Checker<'a> {
                         ));
                     }
                 }
+                // a fn type named by an alias (`type Callback = fn(H) ->
+                // Int`, a generic field bound to it) is that fn type
+                let callee_ty = self.through_aliases(callee_ty);
                 let expected: Vec<Ty> = match &callee_ty {
                     Ty::Function { params, .. } => params.clone(),
                     _ => Vec::new(),
