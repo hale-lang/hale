@@ -17271,7 +17271,15 @@ impl<'a> Checker<'a> {
                         }
                         // read as the interface it declares, as a
                         // parameter is (`resolve_param_te`)
-                        self.with_interfaces_named(te, want)
+                        let named = self.with_interfaces_named(te, want);
+                        // GH #2111: a composite literal of loci at an
+                        // ascription naming an interface is built holding
+                        // it (each element coerced), and its row says so;
+                        // the checker's own type of an interface is no type
+                        if matches!(value, Expr::Array(..) | Expr::ArrayRepeat { .. } | Expr::Tuple(..)) && Self::fully_known(&named) {
+                            self.meet_row(value, named.clone());
+                        }
+                        named
                     }
                     None => {
                         // GH #1995 S2: an argument of a text `for` source,
@@ -18020,12 +18028,23 @@ impl<'a> Checker<'a> {
                 let then_value = Expr::Block(stmt.then_block.clone());
                 let else_value = else_value.expect("an else arm");
                 match (Self::decimal_adoptable(&then_value), Self::decimal_adoptable(&else_value)) {
+                    // the arms' own values, not the copies above: each
+                    // value's row is the scale it adopts (GH #2111)
                     (true, false) => {
-                        self.adopt_decimal_scale(&then_value, *e);
+                        if let Some(tail) = stmt.then_block.tail.as_deref() {
+                            self.adopt_decimal_scale(tail, *e);
+                        }
                         (else_ty.clone(), else_ty.clone())
                     }
                     (false, true) => {
-                        self.adopt_decimal_scale(&else_value, *t);
+                        match else_branch {
+                            ElseBranch::Else(blk) => {
+                                if let Some(tail) = blk.tail.as_deref() {
+                                    self.adopt_decimal_scale(tail, *t);
+                                }
+                            }
+                            ElseBranch::ElseIf(nested) => self.adopt_if_scale(nested, *t),
+                        }
                         (then_ty.clone(), then_ty.clone())
                     }
                     _ => (then_ty, else_ty),
@@ -21089,6 +21108,27 @@ impl<'a> Checker<'a> {
     }
 
     fn flows_into(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
+        let flows = self.flows_into_place(want, got, value);
+        // GH #2111: a composite literal at a declared place is built as the
+        // place's type (its elements fitted, coerced or widened into it),
+        // and its row says so
+        if flows {
+            let sized = match (want, value) {
+                (Ty::Array(we, None), Expr::Array(parts, _)) => Some(Ty::Array(we.clone(), Some(parts.len() as u64))),
+                (Ty::Array(we, None), Expr::ArrayRepeat { count, .. }) => Some(Ty::Array(we.clone(), Some(*count))),
+                (Ty::Array(..) | Ty::Bounded(..), Expr::Array(..) | Expr::ArrayRepeat { .. }) | (Ty::Tuple(_), Expr::Tuple(..)) => {
+                    Some(want.clone())
+                }
+                _ => None,
+            };
+            if let Some(t) = sized.filter(|t| Self::fully_known(t)) {
+                self.meet_row(value, t);
+            }
+        }
+        flows
+    }
+
+    fn flows_into_place(&mut self, want: &Ty, got: &Ty, value: &Expr) -> bool {
         // GH #1530 step 1: a member's value flows into its set, as the
         // set's variant for it (built where it stands).
         if let Some(injection) = self.set_injection(want, got) {
@@ -24294,6 +24334,11 @@ impl<'a> Checker<'a> {
             let site = cx.site(kind);
             cx.typed.reconversion(cx.body, site, row);
         };
+        // GH #2111: the value has the place's scale, and its row says so
+        // (a parse's call keeps its fallible row; its `or` has the scale)
+        if !matches!(e, Expr::Call { .. }) {
+            self.meet_row(e, Ty::Prim(PrimType::Decimal(scale)));
+        }
         match e {
             Expr::Literal(Literal::Decimal(_), span) => {
                 // Every walk of this literal (an argument is walked more
@@ -24446,6 +24491,17 @@ impl<'a> Checker<'a> {
             self.adopt_decimal_scale(e, scale);
         }
         Ty::Prim(PrimType::Decimal(scale))
+    }
+
+    /// Whether `ty` names every type it is made of (no `Unknown`, no
+    /// projection).
+    fn fully_known(ty: &Ty) -> bool {
+        match ty {
+            Ty::Unknown | Ty::Projection(..) => false,
+            Ty::Array(e, _) | Ty::Bounded(e, _) => Self::fully_known(e),
+            Ty::Tuple(parts) => parts.iter().all(Self::fully_known),
+            _ => true,
+        }
     }
 
     /// Whether a value of `ty` is a Decimal, or holds one as an array's
@@ -24624,6 +24680,11 @@ impl<'a> Checker<'a> {
         let admitted = self.two_spellings_of_one_monomorph(want, got, allow_loci);
         if admitted {
             self.meet_monomorph_literal(want, value);
+            // GH #2111: lowering builds the monomorph the site declares,
+            // and the literal's row says so
+            if Self::fully_known(want) {
+                self.meet_row(value, want.clone());
+            }
         }
         admitted
     }
