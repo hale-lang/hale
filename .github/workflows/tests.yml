@@ -920,6 +920,10 @@ jobs:
     # Free runners only: a paid 8-core runner was tried on 2026-09-26 and
     # cost about $200 a day; test time is cut at the cause instead.
     runs-on: ubuntu-24.04
+    # A slice takes 15-25 minutes. Without a bound, a fixture that hangs
+    # outside nextest's per-test limit (a service step, an extract) holds
+    # the merge queue for GitHub's six-hour default; at 50 it fails named.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
