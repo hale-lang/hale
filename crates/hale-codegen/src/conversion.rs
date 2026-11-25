@@ -262,12 +262,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         self.row(SiteKind::printed(e.span()))?.printed.clone()
     }
 
-    /// `Decimal<S>`: the scale of the Decimal literal at `span`, from the
-    /// row the checker recorded where it flows (`Decimal`'s 9 with none).
-    pub(crate) fn decimal_scale_at_value(&self, span: Span) -> u8 {
-        self.decimal_scale_of(self.row(SiteKind::value(span)))
-    }
-
     /// `Decimal<S>`: the scale of the `std::str::parse_decimal` call being
     /// lowered (`current_call`), from the row the checker recorded at the
     /// call where its result flows (`Decimal`'s 9 with none).

@@ -1,51 +1,33 @@
-//! GH #2111 (phase 1): the strict-mode burn-down.
+//! GH #2111 (phase 1): lowering takes every value's type from the checker.
 //!
-//! Lowering takes a value's type from the checker through one seam
-//! (`Cx::ty_at`); where the checker left no row, lowering still types the
-//! expression itself. `BuildOptions::seam_strict` turns each such site
-//! into a refusal (`CodegenError::MissingRows`), listing every one, before
-//! anything is emitted.
+//! Lowering reads a value's type from the checker through one seam
+//! (`Cx::ty_at`, `Cx::typed_by_row`): every expression `lower_expr`
+//! lowers hands back the checker's row of it, and a value of another type
+//! is a compiler defect, refused at its span. There is no other path: a
+//! value with no row (none recorded, `Unknown`, a type with no layout,
+//! lowered outside every body) is a located internal error, the build
+//! refused when lowering ends (`Cx::refuse_missing_rows`). Phase 1 ended
+//! in that deletion: strict mode was the only mode left, its knob
+//! (`BuildOptions::seam_strict`) went, and with it every fallback site.
 //!
-//! This test builds every corpus example, every `tests/hale` program,
-//! every `dna/tests` fixture (found as `hale test` finds them, nested
-//! directories included) and every program embedded in a Rust test that
-//! `corpus_check_build_agreement`'s sweep builds (the stdlib modules,
-//! synthesized defaults and generated code no seed on disk reaches)
-//! under strict mode, and counts the sites by
-//! the survey's family, the expression's kind, and where the site is: the
-//! stdlib, a program's files, or a node a rewrite after the check built
-//! (`generated`, with no place in any file). A site counts once however
-//! many programs reach it (a stdlib body, a seed many fixtures import); a
-//! generated one once per program. The counts are held to
-//! `fixtures/seam_strict_baseline.txt`:
+//! This test holds two things:
 //!
-//! - a static measure (they read codegen's source alone, so no test moves
-//!   them) that moves the wrong way fails: lowering types more itself. A
-//!   change that has to add lowering (a new type, a new intrinsic)
-//!   regenerates the baseline with a one-line reason in its PR body;
-//! - the corpus count grows with the corpus (every program a change adds
-//!   brings sites, and the merge queue merges changes concurrently), so it
-//!   fails only on a new class: a family, kind, place and reason the
-//!   baseline held none of, now reached. Growth within a class is reported;
-//! - a number that moves the right way passes, and the test prints the new
-//!   numbers. The slice that moved it regenerates the file as part of its
-//!   own change:
+//! - the survey's static measures of how much typing lowering still does
+//!   itself, read from codegen's source and held to
+//!   `fixtures/seam_strict_baseline.txt`: a measure that moves the wrong way
+//!   fails (a change that has to add lowering, a new type or intrinsic,
+//!   regenerates the file with a one-line reason in its PR body), and the
+//!   fallback sites are held at none;
+//! - every corpus example, every `tests/hale` program, every `dna/tests`
+//!   fixture (found as `hale test` finds them) and every program embedded in
+//!   a Rust test that `corpus_check_build_agreement`'s sweep builds lowers
+//!   with every value typed by its row: none is refused for a missing row
+//!   or a disagreement.
 //!
 //! ```text
 //! cargo test --release -p hale-codegen --test seam_strict_baseline \
 //!     --config 'env.HALE_SEAM_BASELINE_REGEN="1"'
 //! ```
-//!
-//! A total of zero is not the end of phase 1, only what makes its end
-//! possible. Phase 1 ends with deletion (#2111):
-//!
-//! - strict is the only mode, and `BuildOptions::seam_strict` is gone;
-//! - every fallback path, where lowering types a value itself, is gone;
-//! - a missing row is a located internal compiler error.
-//!
-//! This test and its baseline go with them. To see the sites themselves
-//! (a slice's plan), name a file in `HALE_SEAM_REPORT`: every site is
-//! written there, with its place and its row.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -58,7 +40,7 @@ mod build_opts;
 #[path = "../../hale-types/tests/support/entries.rs"]
 mod entries;
 
-use hale_codegen::{BuildOptions, CodegenError, MissingRow};
+use hale_codegen::{BuildOptions, CodegenError};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().expect("the repository root")
@@ -168,102 +150,41 @@ fn test_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// A missing row's count key: family, kind, where (`stdlib`, `program`,
-/// or `generated`), and why (`MissingRow::reason`).
-type Bucket = (u8, &'static str, &'static str, &'static str);
-
-fn bucket(p: &Place, r: &MissingRow) -> Bucket {
-    let at = match p {
-        Place::Stdlib(..) => "stdlib",
-        Place::File(..) => "program",
-        Place::Generated(..) => "generated",
-    };
-    (r.family, r.kind, at, r.reason)
+/// Whether `e` refuses a value whose type lowering could not take from
+/// the checker: a missing row, or a value of another type.
+fn untyped(e: &CodegenError) -> bool {
+    let msg = e.to_string();
+    msg.contains("required `expression_typing` row") || msg.contains("and lowering built")
 }
 
-/// Where a missing row is, for counting it once: a stdlib site by its
-/// span (the stdlib's own parse space, the same in every program); a
-/// site in a program's files by its file and offset, so a seed many
-/// programs import (`dna/core`) counts once; a node with no place in any
-/// file (code a rewrite generated: an API codec, a served handler) by
-/// the function it is in and its offset from that function's first such
-/// site, so one generated function counts once whatever program it is
-/// generated into.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Place {
-    Stdlib(u32, u32),
-    File(PathBuf, u32, u32),
-    Generated(String, u32, u32),
-}
-
-/// Build `entry` under strict mode, as `hale build` loads it (the
-/// harness's configuration): its missing rows, each with its place, or
-/// why it did not reach the end of lowering.
-/// An embedded program's missing rows, under strict mode: a site of the
-/// program by its origin (`file.rs#N`) and offset. `None` for a program
-/// lowering refuses for another reason: `corpus_check_build_agreement`
-/// holds those to its own list.
-fn embedded_missing_rows(origin: &str, program: &hale_syntax::ast::Program, options: &BuildOptions) -> Option<Vec<(Place, MissingRow)>> {
-    let out = harness::unique_bin("seam_strict_embedded");
-    let r = build_opts::build_program(program, &out, &[], options);
-    let _ = std::fs::remove_file(&out);
-    let rows = match r {
-        Ok(()) => Vec::new(),
-        Err(CodegenError::MissingRows(rows)) => rows,
-        Err(_) => return None,
-    };
-    let place = |r: &MissingRow| {
-        let (a, b) = (r.span.start.0, r.span.end.0);
-        if r.stdlib { Place::Stdlib(a, b) } else { Place::File(PathBuf::from(origin), a, b) }
-    };
-    Some(rows.iter().map(|r| (place(r), r.clone())).collect())
-}
-
-fn missing_rows(name: &str, entry: &Path, options: &BuildOptions) -> Result<Vec<(Place, MissingRow)>, String> {
-    use hale_frontend::snapshot::{LoadError, Snapshot};
+/// Lower `source` as `hale build` loads it, lowering only: `Ok` when every
+/// value has its row, or the refusal. An embedded program lowering
+/// refuses for another reason is `corpus_check_build_agreement`'s, not
+/// this test's: `Ok`.
+fn lowers_typed(source: &Source, options: &BuildOptions) -> Result<(), String> {
     use hale_frontend::frontend::LoadMode;
-    let snap = match Snapshot::load(entry, LoadMode::WholeSeed, &hale_frontend::source::Disk, build_opts::harness_config(options)) {
-        Ok(s) => s,
-        Err(LoadError::Refused(msg)) => return Err(msg),
-        Err(LoadError::Load(f)) => return Err(f.text()),
+    use hale_frontend::snapshot::{LoadError, Snapshot};
+    let out = harness::unique_bin("seam_rows");
+    let r = match source {
+        Source::Embedded(program) => match build_opts::build_program(program, &out, &[], options) {
+            Err(e) if !untyped(&e) => Ok(()),
+            other => other.map_err(|e| e.to_string()),
+        },
+        Source::Entry(entry) => {
+            match Snapshot::load(entry, LoadMode::WholeSeed, &hale_frontend::source::Disk, build_opts::harness_config(options)) {
+                Ok(snap) => match snap.demand_lowering() {
+                    Ok(view) => hale_codegen::build_resolved(view, &out, options).map_err(|e| e.to_string()),
+                    Err(b) => Err(format!("{:?}", b.refused)),
+                },
+                Err(LoadError::Refused(msg)) => Err(msg),
+                Err(LoadError::Load(f)) => Err(f.text()),
+            }
+        }
     };
-    let view = snap.demand_lowering().map_err(|b| format!("{:?}", b.refused))?;
-    let out = harness::unique_bin("seam_strict");
-    let r = hale_codegen::build_resolved(view, &out, options);
     let _ = std::fs::remove_file(&out);
-    let rows = match r {
-        Err(CodegenError::MissingRows(rows)) => rows,
-        Ok(()) => Vec::new(),
-        Err(e) => return Err(e.to_string()),
-    };
-    let _ = name;
-    let root = repo_root();
-    let in_file = |a: u32, b: u32| {
-        snap.file_bases().iter().find(|(base, _, len)| a >= *base && b <= base + len).map(|(base, path, _)| {
-            (path.strip_prefix(&root).unwrap_or(path).to_path_buf(), a - base, b - base)
-        })
-    };
-    // each generated function's first site, its sites' origin
-    let mut first: BTreeMap<&str, u32> = BTreeMap::new();
-    for r in rows.iter().filter(|r| !r.stdlib && in_file(r.span.start.0, r.span.end.0).is_none()) {
-        let at = first.entry(r.in_fn.as_str()).or_insert(u32::MAX);
-        *at = (*at).min(r.span.start.0);
-    }
-    let place = |r: &MissingRow| {
-        let (a, b) = (r.span.start.0, r.span.end.0);
-        if r.stdlib {
-            return Place::Stdlib(a, b);
-        }
-        if let Some((path, a, b)) = in_file(a, b) {
-            return Place::File(path, a, b);
-        }
-        let origin = first.get(r.in_fn.as_str()).copied().unwrap_or(0);
-        Place::Generated(r.in_fn.clone(), a.saturating_sub(origin), b.saturating_sub(origin))
-    };
-    Ok(rows.iter().map(|r| (place(r), r.clone())).collect())
+    r
 }
 
-/// Every `.rs` file under `crates/hale-codegen/src`, by path.
 fn codegen_sources() -> BTreeMap<PathBuf, String> {
     fn walk(dir: &Path, out: &mut BTreeMap<PathBuf, String>) {
         for e in std::fs::read_dir(dir).expect("the source directory") {
@@ -290,13 +211,13 @@ fn codegen_sources() -> BTreeMap<PathBuf, String> {
 ///   `CodegenTy`;
 /// - `CodegenTy built in an expression`: lines that build a `CodegenTy`
 ///   variant, not match one;
-/// - `seam fallbacks (static)`: the sites that take lowering's own path
-///   where the checker's row is missing (`Cx::seam_fallback`), reached by a
-///   test or not;
+/// - `seam fallbacks (static)`: the sites that took lowering's own path
+///   where the checker's row was missing (`Cx::seam_fallback`), which phase
+///   1 deleted: held at 0;
 ///
 /// all of which may only go down; and `seam reads`, the reads of the
-/// checker's type outside the seam itself (`Cx::ty_at`, and the ones that
-/// refuse a missing row: `Cx::call_result`, `Cx::ty_required`,
+/// checker's type outside the seam itself (`Cx::ty_at`, `Cx::row_of`,
+/// `Cx::typed_by_row`, `Cx::call_result`, `Cx::ty_required`,
 /// `Cx::place_ty`), which may only go up.
 fn static_measures() -> Vec<(&'static str, usize, bool)> {
     let sources = codegen_sources();
@@ -368,7 +289,7 @@ fn static_measures() -> Vec<(&'static str, usize, bool)> {
             }
             if !seam {
                 fallbacks += code.matches(".seam_fallback(").count();
-                reads += [".ty_at(", ".call_result(", ".ty_required(", ".place_ty(", ".row_is_unit("].iter().map(|r| code.matches(r).count()).sum::<usize>();
+                reads += [".ty_at(", ".row_of(", ".typed_by_row(", ".call_result(", ".ty_required(", ".place_ty(", ".row_is_unit("].iter().map(|r| code.matches(r).count()).sum::<usize>();
             }
         }
     }
@@ -381,122 +302,44 @@ fn static_measures() -> Vec<(&'static str, usize, bool)> {
     ]
 }
 
-fn render(measures: &[(&'static str, usize, bool)], counts: &BTreeMap<Bucket, usize>) -> String {
-    let total: usize = counts.values().sum();
+
+fn render(measures: &[(&'static str, usize, bool)]) -> String {
     let mut s = String::from(
         "# Generated by `seam_strict_baseline.rs` under HALE_SEAM_BASELINE_REGEN=1 (GH #2111).\n\
-         # `measure` lines: the survey's measures of crates/hale-codegen/src. `seam reads` may only\n\
-         # go up, every other measure only down. The corpus rows below may grow within their class;\n\
-         # a class (family, kind, where, reason) absent here may not appear.\n\
-         # `total` and the rows below it: expressions lowering types without the checker's row\n\
-         # (strict mode) over the corpus, tests/hale, dna/tests and the embedded programs, as\n\
-         # family<TAB>kind<TAB>where<TAB>reason<TAB>count. A site counts once however many programs\n\
-         # reach it; `generated` is a node with no place in any file (code a rewrite generated).\n\
-         # A total of zero is not the end of phase 1: it ends with strict the only mode, the knob\n\
-         # and every fallback path deleted, and a missing row a located internal error (GH #2111).\n",
+         # The survey's measures of crates/hale-codegen/src: `seam reads` may only go up, every\n\
+         # other measure only down, and `seam fallbacks (static)` is held at 0. Phase 1 ended with\n\
+         # every value's type the checker's: no fallback, and a missing row a located internal error.\n",
     );
     for (name, n, _) in measures {
         s.push_str(&format!("measure\t{name}\t{n}\n"));
     }
-    s.push_str(&format!("total\t{total}\n"));
-    for ((family, kind, at, reason), n) in counts {
-        s.push_str(&format!("{family}\t{kind}\t{at}\t{reason}\t{n}\n"));
-    }
     s
 }
 
-/// A baseline's numbers by name: a measure by its name, the total as
-/// `total`, a row as `family kind (where, reason)`.
+/// A baseline's measures by name.
 fn parse(text: &str) -> BTreeMap<String, usize> {
     text.lines()
         .filter(|l| !l.starts_with('#') && !l.is_empty())
         .map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            let (name, n) = match f.as_slice() {
-                ["measure", name, n] => (name.to_string(), n),
-                ["total", n] => ("total".to_string(), n),
-                [family, kind, at, reason, n] => (format!("family {family} {kind} ({at}, {reason})"), n),
-                _ => panic!("not a baseline line: {l:?}"),
-            };
-            (name, n.parse().expect("a count"))
+            let ["measure", name, n] = f.as_slice() else { panic!("not a baseline line: {l:?}") };
+            (name.to_string(), n.parse().expect("a count"))
         })
         .collect()
 }
 
-/// Stack for a build worker: the compiler's passes recurse (the parser,
-/// the check, lowering), and a spawned thread's default (2 MiB) is well
-/// under the main thread a build otherwise runs on; the dna fixtures'
-/// largest programs overflowed it on macOS. As `hale test`'s workers
-/// (`TEST_WORKER_STACK`): a virtual reservation, committed as used.
-const WORKER_STACK: usize = 256 << 20;
-
 #[test]
-fn the_burn_down_only_moves_forward() {
-    // lowering's verdict is all the survey reads: the build stops there
-    // (a program lowering accepts would otherwise be optimized and linked)
-    let options = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
-    let programs = programs();
-    let seeds = programs.iter().filter(|(_, p)| matches!(p, Source::Entry(_))).count();
-    assert!(seeds > 400, "the corpus, tests/hale and dna/tests: found {seeds}");
-    assert!(programs.len() - seeds > 1000, "the embedded programs: found {}", programs.len() - seeds);
-
-    let sites: Mutex<BTreeMap<(Place, &'static str), MissingRow>> = Mutex::new(BTreeMap::new());
-    let failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    let next = std::sync::atomic::AtomicUsize::new(0);
-    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
-    std::thread::scope(|s| {
-        for _ in 0..workers {
-            std::thread::Builder::new()
-                .name("seam-strict-worker".to_string())
-                .stack_size(WORKER_STACK)
-                .spawn_scoped(s, || loop {
-                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    let Some((name, source)) = programs.get(i) else { break };
-                    let rows = match source {
-                        Source::Entry(entry) => missing_rows(name, entry, &options),
-                        Source::Embedded(program) => Ok(embedded_missing_rows(name, program, &options).unwrap_or_default()),
-                    };
-                    match rows {
-                        Ok(rows) => {
-                            let mut sites = sites.lock().expect("the site table");
-                            for (p, r) in rows {
-                                sites.entry((p, r.kind)).or_insert(r);
-                            }
-                        }
-                        Err(e) => failed.lock().expect("the failures").push(format!("{name}: {e}")),
-                    }
-                })
-                .expect("spawn a build worker");
-        }
-    });
-    let failed = failed.into_inner().expect("the failures");
-    assert!(failed.is_empty(), "programs that did not reach the end of lowering:\n{}", failed.join("\n"));
-
-    let sites = sites.into_inner().expect("the site table");
-    // the sites themselves, for planning a slice: every one, its place
-    // and its row, where `HALE_SEAM_REPORT` names a file
-    if let Some(report) = std::env::var_os("HALE_SEAM_REPORT") {
-        let lines: Vec<String> = sites.iter().map(|((p, _), r)| format!("{p:?}\t{r}")).collect();
-        std::fs::write(report, lines.join("\n") + "\n").expect("write the report");
-    }
-    let mut counts: BTreeMap<Bucket, usize> = BTreeMap::new();
-    for ((p, _), r) in &sites {
-        *counts.entry(bucket(p, r)).or_default() += 1;
-    }
+fn lowering_types_no_more_than_the_baseline() {
     let measures = static_measures();
-    let now = render(&measures, &counts);
+    let fallbacks = measures.iter().find(|(n, _, _)| *n == "seam fallbacks (static)").map(|(_, n, _)| *n);
+    assert_eq!(fallbacks, Some(0), "a site takes lowering's own type where the checker's row is missing (GH #2111)");
+    let now = render(&measures);
     let path = baseline_path();
     if std::env::var_os("HALE_SEAM_BASELINE_REGEN").is_some() {
         std::fs::write(&path, &now).expect("write the baseline");
         return;
     }
-    let held = std::fs::read_to_string(&path).unwrap_or_default();
-    let (was, is) = (parse(&held), parse(&now));
-    let regen = "cargo test --release -p hale-codegen --test seam_strict_baseline \
-                 --config 'env.HALE_SEAM_BASELINE_REGEN=\"1\"'";
-
-    // The static measures read codegen's source alone, so no test a change
-    // adds moves them: each is held against its wrong direction.
+    let was = parse(&std::fs::read_to_string(&path).unwrap_or_default());
     let mut worse = Vec::new();
     let mut moved = Vec::new();
     for (name, n, up_is_better) in &measures {
@@ -511,6 +354,8 @@ fn the_burn_down_only_moves_forward() {
             worse.push(line);
         }
     }
+    let regen = "cargo test --release -p hale-codegen --test seam_strict_baseline \
+                 --config 'env.HALE_SEAM_BASELINE_REGEN=\"1\"'";
     assert!(
         worse.is_empty(),
         "lowering types more itself than the baseline holds (GH #2111): record the type in the checker \
@@ -519,80 +364,48 @@ fn the_burn_down_only_moves_forward() {
          regenerates the baseline and says why in one line of its PR body:\n{}\n\n{regen}",
         worse.join("\n")
     );
-
-    // The corpus count grows with the corpus: every program a change adds
-    // brings sites, and the merge queue merges changes concurrently. So a
-    // class the baseline holds (a family, kind, place and reason) may grow
-    // without failing, and is reported; a class the baseline held none of
-    // fails, since a construct lowering newly types itself is what the
-    // burn-down is for.
-    let mut new_class = Vec::new();
-    for (k, &n) in is.iter().filter(|(k, _)| k.starts_with("family ")) {
-        let a = was.get(k).copied().unwrap_or(0);
-        if a == 0 && n > 0 {
-            new_class.push(format!("{k}: 0 -> {n}"));
-        } else if n != a {
-            moved.push(format!("{k}: {a} -> {n}"));
-        }
-    }
-    for (k, &a) in was.iter().filter(|(k, _)| k.starts_with("family ") && !is.contains_key(*k)) {
-        moved.push(format!("{k}: {a} -> 0"));
-    }
-    if let (Some(a), Some(b)) = (was.get("total"), is.get("total")) {
-        if a != b {
-            moved.push(format!("total: {a} -> {b}"));
-        }
-    }
-    assert!(
-        new_class.is_empty(),
-        "lowering types a new kind of value itself, where the checker left no row (GH #2111): record \
-         its type in the checker instead:\n{}\n\nto see the sites, name a file in HALE_SEAM_REPORT; a \
-         slice that moves a site into a new class regenerates the baseline:\n\n{regen}",
-        new_class.join("\n")
-    );
-
-    // Anything else that moved passes: a slice regenerates the file as part
-    // of its own change, and the queue does not hold two changes to it.
     if !moved.is_empty() {
-        eprintln!(
-            "the burn-down moved (GH #2111); regenerate the baseline in the change that moved it:\n{}\n\n{regen}",
-            moved.join("\n")
-        );
+        eprintln!("the measures moved (GH #2111); regenerate the baseline in the change that moved them:\n{}\n\n{regen}", moved.join("\n"));
     }
 }
 
+/// Stack for a build worker: the compiler's passes recurse (the parser,
+/// the check, lowering), and a spawned thread's default (2 MiB) is well
+/// under the main thread a build otherwise runs on; the dna fixtures'
+/// largest programs overflowed it on macOS. As `hale test`'s workers
+/// (`TEST_WORKER_STACK`): a virtual reservation, committed as used.
+const WORKER_STACK: usize = 256 << 20;
 
-/// The knob itself. On, a program that reaches a value lowering types
-/// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. Every check-clean program the burn-down builds has its
-/// rows; a locus param of a record whose every field has a default is
-/// given a `T { }` lowering synthesizes after the check (B7 / G19), which
-/// the check refuses to omit (`missing field`), so this test's program,
-/// built past the check, is that one. (It took an element chain's
-/// accumulator until the chain's nodes had rows of their own, then a range
-/// loop's variable until the check bound it, then a whole-set chain
-/// terminal's `or` until its key named what it handles, then a `match`
-/// whose every arm leaves until the check recorded it as giving no value,
-/// then a generic locus's param default until lowering read it in the
-/// built monomorph, then a pool slot's `acquire()` until the check typed a
-/// cell, then a quantity literal in a tuple's sub-pattern until the check
-/// typed a sub-pattern's literals, and then a direct send's
-/// `local_context()` until the check typed the call the rewrite makes.)
 #[test]
-fn strict_mode_refuses_a_value_lowered_without_a_row() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
-    let src = "type Cfg { host: String = \"localhost\"; port: Int = 8080; }\n\
-               locus Server { params { cfg: Cfg; } fn show() { println(self.cfg.port); } }\n\
-               fn main() { let s = Server { }; s.show(); }\n";
-    let out = harness::unique_bin("seam_strict_off");
-    build_opts::build_source(src, &out, &build_opts::options()).expect("off, it builds");
-    let _ = std::fs::remove_file(&out);
-    let out = harness::unique_bin("seam_strict_on");
-    let err = build_opts::build_source(src, &out, &strict).expect_err("on, it is refused");
-    assert!(!out.exists(), "nothing is emitted");
-    let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
-    let at = rows.iter().find(|r| !r.stdlib && r.kind == "struct").unwrap_or_else(|| panic!("the synthesized literal is named: {err}"));
-    assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
+fn every_program_s_values_have_rows() {
+    // lowering's verdict is all this reads: the build stops there (a
+    // program lowering accepts would otherwise be optimized and linked)
+    let options = BuildOptions { lower_only: true, ..build_opts::options() };
+    let programs = programs();
+    let seeds = programs.iter().filter(|(_, p)| matches!(p, Source::Entry(_))).count();
+    assert!(seeds > 400, "the corpus, tests/hale and dna/tests: found {seeds}");
+    assert!(programs.len() - seeds > 1000, "the embedded programs: found {}", programs.len() - seeds);
+
+    let failed: Mutex<Vec<String>> = Mutex::new(Vec::new());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).min(16);
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            std::thread::Builder::new()
+                .name("seam-rows-worker".to_string())
+                .stack_size(WORKER_STACK)
+                .spawn_scoped(s, || loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((name, source)) = programs.get(i) else { break };
+                    if let Err(e) = lowers_typed(source, &options) {
+                        failed.lock().expect("the failures").push(format!("{name}: {e}"));
+                    }
+                })
+                .expect("spawn a build worker");
+        }
+    });
+    let failed = failed.into_inner().expect("the failures");
+    assert!(failed.is_empty(), "programs lowering did not take every value's type from the checker:\n{}", failed.join("\n"));
 }
 
 /// A literal in a tuple's sub-pattern is lowered as a literal of the
@@ -601,18 +414,11 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
 /// typed a whole pattern's literal only.
 #[test]
 fn a_sub_pattern_s_literals_have_rows() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "fn f(t: (Int, Duration)) -> Int { return match t { (1, 1min) -> 1, _ -> 0 }; }\n\
                fn main() { println(f((1, 60s))); }\n";
     let out = harness::unique_bin("seam_strict_sub_pattern");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -628,7 +434,7 @@ fn a_sub_pattern_s_literals_have_rows() {
 /// handler's `Drain<T>` and its elements. Each has its row.
 #[test]
 fn what_the_check_left_untyped_has_rows() {
-    let strict = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
+    let options = BuildOptions { lower_only: true, ..build_opts::options() };
     let programs = [
         ("restart bound", r#"locus Worker {
     params { attempts: Int = 0; target: Int = 99; }
@@ -820,14 +626,7 @@ fn main() { Solo { }; }
     ];
     for (what, src) in programs {
         let out = harness::unique_bin("seam_strict_untyped");
-        match build_opts::build_source(src, &out, &strict) {
-            Ok(()) => {}
-            Err(CodegenError::MissingRows(rows)) => {
-                let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-                assert!(program.is_empty(), "{what}: the program's sites have rows: {program:?}");
-            }
-            Err(e) => panic!("{what}: it lowers: {e}"),
-        }
+        build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("{what}: it lowers: {e}"));
         let _ = std::fs::remove_file(&out);
     }
 }
@@ -839,7 +638,7 @@ fn main() { Solo { }; }
 /// where they have no row.
 #[test]
 fn a_locus_default_in_a_field_default_reads_its_own_rows() {
-    let strict = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
+    let options = BuildOptions { lower_only: true, ..build_opts::options() };
     // a plain string, not a harvested program: the parity sweep makes `n`
     // generic, and a generic call in a field default has no row there yet
     let src = "locus Worker { run() { print(\"worker\"); } }\n\
@@ -851,14 +650,7 @@ fn a_locus_default_in_a_field_default_reads_its_own_rows() {
                type Box { k: Int = n(App { }); }\n\
                fn main() { for i in 0..3 { let b = Box { }; } }\n";
     let out = harness::unique_bin("seam_strict_locus_default_in_a_default");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it lowers: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it lowers: {e}"));
     let _ = std::fs::remove_file(&out);
 }
 
@@ -873,21 +665,14 @@ fn a_locus_default_in_a_field_default_reads_its_own_rows() {
 /// mutates neither further.
 #[test]
 fn what_the_parity_sweep_reaches_has_rows() {
-    let strict = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
+    let options = BuildOptions { lower_only: true, ..build_opts::options() };
     let src = "interface Greeter { fn greet() -> String; }\n\
                locus Hi { fn greet() -> String { return \"hi\"; } }\n\
                locus Hey { fn greet() -> String { return \"hey\"; } }\n\
                fn make<T>(which: T) -> Greeter { if which == 0 { return Hi { }; } return Hey { }; }\n\
                fn main() { let b = make(1); println(b.greet()); }\n";
     let out = harness::unique_bin("seam_strict_generic_interface_return");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "a generic fn's interface return: the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("a generic fn's interface return: it lowers: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("a generic fn's interface return: it lowers: {e}"));
     let dir = harness::unique_dir("seam_strict_hashmap_import");
     std::fs::create_dir_all(dir.join("lib")).expect("the seed's directory");
     std::fs::write(
@@ -901,14 +686,7 @@ fn what_the_parity_sweep_reaches_has_rows() {
     .expect("main.hl");
     std::fs::write(dir.join("lib/lib.hl"), "type WC { word: String; count: Int; }\n").expect("lib.hl");
     let out = harness::unique_bin("seam_strict_hashmap_import");
-    match build_opts::build_seed_dir(&dir, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "an imported hashmap cell: the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("an imported hashmap cell: it lowers: {e}"),
-    }
+    build_opts::build_seed_dir(&dir, &out, &options).unwrap_or_else(|e| panic!("an imported hashmap cell: it lowers: {e}"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -920,7 +698,7 @@ fn what_the_parity_sweep_reaches_has_rows() {
 /// most of them). It is built as statements now, at every success type.
 #[test]
 fn a_substitute_that_leaves_asks_no_value() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Pt { x: Int; }\n\
                fn word(i: Int) -> String fallible(String) { if i < 0 { fail \"neg\"; } \"w\" }\n\
                fn point(i: Int) -> Pt fallible(String) { if i < 0 { fail \"neg\"; } Pt { x: i } }\n\
@@ -933,14 +711,7 @@ fn a_substitute_that_leaves_asks_no_value() {
                }\n\
                fn main() { println(first(2)); println(first(-1)); }\n";
     let out = harness::unique_bin("seam_strict_leaving_substitute");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -957,7 +728,7 @@ fn a_substitute_that_leaves_asks_no_value() {
 /// for.
 #[test]
 fn a_place_decides_what_names_no_type_of_its_own() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Box<T> { value: T; }\n\
                fn main() {\n\
                    let mut tags: bounded[String; 4] = [];\n\
@@ -972,14 +743,7 @@ fn a_place_decides_what_names_no_type_of_its_own() {
                    println(secs);\n\
                }\n";
     let out = harness::unique_bin("seam_strict_place_decides");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -996,7 +760,7 @@ fn a_place_decides_what_names_no_type_of_its_own() {
 /// (`hale_types::typed_bodies::expr_name`).
 #[test]
 fn a_chain_s_nodes_have_rows_of_their_own() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "fn main() {\n\
                    let xs = [1, 2, 3, 4];\n\
                    println(xs.filter(it > 1).count());\n\
@@ -1006,14 +770,7 @@ fn a_chain_s_nodes_have_rows_of_their_own() {
                    println(f);\n\
                }\n";
     let out = harness::unique_bin("seam_strict_chain_rows");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1029,7 +786,7 @@ fn a_chain_s_nodes_have_rows_of_their_own() {
 /// kinds too (`hale_types::typed_bodies::expr_name`).
 #[test]
 fn a_chain_s_operators_have_rows_of_their_own() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "fn main() {\n\
                    let v = [1, 2, 3, 4, 5, 6, 7, 8];\n\
                    println(v.skip(1).take(3).sum());\n\
@@ -1039,14 +796,7 @@ fn a_chain_s_operators_have_rows_of_their_own() {
                    println(v.filter(it > 6).max() or 0);\n\
                }\n";
     let out = harness::unique_bin("seam_strict_chain_operators");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1062,7 +812,7 @@ fn a_chain_s_operators_have_rows_of_their_own() {
 /// before it looked for either shape, so each loop was a missing row.
 #[test]
 fn a_loop_over_a_form_or_the_children_asks_its_receiver_s_row() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Cell { id: Int; n: Int; }\n\
                @form(hashmap)\n\
                locus Cells { capacity { pool cells of Cell indexed_by id; } }\n\
@@ -1099,14 +849,7 @@ fn a_loop_over_a_form_or_the_children_asks_its_receiver_s_row() {
                    Sum { };\n\
                }\n";
     let out = harness::unique_bin("seam_strict_form_loops");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1121,7 +864,7 @@ fn a_loop_over_a_form_or_the_children_asks_its_receiver_s_row() {
 /// has no row.
 #[test]
 fn a_path_to_a_fn_used_as_a_value_is_typed_by_its_row() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "fn apply(f: fn (String) -> String, s: String) -> String { return f(s); }\n\
                fn main() {\n\
                    println(apply(std::url::encode, \"a b\"));\n\
@@ -1129,14 +872,7 @@ fn a_path_to_a_fn_used_as_a_value_is_typed_by_its_row() {
                    println(f(\"c/d\"));\n\
                }\n";
     let out = harness::unique_bin("seam_strict_fn_values");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1152,7 +888,7 @@ fn a_path_to_a_fn_used_as_a_value_is_typed_by_its_row() {
 /// call and its `err`, and the handler's `or`.
 #[test]
 fn what_lowering_builds_where_an_error_is_raised_has_rows() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type ParseError2 { at: Int; text: String; }\n\
                type FetchError { url: String; }\n\
                type AppError = ParseError2 | FetchError;\n\
@@ -1190,14 +926,7 @@ fn what_lowering_builds_where_an_error_is_raised_has_rows() {
                    println(load_again(\"x\") or \"e\");\n\
                }\n";
     let out = harness::unique_bin("seam_strict_raise_rows");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1213,7 +942,7 @@ fn what_lowering_builds_where_an_error_is_raised_has_rows() {
 /// in no body at all, so each was a missing row.
 #[test]
 fn what_the_prelude_lowers_for_the_bindings_has_rows() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Note { n: Int = 0; }\n\
                type Wire { subject: String = \"\"; data: Bytes = b\"\"; }\n\
                topic Lost { payload: Note; subject: \"lost\"; }\n\
@@ -1234,14 +963,7 @@ fn what_the_prelude_lowers_for_the_bindings_has_rows() {
                }\n\
                fn main() { App { }; }\n";
     let out = harness::unique_bin("seam_strict_prelude_rows");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     build_opts::build_source(src, &out, &build_opts::options()).expect("it builds");
     let _ = std::fs::remove_file(&out);
 }
@@ -1254,7 +976,7 @@ fn what_the_prelude_lowers_for_the_bindings_has_rows() {
 /// scrutinee's type, as an `Int` one already was.
 #[test]
 fn a_pattern_s_and_an_epoch_s_literals_have_rows() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "locus Beat {\n\
                    params { n: Int = 1; }\n\
                    closure tick {\n\
@@ -1275,14 +997,7 @@ fn a_pattern_s_and_an_epoch_s_literals_have_rows() {
                    Beat { };\n\
                }\n";
     let out = harness::unique_bin("seam_strict_pattern_literals");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1299,7 +1014,7 @@ fn a_pattern_s_and_an_epoch_s_literals_have_rows() {
 /// (`hale_types::typed_bodies::expr_name`).
 #[test]
 fn a_chain_s_blocks_and_ors_have_rows_of_their_own() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Line { sku: String = \"\"; qty: Int = 0; }\n\
                type Ledger { entries: bounded[Line; 4]; }\n\
                @form(vec)\n\
@@ -1320,14 +1035,7 @@ fn a_chain_s_blocks_and_ors_have_rows_of_their_own() {
                    println(r.get(0) or -1);\n\
                }\n";
     let out = harness::unique_bin("seam_strict_chain_blocks");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1341,7 +1049,7 @@ fn a_chain_s_blocks_and_ors_have_rows_of_their_own() {
 /// a variant's values only in a declared enum, so it bound `x` `Unknown`.
 #[test]
 fn a_variant_binder_of_a_monomorph_has_a_row() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Value<T> = enum { Some(T), None };\n\
                type IntValue = Value<Int>;\n\
                fn unwrap_or(v: Value<Int>, d: Int) -> Int {\n\
@@ -1359,14 +1067,7 @@ fn a_variant_binder_of_a_monomorph_has_a_row() {
                    println(get(Value_Int::Some(11), 0));\n\
                }\n";
     let out = harness::unique_bin("seam_strict_variant_binders");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1382,7 +1083,7 @@ fn a_variant_binder_of_a_monomorph_has_a_row() {
 /// legal where a diverging expression is.
 #[test]
 fn a_match_whose_every_arm_leaves_gives_no_value() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "fn risky(n: Int) -> Int fallible(String) { if n > 0 { fail \"pos\"; } return n; }\n\
                fn all_arms(n: Int) -> Int {\n\
                    let v = match n {\n\
@@ -1397,14 +1098,7 @@ fn a_match_whose_every_arm_leaves_gives_no_value() {
                }\n\
                fn main() { println(all_arms(1)); println(or_leaving(1)); println(or_leaving(0)); }\n";
     let out = harness::unique_bin("seam_strict_leaving_match");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1420,19 +1114,12 @@ fn a_match_whose_every_arm_leaves_gives_no_value() {
 /// enclosing method's, not the built locus's.
 #[test]
 fn a_generic_locus_s_param_default_reads_its_monomorph_s_rows() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Box<T> { value: T = 0; }\n\
                locus Holder<T> { params { wrapped: Box<T> = Box { value: 7 }; } }\n\
                fn main() { let h: Holder<Int> = Holder { }; println(h.wrapped.value); }\n";
     let out = harness::unique_bin("seam_strict_template_default");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1445,20 +1132,13 @@ fn a_generic_locus_s_param_default_reads_its_monomorph_s_rows() {
 /// as `Holder_Int`'s, not with `make_String`'s own arguments.
 #[test]
 fn a_param_default_built_in_a_generic_fn_reads_the_built_locus_s_rows() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Box<T> { value: T = 0; }\n\
                locus Holder<T> { params { wrapped: Box<T> = Box { value: 7 }; } }\n\
                fn make<U>(x: U) -> Int { let h: Holder<Int> = Holder { }; return h.wrapped.value; }\n\
                fn main() { println(make(\"hello\")); }\n";
     let out = harness::unique_bin("seam_strict_template_default_in_generic_fn");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1472,7 +1152,7 @@ fn a_param_default_built_in_a_generic_fn_reads_the_built_locus_s_rows() {
 /// one that is neither, which lowering reads as a `String`.
 #[test]
 fn a_send_s_read_subject_has_a_row() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "locus Sink {\n\
                    params { seen: Int = 0; }\n\
                    bus { subscribe \"log.**\" as on_event of type std::log::LogEvent; }\n\
@@ -1487,14 +1167,7 @@ fn a_send_s_read_subject_has_a_row() {
                }\n\
                fn main() { App { }; }\n";
     let out = harness::unique_bin("seam_strict_send_subject");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let subject: Vec<_> = rows.iter().filter(|r| r.in_fn.ends_with(".emit") || !r.stdlib).collect();
-            assert!(subject.is_empty(), "the logger's subject and the program's sites have rows: {subject:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     build_opts::build_source(src, &out, &build_opts::options()).expect("it builds");
     let _ = std::fs::remove_file(&out);
 }
@@ -1508,11 +1181,9 @@ fn a_send_s_read_subject_has_a_row() {
 /// several surfaces from one main locus.
 #[test]
 fn each_exposure_s_generated_param_has_rows_of_its_own() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = BuildOptions { lower_only: true, ..build_opts::options() };
     let entry = repo_root().join("tests/hale/api/witness_test.hl");
-    let rows = missing_rows("witness_test", &entry, &strict).expect("it lowers");
-    let program: Vec<_> = rows.iter().filter(|(_, r)| !r.stdlib).collect();
-    assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+    lowers_typed(&Source::Entry(entry), &options).unwrap_or_else(|e| panic!("it lowers: {e}"));
 }
 
 /// A capacity slot's cell has a type: `self.<slot>.acquire()` from a pool
@@ -1522,7 +1193,7 @@ fn each_exposure_s_generated_param_has_rows_of_its_own() {
 /// local bound to it with it.
 #[test]
 fn a_slot_s_cell_has_a_type() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type R { a: Int = 0; }\n\
                locus Slots {\n\
                    capacity { pool entries of Int; heap cells of R; }\n\
@@ -1537,14 +1208,7 @@ fn a_slot_s_cell_has_a_type() {
                }\n\
                fn main() { Slots { }; }\n";
     let out = harness::unique_bin("seam_strict_slot_cells");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1561,7 +1225,7 @@ fn a_slot_s_cell_has_a_type() {
 /// (`hale_types::typed_bodies::ExprTypes::add_direct_sends`).
 #[test]
 fn a_direct_send_s_nodes_have_rows() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Ping { seq: Int = 0; }\n\
                topic Tick { payload: Ping; subject: \"direct.tick\"; }\n\
                topic Beat { payload: Ping; subject: \"direct.beat\"; }\n\
@@ -1588,14 +1252,7 @@ fn a_direct_send_s_nodes_have_rows() {
                    println(app.pub.total());\n\
                }\n";
     let out = harness::unique_bin("seam_strict_direct_send_rows");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1609,7 +1266,7 @@ fn a_direct_send_s_nodes_have_rows() {
 /// second's as no enum it knew), and lowering typed them itself.
 #[test]
 fn a_method_and_a_monomorph_s_variant_have_call_rows() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "type Value<T> = enum { Some(T), None };\n\
                locus Sub {\n\
                    params { hits: Int = 4; }\n\
@@ -1626,14 +1283,7 @@ fn a_method_and_a_monomorph_s_variant_have_call_rows() {
                    println(a == Value_Int::Some(1));\n\
                }\n";
     let out = harness::unique_bin("seam_strict_call_rows");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
-            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");
@@ -1649,7 +1299,7 @@ fn a_method_and_a_monomorph_s_variant_have_call_rows() {
 /// stdlib's literal by the id the checker walked it under.
 #[test]
 fn a_stdlib_default_has_rows_where_it_is_evaluated() {
-    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let options = build_opts::options();
     let src = "fn main() {\n\
                    let reg = std::metrics::Registry { namespace: \"app\" };\n\
                    let hits = std::metrics::counter(reg, \"hits\", std::metrics::labels_one(\"r\", \"a\"));\n\
@@ -1659,15 +1309,7 @@ fn a_stdlib_default_has_rows_where_it_is_evaluated() {
                    println(c.caller.mode);\n\
                }\n";
     let out = harness::unique_bin("seam_strict_stdlib_defaults");
-    match build_opts::build_source(src, &out, &strict) {
-        Ok(()) => {}
-        Err(CodegenError::MissingRows(rows)) => {
-            let defaults: Vec<_> =
-                rows.iter().filter(|r| matches!(r.kind, "literal" | "unary" | "struct")).collect();
-            assert!(defaults.is_empty(), "the defaults have rows: {defaults:?}");
-        }
-        Err(e) => panic!("it builds: {e}"),
-    }
+    build_opts::build_source(src, &out, &options).unwrap_or_else(|e| panic!("it builds: {e}"));
     let ran = build_opts::build_source(src, &out, &build_opts::options())
         .map(|()| std::process::Command::new(&out).output().expect("it runs"))
         .expect("it builds");

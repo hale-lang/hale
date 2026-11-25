@@ -91,6 +91,9 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     // type's zero as one, before the JSON parsers read the defaults
     // (`optional_fields`).
     crate::optional_fields::fill_optional_zeros(programs, bundled_stdlib().ok().as_slice());
+    // B7 / G19: an all-defaulted record param with no value is `T { }`,
+    // after the zeros above (an optional field's is its default)
+    fill_record_param_defaults(programs, bundled_stdlib().ok().as_slice());
     // Each program's parsers in their own parse space, past every file and
     // every other program's (`JSON_SYNTH_BASE`).
     hale_syntax::json_gen::generate_json_parsers_in(programs, seq.import_renames);
@@ -113,6 +116,44 @@ pub fn desugar_before_check(programs: &mut [&mut Program], seq: &Sequence<'_>) {
     // GH #1530 step 2: a seam becomes the methods it means.
     crate::seam_expand::expand(programs, stdlib.as_slice());
     shape(programs, seq, stdlib.as_slice());
+}
+
+/// B7 / G19 (spec/types.md § Locus params): a locus param typed as a
+/// record whose every field has a default, given no value, has `T { }` as
+/// its default. Written before the check, so the check accepts a literal
+/// that leaves the param out and types the default as any other, and
+/// lowering lowers it as one (GH #2111: lowering wrote it after the check,
+/// which refused the literal and typed nothing of the `T { }`). `context`
+/// (the bundled stdlib) is read for the records a param may name.
+/// Idempotent: a param with a value is left as it is.
+fn fill_record_param_defaults(programs: &mut [&mut Program], context: &[&Program]) {
+    use hale_syntax::ast::{Expr, NodeId, ParamInit, TypeDeclBody};
+    let mut defaulted = std::collections::BTreeSet::new();
+    for p in context.iter().copied().chain(programs.iter().map(|p| &**p)) {
+        for item in &p.items {
+            let TopDecl::Type(t) = item else { continue };
+            let TypeDeclBody::Struct(fields) = &t.body else { continue };
+            if t.generics.is_empty() && !fields.is_empty() && fields.iter().all(|f| f.default.is_some()) {
+                defaulted.insert(t.name.name.clone());
+            }
+        }
+    }
+    for p in programs.iter_mut() {
+        for item in p.items.iter_mut() {
+            let TopDecl::Locus(l) = item else { continue };
+            for m in l.members.iter_mut() {
+                let LocusMember::Params(pb) = m else { continue };
+                for param in pb.params.iter_mut() {
+                    let Some(TypeExpr::Named { path, generic_args, .. }) = &param.ty else { continue };
+                    let named = matches!(path.segments.as_slice(), [n] if defaulted.contains(&n.name));
+                    if matches!(param.init, ParamInit::Inferred) && generic_args.is_empty() && named {
+                        let literal = Expr::Struct { id: NodeId::NONE, path: path.clone(), inits: Vec::new(), span: param.name.span };
+                        param.init = ParamInit::Value(literal);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The passes that shape a declaration, in order. `context` is read and

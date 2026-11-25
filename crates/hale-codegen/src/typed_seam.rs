@@ -20,9 +20,8 @@
 use hale_syntax::ast::{Expr, Ident, QualifiedName, TypeExpr};
 use hale_types::ty::Ty;
 
-use hale_types::typed_bodies::{expr_kind, expr_name};
 
-use crate::codegen::{CodegenError, CodegenTy, Cx, MissingRow};
+use crate::codegen::{CodegenError, CodegenTy, Cx};
 
 /// An interface `accept(c: I)` / `release(c: I)` monomorph being lowered
 /// (`Cx::current_accept_interface`): the interface `I`, the locus it is
@@ -41,31 +40,57 @@ pub(crate) const AGGREGATE_CALL: &str = "the checker's type of this call, which 
 
 impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// The checker's type of `e`, an expression of the body being lowered,
-    /// as a layout: `None` outside every body, where the checker recorded
-    /// no row (or two answers), or for a type with no layout.
+    /// as a layout. Lowering types no value itself (GH #2111): with no row
+    /// (none recorded, two answers, `Unknown`, a type with no layout, or
+    /// lowered outside every body) it answers `None` so that the caller's
+    /// lowering can go on, and the build is refused when lowering ends, at
+    /// `e` ([`Cx::refuse_missing_rows`]): a compiler defect, never a guess.
     pub(crate) fn ty_at(&self, e: &Expr) -> Option<CodegenTy> {
-        match self.row_layout(e) {
-            Ok(t) => Some(t),
-            Err(reason) => {
-                if self.seam_strict {
-                    self.note_missing_row(e, reason);
-                }
-                None
-            }
-        }
+        self.ty_required(e, &format!("the checker's type of this {}", kind_name(e)))
     }
 
-    /// GH #2111: the checker's type of `e`, which lowering requires: a read
-    /// that takes no other path. With no row (or a type with no layout)
-    /// it answers `None` so that the caller's lowering can go on, and the
-    /// build is refused when lowering ends, at `e`, naming `what`
-    /// ([`Cx::refuse_missing_rows`]), strict mode or not.
-    pub(crate) fn ty_required(&self, e: &Expr, what: &'static str) -> Option<CodegenTy> {
-        let t = self.ty_at(e);
+    /// [`Cx::ty_at`], naming what lowering asked (`what`) where the row is
+    /// missing.
+    pub(crate) fn ty_required(&self, e: &Expr, what: &str) -> Option<CodegenTy> {
+        let t = self.row_layout(e).ok();
         if t.is_none() {
-            self.required_misses.borrow_mut().push((what, e.span()));
+            self.required_misses.borrow_mut().push((what.to_string(), e.span(), self.lowering_stdlib_body()));
         }
         t
+    }
+
+    /// The checker's type of `e`, refused at `e` where there is none: the
+    /// type of a value lowering hands back, which it takes from the row.
+    pub(crate) fn row_of(&self, e: &Expr) -> Result<CodegenTy, CodegenError> {
+        self.row_layout(e).map_err(|_| {
+            CodegenError::missing_row("expression_typing", format!("the checker's type of this {}", kind_name(e)), None)
+                .placed(e.span(), self.lowering_stdlib_body())
+        })
+    }
+
+    /// GH #2111: the value `e` lowered to, of `built`, handed back as the
+    /// checker's type of it, which lowering takes from the row. A value of
+    /// another type is a compiler defect, refused at `e`: lowering and the
+    /// checker disagree on what `e` is. A row of `()` (an expression that
+    /// gives no value, built as statements) is no type, and the value is
+    /// none either.
+    pub(crate) fn typed_by_row(
+        &self,
+        e: &Expr,
+        (v, built): (inkwell::values::BasicValueEnum<'ctx>, CodegenTy),
+    ) -> Result<(inkwell::values::BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
+        if self.row_is_unit(e) {
+            return Ok((v, built));
+        }
+        let row = self.row_of(e)?;
+        if row != built {
+            return Err(CodegenError::Invalid(format!(
+                "the checker types this {} `{row}`, and lowering built `{built}`: a compiler defect",
+                kind_name(e)
+            ))
+            .placed(e.span(), self.lowering_stdlib_body()));
+        }
+        Ok((v, row))
     }
 
     /// The element type and capacity of the receiver `args[0]` when the
@@ -82,19 +107,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// One of the seam's fallbacks (GH #2111): lowering types `e` itself
-    /// below this call, the checker's row or none. Under strict mode a
-    /// missing row is noted here; otherwise it does nothing. Every call
-    /// site is counted by `seam_strict_baseline`, and goes when its
-    /// lowering takes `e`'s type from the row.
-    pub(crate) fn seam_fallback(&self, e: &Expr) {
-        // a row of `()` is the checker's answer: the expression gives no
-        // value (a `match` whose every arm leaves), and none is typed
-        if self.seam_strict && !self.row_is_unit(e) {
-            let _ = self.ty_at(e);
-        }
-    }
-
     /// Whether the checker types `e` `()`: a block the check accepted in
     /// a value's place only because it never ends (`f() or { return x; }`,
     /// `block_always_diverges`), so lowering builds it as statements and
@@ -104,8 +116,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         matches!(self.checker_row(e), Ok(Ty::Unit))
     }
 
-    /// [`Cx::ty_at`]'s answer, or why there is none (a [`MissingRow`]'s
-    /// reason).
+    /// [`Cx::ty_at`]'s answer, or why there is none.
     fn row_layout(&self, e: &Expr) -> Result<CodegenTy, &'static str> {
         // a quantity literal is built as the count the check converted it
         // to, its conversion's target
@@ -194,37 +205,14 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
-    /// GH #2111 strict mode: `e` is lowered without the checker's type.
-    fn note_missing_row(&self, e: &Expr, reason: &'static str) {
-        let sp = e.span();
-        let stdlib = self.lowering_stdlib_body();
-        let key = (sp.start.0, sp.end.0, expr_kind(e), expr_name(e), stdlib);
-        self.seam_misses.borrow_mut().entry(key).or_insert_with(|| MissingRow {
-            family: family_of(e),
-            kind: kind_name(e),
-            stdlib,
-            reason,
-            span: sp,
-            in_fn: self
-                .current_fn
-                .map(|f| f.get_name().to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        });
-    }
-
-    /// GH #2111, at the end of lowering: a read that required the
-    /// checker's row and found none (`Cx::ty_required`), refused at its
-    /// site; and under strict mode every expression lowering typed without
-    /// the checker's row, refused together.
+    /// GH #2111, at the end of lowering: a value lowered with no row of the
+    /// checker's ([`Cx::ty_at`]) is a compiler defect, refused at the first
+    /// one's site.
     pub(crate) fn refuse_missing_rows(&self) -> Result<(), CodegenError> {
-        // under strict mode a required read's miss is one of the rows
-        // (`ty_required` asks `ty_at`), listed with the others
-        let rows: Vec<MissingRow> = self.seam_misses.borrow().values().cloned().collect();
-        if self.seam_strict && !rows.is_empty() {
-            return Err(CodegenError::MissingRows(rows));
-        }
         match self.required_misses.borrow().first() {
-            Some((what, at)) => Err(CodegenError::missing_row("expression_typing", what, Some(*at))),
+            Some((what, at, stdlib)) => {
+                Err(CodegenError::missing_row("expression_typing", what, None).placed(*at, *stdlib))
+            }
             None => Ok(()),
         }
     }
@@ -363,28 +351,6 @@ fn spelled(t: &Ty) -> Option<TypeExpr> {
         Ty::Unit => TypeExpr::Tuple(Vec::new(), span),
         Ty::Projection(..) | Ty::Cell { .. } | Ty::Unknown => return None,
     })
-}
-
-/// The survey's family of an expression lowering types (GH #2111):
-/// what a [`MissingRow`] is counted under.
-fn family_of(e: &Expr) -> u8 {
-    match e {
-        Expr::Call { callee, .. } => match callee.as_ref() {
-            Expr::Path(q) if q.segments.first().is_some_and(|s| s.name == "std") => 9,
-            _ => 2,
-        },
-        Expr::Path(_) | Expr::Path2 { .. } | Expr::Field { .. } | Expr::Index { .. } | Expr::KwSelf(_) => 3,
-        Expr::Ident(_) => 4,
-        Expr::Struct { .. } | Expr::Array(..) | Expr::ArrayRepeat { .. } | Expr::Tuple(..) => 5,
-        Expr::If(_) | Expr::Match(_) | Expr::Block(_) | Expr::Or { .. } => 6,
-        Expr::Literal(..)
-        | Expr::Binary { .. }
-        | Expr::Unary { .. }
-        | Expr::Range { .. }
-        | Expr::Sum(..)
-        | Expr::Prod(..)
-        | Expr::Approx { .. } => 7,
-    }
 }
 
 /// An expression's kind, by name.

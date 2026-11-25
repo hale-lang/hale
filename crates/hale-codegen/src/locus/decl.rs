@@ -186,52 +186,13 @@ impl<'ctx, 'p> LocusDeclare<'ctx> for Cx<'ctx, 'p> {
         for member in &l.members {
             if let LocusMember::Params(pb) = member {
                 for p in &pb.params {
-                    // B7 / G19: when the param's ascribed type is
-                    // a user-defined struct whose every field has
-                    // a default, synthesize `T { }` as the param's
-                    // own default. This drops the `=` requirement
-                    // for the common "wrap an all-defaulted record
-                    // in a locus param" pattern (e.g. config
-                    // bundles, settings structs).
-                    let synthesized_struct_default: Option<Expr> =
-                        if matches!(&p.init, ParamInit::Inferred) {
-                            p.ty.as_ref().and_then(|te| {
-                                let TypeExpr::Named { path, generic_args, .. } = te
-                                else { return None };
-                                if !generic_args.is_empty() {
-                                    return None;
-                                }
-                                if path.segments.len() != 1 {
-                                    return None;
-                                }
-                                let name = &path.segments[0].name;
-                                let info = self.user_types.get(name)?;
-                                if info.field_order.is_empty() {
-                                    return None;
-                                }
-                                if !info
-                                    .field_order
-                                    .iter()
-                                    .all(|f| info.defaults.contains_key(f))
-                                {
-                                    return None;
-                                }
-                                Some(Expr::Struct {
-                                    id: hale_syntax::ast::NodeId::NONE,
-                                    path: path.clone(),
-                                    inits: Vec::new(),
-                                    span: p.name.span,
-                                })
-                            })
-                        } else {
-                            None
-                        };
                     let default_expr = match &p.init {
                         ParamInit::Value(e) => Some(e),
+                        // B7 / G19's `T { }` for an all-defaulted record
+                        // param is written before the check
+                        // (`desugar_sequence::fill_record_param_defaults`)
                         ParamInit::Inferred => {
-                            if let Some(synth) = synthesized_struct_default.as_ref() {
-                                Some(synth)
-                            } else if p.ty.is_none() {
+                            if p.ty.is_none() {
                                 // 2026-05-16 — `name: T;` with no `=`
                                 // declares a required param. The
                                 // user must supply it at

@@ -3807,9 +3807,6 @@ dynamic	<hole>	on main|unresolved declaration `Box_Int`|unresolved declaration `
 == crates/hale-codegen/tests/generics.rs#97bc2087
 dynamic	<hole>	on main|unresolved declaration `Box_Box_Int`|unresolved declaration `Box_Int`	in the seed
 
-== crates/hale-codegen/tests/generics.rs#1098d8c5
-dynamic	<hole>	on main|unresolved declaration `Box_Int`	in the seed
-
 == crates/hale-codegen/tests/hale_self_test.rs#35c4e193
 row	Counter@main1	Counter	main	default
 
@@ -4941,6 +4938,9 @@ shared	Outer@main1	Outer #1047d3f2
 
 == crates/hale-codegen/tests/phase_b_fixes.rs#5e42f66f
 dynamic	Counter	on main	in the seed
+
+== crates/hale-codegen/tests/phase_b_fixes.rs#877fee5a
+row	Server@main1	Server	main	default
 
 == crates/hale-codegen/tests/phase_b_fixes.rs#0f2c418c
 row	L@main1	L	main	default
