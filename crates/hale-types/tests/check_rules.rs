@@ -2946,6 +2946,21 @@ mod default_literal_tests {
         assert_eq!(errors(&format!("{BUDGET}locus L {{ params {{ budget: BudgetSet = BudgetSet {{ }}; }} }}\nfn main() {{ }}\n")), missing);
     }
 
+    /// B7 / G19 (spec/types.md § Locus params): a locus param of a record
+    /// whose every field has a default may be left out, as `T { }`; one
+    /// field without a default keeps it required.
+    #[test]
+    fn an_all_defaulted_record_param_may_be_left_out() {
+        let src = "type Cfg { host: String = \"h\"; port: Int = 8080; }\n\
+                   locus Server { params { cfg: Cfg; } fn port() -> Int { return self.cfg.port; } }\n\
+                   fn main() { let s = Server { }; println(s.port()); }\n";
+        assert_eq!(errors(src), Vec::<String>::new());
+        let src = "type Cfg { host: String; port: Int = 8080; }\n\
+                   locus Server { params { cfg: Cfg; } }\n\
+                   fn main() { let s = Server { }; }\n";
+        assert_eq!(errors(src), vec!["locus `Server`: missing field `cfg`".to_string()]);
+    }
+
     #[test]
     fn a_complete_literal_default_checks() {
         // every field without a default written; a defaulted and a bounded

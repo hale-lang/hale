@@ -656,90 +656,11 @@ fn two_distinct_generic_types_monomorphize_independently() {
 
 // === m65 ====================================================
 // stdlib `Result<T, E>` / `Option<T>` as built-in generic
-// enums available without explicit `type` declaration.
-
-#[test]
-fn builtin_result_generic_used_without_declaration() {
-    // No `type Result<T,E> = ...` in source — codegen injects
-    // the stdlib template, discovery sees the use site, and
-    // synthesis produces `Result_Int_String` along with its
-    // `Ok`/`Err` variants.
-    let src = r#"
-        type Holder {
-            r: Result<Int, String>;
-        }
-
-        fn main() {
-            let r = Result_Int_String::Ok(7);
-            let h = Holder { r: r };
-            match h.r {
-                Result_Int_String::Ok(n)  -> println("ok: ", n),
-                _                          -> println("other"),
-            }
-        }
-    "#;
-    let (stdout, status) = build_and_run("builtin_result", src);
-    assert!(status.success(), "exited non-zero: {:?}", status);
-    assert!(stdout.contains("ok: 7"), "got: {:?}", stdout);
-}
-
-#[test]
-fn builtin_option_generic_used_without_declaration() {
-    // No `type Option<T> = ...` in source — codegen injects
-    // the stdlib template; both Some(T) and None synthesize.
-    let src = r#"
-        type Holder {
-            o: Option<Int>;
-        }
-
-        fn main() {
-            let some = Option_Int::Some(42);
-            let h = Holder { o: some };
-            match h.o {
-                Option_Int::Some(n) -> println("some: ", n),
-                _                    -> println("none"),
-            }
-        }
-    "#;
-    let (stdout, status) = build_and_run("builtin_option", src);
-    assert!(status.success(), "exited non-zero: {:?}", status);
-    assert!(stdout.contains("some: 42"), "got: {:?}", stdout);
-}
-
-#[test]
-fn builtin_result_and_option_coexist() {
-    // Both built-ins can be used in the same program; nested
-    // discovery walks both field types and synthesizes both
-    // monomorphs.
-    let src = r#"
-        type Pair {
-            r: Result<Int, String>;
-            o: Option<Int>;
-        }
-
-        fn main() {
-            let p = Pair {
-                r: Result_Int_String::Err("nope"),
-                o: Option_Int::Some(9),
-            };
-            match p.r {
-                Result_Int_String::Err(s) -> println("err: ", s),
-                _                          -> println("other"),
-            }
-            match p.o {
-                Option_Int::Some(n) -> println("some: ", n),
-                _                    -> println("none"),
-            }
-        }
-    "#;
-    let (stdout, status) = build_and_run("builtin_both", src);
-    assert!(status.success(), "exited non-zero: {:?}", status);
-    assert!(
-        stdout.contains("err: nope") && stdout.contains("some: 9"),
-        "got: {:?}",
-        stdout,
-    );
-}
+// enums available without explicit `type` declaration. The checker
+// names no such types (`unknown type `Option``), so `hale build` never
+// lowers a program that uses one undeclared; the tests that built them
+// bypassing the check went with the check/build seam's fallbacks
+// (GH #2111). A program's own declaration is lowered as declared.
 
 #[test]
 fn user_result_decl_takes_precedence_over_builtin() {
@@ -801,35 +722,6 @@ fn nested_generic_args_close_with_double_gt() {
         "got: {:?}",
         stdout,
     );
-}
-
-#[test]
-fn nested_builtin_result_with_box_arg() {
-    // `Result<Box<Int>, String>` exercises the split at the
-    // built-in template lookup path: discovery walks the field
-    // type, synthesizes Box_Int and then Result_Box_Int_String.
-    let src = r#"
-        type Box<T> {
-            value: T;
-        }
-
-        type Holder {
-            r: Result<Box<Int>, String>;
-        }
-
-        fn main() {
-            let inner = Box_Int { value: 9 };
-            let r = Result_Box_Int_String::Ok(inner);
-            let h = Holder { r: r };
-            match h.r {
-                Result_Box_Int_String::Ok(b) -> println("ok: ", b.value),
-                _                             -> println("other"),
-            }
-        }
-    "#;
-    let (stdout, status) = build_and_run("nested_result", src);
-    assert!(status.success(), "exited non-zero: {:?}", status);
-    assert!(stdout.contains("ok: 9"), "got: {:?}", stdout);
 }
 
 // === m67 ====================================================

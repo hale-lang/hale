@@ -838,47 +838,6 @@ pub enum CodegenError {
     /// gate counts it apart from a divergence. The flag: the span is in a
     /// Hale-source stdlib body's space.
     NotVectorized(String, hale_syntax::Span, bool),
-    /// GH #2111 (phase 1): under `BuildOptions::seam_strict`, every
-    /// expression lowering typed without the checker's row, in the order
-    /// of their spans.
-    MissingRows(Vec<MissingRow>),
-}
-
-/// GH #2111 strict mode: one expression lowering typed without the
-/// checker's row ([`CodegenError::MissingRows`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MissingRow {
-    /// The survey's family (GH #2111): 2 call results, 3 reads, 4
-    /// bindings, 5 composite values, 6 branch values, 7 literals and
-    /// operators, 9 stdlib leaves.
-    pub family: u8,
-    /// The expression's kind (`call`, `field`, `literal`, …).
-    pub kind: &'static str,
-    /// Whether the expression is in a body of the Hale-source stdlib.
-    pub stdlib: bool,
-    /// Why there is no type: `no row`, `unknown` (the checker typed it
-    /// `Unknown`), `no layout` (a type `layout_of` cannot lay out), or
-    /// `no body` (lowered outside every body).
-    pub reason: &'static str,
-    pub span: hale_syntax::Span,
-    /// The function being emitted.
-    pub in_fn: String,
-}
-
-impl std::fmt::Display for MissingRow {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} `{}` (family {}) at {}..{} in `{}`: {}",
-            if self.stdlib { "stdlib" } else { "program" },
-            self.kind,
-            self.family,
-            self.span.start.0,
-            self.span.end.0,
-            self.in_fn,
-            self.reason
-        )
-    }
 }
 
 impl CodegenError {
@@ -897,7 +856,6 @@ impl CodegenError {
             CodegenError::MissingTsShim(s, at) => CodegenError::MissingTsShim(f(&s), at),
             CodegenError::CapabilityRefused(s, at) => CodegenError::CapabilityRefused(f(&s), at),
             CodegenError::NotVectorized(s, at, std) => CodegenError::NotVectorized(f(&s), at, std),
-            CodegenError::MissingRows(rows) => CodegenError::MissingRows(rows),
         }
     }
 }
@@ -923,13 +881,6 @@ impl std::fmt::Display for CodegenError {
                 write!(f, "{s} ({})", hale_types::stdlib_bodies::stdlib_span_note(*at))
             }
             CodegenError::NotVectorized(s, _, false) => write!(f, "{s}"),
-            CodegenError::MissingRows(rows) => {
-                write!(f, "strict mode: {} expression(s) lowered without the checker's type", rows.len())?;
-                for r in rows {
-                    write!(f, "\n  {r}")?;
-                }
-                Ok(())
-            }
         }
     }
 }
@@ -1041,8 +992,6 @@ impl CodegenError {
             | CodegenError::Refused(..)
             | CodegenError::NotVectorized(..) => true,
             CodegenError::MissingTsShim(_, at) | CodegenError::CapabilityRefused(_, at) => at.is_some(),
-            // every row names its span
-            CodegenError::MissingRows(_) => true,
             CodegenError::Unsupported(_)
             | CodegenError::Invalid(_)
             | CodegenError::LlvmInit(_)
@@ -1198,19 +1147,11 @@ pub struct BuildOptions {
     /// Print the bus dispatch plan's flavor per subject on stderr
     /// (`HALE_DISPATCH_TRACE`).
     pub dispatch_trace: bool,
-    /// GH #2111 (phase 1, strict mode): every expression lowering types
-    /// without the checker's row (none recorded, `Unknown`, no layout,
-    /// or lowered outside every body) is a hard error. Lowering runs to
-    /// its end and the build is refused before anything is emitted, with
-    /// every such site ([`CodegenError::MissingRows`]). The measure of
-    /// how much typing lowering still does itself; off, nothing changes.
-    pub seam_strict: bool,
     /// GH #2111: the build ends when lowering does, its verdict given
-    /// (a [`CodegenError::MissingRows`] refusal under `seam_strict`):
-    /// nothing is verified, optimized, emitted or linked, and no output is
-    /// written. For a survey of lowering over many programs
-    /// (`seam_strict_baseline`), whose cost was the full build of every
-    /// program lowering accepted.
+    /// (a value with no row of the checker's is refused there): nothing is
+    /// verified, optimized, emitted or linked, and no output is written.
+    /// For a survey of lowering over many programs (`seam_rows`), whose
+    /// cost was the full build of every program lowering accepted.
     pub lower_only: bool,
     /// The lifecycle trace (F.40 phase 3, L2; `HALE_LIFECYCLE_TRACE`):
     /// the runtime is compiled with `LOTUS_LIFECYCLE_TRACE` and the
@@ -1298,7 +1239,6 @@ impl BuildOptions {
             disable_prefetch: Default::default(),
             di_trace: Default::default(),
             dispatch_trace: Default::default(),
-            seam_strict: Default::default(),
             lower_only: Default::default(),
             lifecycle_trace: Default::default(),
             time_phases: Default::default(),
@@ -2324,8 +2264,6 @@ fn build_resolved_lowered(
         in_main: false,
         main_exit: None,
         dispatch_trace: options.dispatch_trace,
-        seam_strict: options.seam_strict,
-        seam_misses: Default::default(),
         required_misses: Default::default(),
         main_frame_depth: usize::MAX,
         main_dissolve_frame: None,
@@ -4985,15 +4923,11 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// `BuildOptions::dispatch_trace`: the publish sites print the
     /// codec's payload flatness beside the plan's rows.
     pub(crate) dispatch_trace: bool,
-    /// GH #2111 strict mode (`BuildOptions::seam_strict`): the sites
-    /// lowered without the checker's row, by key, recorded by
-    /// `Cx::ty_at` and refused when lowering ends.
-    pub(crate) seam_strict: bool,
-    pub(crate) seam_misses: std::cell::RefCell<BTreeMap<(u32, u32, u8, u64, bool), MissingRow>>,
-    /// GH #2111: the reads that require the checker's row
-    /// (`Cx::ty_required`) and found none: the build is refused when
-    /// lowering ends, strict mode or not.
-    pub(crate) required_misses: std::cell::RefCell<Vec<(&'static str, hale_syntax::Span)>>,
+    /// GH #2111: the values lowered with no row of the checker's
+    /// (`Cx::ty_at`), each with what was asked, its span and whether it is
+    /// in a stdlib body: a compiler defect, the build refused at the first
+    /// when lowering ends (`Cx::refuse_missing_rows`).
+    pub(crate) required_misses: std::cell::RefCell<Vec<(String, hale_syntax::Span, bool)>>,
     /// GH #717: `deferred_dissolves.len()` once `main`'s own frame is
     /// pushed. Identifies "we are at main's top frame" so a
     /// recorded-assertion-failure branch only routes through main's
@@ -26613,7 +26547,9 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Call { callee, args, .. } => self.mark_borrowed_args(callee, args),
             _ => Vec::new(),
         };
-        let result = self.lower_expr_at(e, scope);
+        // GH #2111: the value is typed by the checker's row of it
+        // (`Cx::typed_by_row`): lowering types no value itself
+        let result = self.lower_expr_at(e, scope).and_then(|lowered| self.typed_by_row(e, lowered));
         self.unmark_borrowed_args(marks);
         // A refusal raised with no place of its own is placed at the
         // innermost expression of the user's source being lowered when it
@@ -26840,36 +26776,6 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         e: &Expr,
         scope: &Scope<'ctx>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        // GH #2111: the seam's fallbacks. Every kind below is lowered by
-        // an arm that types its value itself, with or without the
-        // checker's row: one fallback site per kind, counted by
-        // `seam_strict_baseline`, and each noted where the row is missing
-        // under strict mode. A kind's line goes when its arm takes its
-        // type from the row and refuses a missing one.
-        match e {
-            Expr::Literal(..) => self.seam_fallback(e),
-            Expr::Ident(_) => self.seam_fallback(e),
-            Expr::Path(_) => self.seam_fallback(e),
-            Expr::KwSelf(_) => self.seam_fallback(e),
-            Expr::Binary { .. } => self.seam_fallback(e),
-            Expr::Unary { .. } => self.seam_fallback(e),
-            Expr::Call { .. } => self.seam_fallback(e),
-            Expr::Field { .. } => self.seam_fallback(e),
-            Expr::Path2 { .. } => self.seam_fallback(e),
-            Expr::Index { .. } => self.seam_fallback(e),
-            Expr::Tuple(..) => self.seam_fallback(e),
-            Expr::Array(..) => self.seam_fallback(e),
-            Expr::Struct { .. } => self.seam_fallback(e),
-            Expr::Block(_) => self.seam_fallback(e),
-            Expr::If(_) => self.seam_fallback(e),
-            Expr::Match(_) => self.seam_fallback(e),
-            Expr::Sum(..) => self.seam_fallback(e),
-            Expr::Prod(..) => self.seam_fallback(e),
-            Expr::Approx { .. } => self.seam_fallback(e),
-            Expr::Range { .. } => self.seam_fallback(e),
-            Expr::ArrayRepeat { .. } => self.seam_fallback(e),
-            Expr::Or { .. } => self.seam_fallback(e),
-        }
         // GH #402 shape 1: a fresh-factory call whose result nothing
         // names — `add(matmul(w, a), b)`, where the inner value is
         // consumed as an argument and dropped. #383's rule attaches
@@ -27099,12 +27005,8 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             Expr::Literal(Literal::Int(n), _) => {
                 // GH #2121: a literal whose place is a `U64` is one, as
                 // the checker's row of it says; GH #2132: so is one whose
-                // place is a narrower integer, at its width. Not required
-                // yet: some have no row (the literal's fallback above)
-                let ty = match self.ty_at(e) {
-                    Some(t @ (CodegenTy::U64 | CodegenTy::Narrow(_))) => t,
-                    _ => CodegenTy::Int,
-                };
+                // place is a narrower integer, at its width
+                let ty = self.row_of(e)?;
                 let bits = ty.machine_int().map_or(64, |(b, _)| b);
                 let v = self.context.custom_width_int_type(bits).const_int(*n as u64, true);
                 Ok((v.into(), ty))
@@ -27112,19 +27014,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             // GH #2121: past `Int`'s max, a `U64` by itself
             Expr::Literal(Literal::U64(n), _) => {
                 let v = self.context.i64_type().const_int(*n, false);
-                Ok((v.into(), CodegenTy::U64))
+                Ok((v.into(), self.row_of(e)?))
             }
             Expr::Literal(Literal::Float(f), _) => {
                 let v = self.context.f64_type().const_float(*f);
-                Ok((v.into(), CodegenTy::Float))
+                Ok((v.into(), self.row_of(e)?))
             }
             Expr::Literal(Literal::Bool(b), _) => {
                 let v = self.context.bool_type().const_int(*b as u64, false);
-                Ok((v.into(), CodegenTy::Bool))
+                Ok((v.into(), self.row_of(e)?))
             }
             Expr::Literal(Literal::String(s), _) => {
                 let p = self.global_string(s);
-                Ok((p.into(), CodegenTy::String))
+                Ok((p.into(), self.row_of(e)?))
             }
             // B2 / G5: `b"..."` bytes literal. Stash the bytes as a
             // private global i8 array; allocate a fresh Bytes blob
@@ -27152,15 +27054,17 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .try_as_basic_value()
                     .left()
                     .expect("lotus_bytes_from_buf returns ptr");
-                Ok((blob, CodegenTy::Bytes))
+                Ok((blob, self.row_of(e)?))
             }
             Expr::Literal(Literal::Decimal(s), span) => {
                 // m48 / `Decimal<S>`: an i128 mantissa at the scale of
-                // the place the literal flows into, which the checker
-                // recorded at the literal (`Decimal`'s 9 when it
-                // recorded none). Add/sub stay i128 ops; mul/div
-                // divide by 10^S once.
-                let scale = self.decimal_scale_at_value(*span);
+                // the place the literal flows into, the checker's row of
+                // it (GH #2111). Add/sub stay i128 ops; mul/div divide by
+                // 10^S once.
+                let ty = self.row_of(e)?;
+                let CodegenTy::Decimal(scale) = ty else {
+                    return Err(CodegenError::Invalid(format!("the checker types this Decimal literal `{ty}`: a compiler defect")));
+                };
                 let mantissa = hale_syntax::decimal_literal::parse_at_scale(s, scale).map_err(|_| {
                     CodegenError::UnsupportedAt(
                         format!(
@@ -27172,7 +27076,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                 })?;
                 let v = i128_const(self.context, mantissa);
-                Ok((v.into(), CodegenTy::Decimal(scale)))
+                Ok((v.into(), ty))
             }
             Expr::Literal(Literal::Time(s), _) => {
                 // GH #607: an instant, i64 nanoseconds since the
@@ -27182,7 +27086,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .ok_or_else(|| CodegenError::Unsupported(format!(
                         "time literal `{s}` is not an ISO-8601 UTC instant"
                     )))?;
-                Ok((self.context.i64_type().const_int(ns as u64, true).into(), CodegenTy::Time))
+                Ok((self.context.i64_type().const_int(ns as u64, true).into(), self.row_of(e)?))
             }
             Expr::Literal(Literal::Quantity { value, unit }, span) => self.lower_quantity_literal(*value, unit, *span),
             Expr::Path(qn) => {
@@ -28459,22 +28363,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         scope: &Scope<'ctx>,
         hint: Option<&CodegenTy>,
     ) -> Result<(BasicValueEnum<'ctx>, CodegenTy), CodegenError> {
-        // GH #2111: a composite at a declared site is lowered below,
-        // typed by the declaration and its own parts (the seam's
-        // fallbacks, as in `lower_expr_at`)
-        match e {
-            Expr::Array(..) => self.seam_fallback(e),
-            Expr::ArrayRepeat { .. } => self.seam_fallback(e),
-            Expr::Tuple(..) => self.seam_fallback(e),
-            _ => {}
-        }
         match (hint, e) {
             // GH #1951: an array literal at a declared `bounded[T; N]` site
             // is that bounded, its count the literal's length.
             (Some(CodegenTy::Bounded(elem, cap)), Expr::Array(parts, _)) => {
                 let (elem, cap) = ((**elem).clone(), *cap);
                 let storage = self.lower_bounded_literal(parts, &elem, cap, scope)?;
-                Ok((storage.into(), CodegenTy::Bounded(Box::new(elem), cap)))
+                self.typed_by_row(e, (storage.into(), CodegenTy::Bounded(Box::new(elem), cap)))
             }
             (
                 Some(CodegenTy::Array(elem_hint, want_n)),
@@ -28538,10 +28433,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(slot, *v)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                Ok((
-                    arr_ptr.into(),
-                    CodegenTy::Array(elem_hint.clone(), n),
-                ))
+                self.typed_by_row(e, (arr_ptr.into(), CodegenTy::Array(elem_hint.clone(), n)))
             }
             (
                 Some(CodegenTy::Array(elem_hint, want_n)),
@@ -28576,10 +28468,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     want_stack,
                     "array.repeat.coerced",
                 )?;
-                Ok((
-                    arr_ptr.into(),
-                    CodegenTy::Array(elem_hint.clone(), n),
-                ))
+                self.typed_by_row(e, (arr_ptr.into(), CodegenTy::Array(elem_hint.clone(), n)))
             }
             (Some(CodegenTy::Tuple(want_tys)), Expr::Tuple(parts, _))
                 if parts.len() == want_tys.len() && parts.len() >= 2 =>
@@ -28623,7 +28512,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         .build_store(slot, *v)
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 }
-                Ok((tup_ptr.into(), CodegenTy::Tuple(elem_tys)))
+                self.typed_by_row(e, (tup_ptr.into(), CodegenTy::Tuple(elem_tys)))
             }
             _ => {
                 let (v, got) = self.lower_expr(e, scope)?;
