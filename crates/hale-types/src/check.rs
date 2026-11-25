@@ -28298,7 +28298,12 @@ impl<'a> Checker<'a> {
         // GH #1978: an application of the parameters is the monomorph the
         // call's arguments name.
         let ret = match &template.ret {
-            Some(te) => self.instantiated_ty(te, &bindings),
+            // an interface the template returns is that interface, as a
+            // fn's declared return is (GH #2111)
+            Some(te) => {
+                let t = self.instantiated_ty(te, &bindings);
+                self.with_interfaces_named(te, t)
+            }
             None => Ty::Unit,
         };
         if let Some(fe) = &template.fallible {

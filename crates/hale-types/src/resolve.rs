@@ -481,6 +481,34 @@ pub fn build_top_scope(bundle: &Bundle<'_>) -> (TopScope, Vec<Diag>) {
         );
     }
 
+    // GH #2111: a hashmap or set form's key is a field of its cell's
+    // record, which may be registered after the locus (a record another
+    // file of the bundle declares, an import): its methods are synthesized
+    // again once every declaration of the bundle is in scope.
+    for program in bundle.programs.values() {
+        for item in &program.items {
+            let TopDecl::Locus(decl) = item else { continue };
+            let Some(form) = decl.form.as_ref().map(|f| f.name.name.as_str()) else { continue };
+            if form != "hashmap" && form != "set" {
+                continue;
+            }
+            let (value_ty, key_ty) = form_hashmap_value_and_key_ty(decl, &known_names, &scope);
+            let mut fresh = Vec::new();
+            if form == "hashmap" {
+                synthesize_form_hashmap_methods(&mut fresh, &value_ty, &key_ty);
+            } else {
+                synthesize_form_set_methods(&mut fresh, &value_ty, &key_ty);
+            }
+            if let Some(TopSymbol::Locus(info)) = scope.symbols.get_mut(&decl.name.name) {
+                for m in fresh {
+                    if let Some(held) = info.methods.iter_mut().find(|h| h.name == m.name) {
+                        *held = m;
+                    }
+                }
+            }
+        }
+    }
+
     // GH #470: register the full stdlib surface. Diagnostics from
     // this pass are swallowed — the stdlib is not the user's code to
     // fix, and an internal signature that fails to resolve simply

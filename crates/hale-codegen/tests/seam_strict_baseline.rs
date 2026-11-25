@@ -830,6 +830,56 @@ fn main() { Solo { }; }
     }
 }
 
+/// What the parity sweep's mutations reach, with no row: a generic fn
+/// whose declared return is an interface (`fn make<T>(w: T) -> Greeter`),
+/// whose call the checker typed `Unknown` (an interface is no type of the
+/// checker's own; a non-generic fn's return reads as the interface it
+/// declares, and a generic one's now does too); and a hashmap form over a
+/// record another file declares, whose key the form's synthesized methods
+/// read before that record was in scope, so `m.key_at(i) or raise` was
+/// typed `Unknown`. Plain strings, not harvested programs, so the sweep
+/// mutates neither further.
+#[test]
+fn what_the_parity_sweep_reaches_has_rows() {
+    let strict = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
+    let src = "interface Greeter { fn greet() -> String; }\n\
+               locus Hi { fn greet() -> String { return \"hi\"; } }\n\
+               locus Hey { fn greet() -> String { return \"hey\"; } }\n\
+               fn make<T>(which: T) -> Greeter { if which == 0 { return Hi { }; } return Hey { }; }\n\
+               fn main() { let b = make(1); println(b.greet()); }\n";
+    let out = harness::unique_bin("seam_strict_generic_interface_return");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "a generic fn's interface return: the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("a generic fn's interface return: it lowers: {e}"),
+    }
+    let dir = harness::unique_dir("seam_strict_hashmap_import");
+    std::fs::create_dir_all(dir.join("lib")).expect("the seed's directory");
+    std::fs::write(
+        dir.join("main.hl"),
+        "import \"./lib\" as lib { WC };\n\
+         @form(hashmap)\n\
+         locus CM { capacity { pool entries of WC indexed_by word; } }\n\
+         fn walk() { let m = CM { }; let mut i = 0; while i < m.len() { let k = m.key_at(i) or raise; i = i + 1; } }\n\
+         fn main() { walk(); }\n",
+    )
+    .expect("main.hl");
+    std::fs::write(dir.join("lib/lib.hl"), "type WC { word: String; count: Int; }\n").expect("lib.hl");
+    let out = harness::unique_bin("seam_strict_hashmap_import");
+    match build_opts::build_seed_dir(&dir, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "an imported hashmap cell: the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("an imported hashmap cell: it lowers: {e}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A substitute block that leaves (`f() or { return x; }`) is no value:
 /// the checker types it `()` and accepts it beside the call's value only
 /// because it never ends. Lowering built it as a value, with a
