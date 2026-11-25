@@ -64,7 +64,12 @@ pub fn stdlib_name_diags(programs: &BTreeMap<String, &Program>) -> Vec<Diag> {
 
 /// [`stdlib_name_diags`] against a given stdlib program: `std_prog`'s own
 /// duplicates, and each declaration in `programs` that reuses one of its
-/// names (one identical to the stdlib's is the stdlib's own seed).
+/// names. One of its `__` names is refused even where the declaration is
+/// identical to the stdlib's, as the stdlib's own seed checked as a
+/// program is: the program it would build merges the stdlib in, and holds
+/// both under one name (GH #2111). A plain name (`Time`, `Duration`,
+/// `IoError`) is a builtin type's, whose own rules govern a program's
+/// declaration of it; an identical one is the stdlib's own text.
 pub fn name_diags(std_prog: &Program, programs: &BTreeMap<String, &Program>) -> Vec<Diag> {
     let mut std_decls = Vec::new();
     declared(&std_prog.items, &mut std_decls);
@@ -92,9 +97,9 @@ pub fn name_diags(std_prog: &Program, programs: &BTreeMap<String, &Program>) -> 
         declared(&program.items, &mut mine);
         for (name, span, kind, decl) in mine {
             if let Some((at, std_kind, std_decl)) = first.get(&name) {
-                // the stdlib's own seed, checked as a program (the corpus
-                // harvests them): the same declaration, not a second one
-                if shape(decl) == shape(std_decl) {
+                // a builtin type's own text (the stdlib's time catalogue,
+                // checked as a program), which its own rules judge
+                if !name.starts_with("__") && shape(decl) == shape(std_decl) {
                     continue;
                 }
                 diags.push(
