@@ -6739,10 +6739,13 @@ A program declaration of any kind that reuses one of those names is
 the same duplicate-name error, in the same one namespace: `hale
 check` refuses it where it stands and names the stdlib's
 declaration. The stdlib's own source checked as a program is refused
-the same way: it declares each of those names a second time, and the
+the same way: it declares each of its `__` names a second time, and the
 program it would build holds the stdlib's declaration and its own under
 one name (a stdlib module is never a program of its own; its bodies are
-built as the stdlib's in every program that reaches them). A library's
+built as the stdlib's in every program that reaches them). A plain name
+the stdlib declares is a builtin type's (`Time`, `Duration`, `IoError`),
+whose own rules judge a program's declaration of it, and the stdlib's
+own text of one is not refused again here. A library's
 names reach an importer mangled (`__lib_…`), so only a library checked
 on its own can meet one. The stdlib itself declares each name once,
 which its own test holds it to.
