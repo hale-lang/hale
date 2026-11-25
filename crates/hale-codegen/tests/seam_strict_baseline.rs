@@ -600,15 +600,16 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
 #[test]
 fn a_locus_default_in_a_field_default_reads_its_own_rows() {
     let strict = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
-    let src = r#"locus Worker { run() { print("worker"); } }
-main locus App {
-    params { w: Worker = Worker { }; }
-    run() { print("app"); }
-}
-fn n(a: App) -> Int { return 1; }
-type Box { k: Int = n(App { }); }
-fn main() { for i in 0..3 { let b = Box { }; } }
-"#;
+    // a plain string, not a harvested program: the parity sweep makes `n`
+    // generic, and a generic call in a field default has no row there yet
+    let src = "locus Worker { run() { print(\"worker\"); } }\n\
+               main locus App {\n\
+                   params { w: Worker = Worker { }; }\n\
+                   run() { print(\"app\"); }\n\
+               }\n\
+               fn n(a: App) -> Int { return 1; }\n\
+               type Box { k: Int = n(App { }); }\n\
+               fn main() { for i in 0..3 { let b = Box { }; } }\n";
     let out = harness::unique_bin("seam_strict_locus_default_in_a_default");
     match build_opts::build_source(src, &out, &strict) {
         Ok(()) => {}
