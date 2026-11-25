@@ -24,6 +24,17 @@ use hale_types::typed_bodies::{expr_kind, expr_name};
 
 use crate::codegen::{CodegenError, CodegenTy, Cx, MissingRow};
 
+/// An interface `accept(c: I)` / `release(c: I)` monomorph being lowered
+/// (`Cx::current_accept_interface`): the interface `I`, the locus it is
+/// lowered for, and the parameter that holds the child, which the body
+/// reads as that locus while the checker typed it `I` (GH #2111).
+#[derive(Debug, Clone)]
+pub(crate) struct AcceptMonomorph {
+    pub(crate) iface: String,
+    pub(crate) child: String,
+    pub(crate) param: String,
+}
+
 /// What a call that hands back an aggregate of loci asks of the checker
 /// ([`Cx::ty_required`]): its type, whose loci its owner tears down.
 pub(crate) const AGGREGATE_CALL: &str = "the checker's type of this call, which hands back an aggregate of loci";
@@ -96,7 +107,19 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// [`Cx::ty_at`]'s answer, or why there is none (a [`MissingRow`]'s
     /// reason).
     fn row_layout(&self, e: &Expr) -> Result<CodegenTy, &'static str> {
+        // a quantity literal is built as the count the check converted it
+        // to, its conversion's target
+        if let Some(t) = self.quantity_literal_target(e) {
+            return Ok(t);
+        }
         let ty = self.checker_row(e)?;
+        // an interface `accept` / `release` monomorph reads its child as the
+        // locus it is lowered for, where the checker typed the interface
+        if let (Some(m), Expr::Ident(id), Ty::Named(n)) = (&self.current_accept_interface, e, ty) {
+            if id.name == m.param && *n == m.iface {
+                return self.layout_of(&Ty::Named(m.child.clone())).ok_or("no layout");
+            }
+        }
         self.layout_of(ty).ok_or("no layout")
     }
 
@@ -143,6 +166,32 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             CodegenError::missing_row("expression_typing", "the checker's type of this fn value", Some(path.span()))
         })?;
         Ok((sig.func.as_global_value().as_pointer_value().into(), ty))
+    }
+
+    /// GH #2111: the type a quantity literal is built as: its value
+    /// conversion's target (U3: the checker converted it into the
+    /// denomination it flows into, `100ms` into a `Millis` an `Int`, `Time(
+    /// 5us)`'s literal a `Time`). `None` for another expression, or a
+    /// literal with no row.
+    pub(crate) fn quantity_literal_target(&self, e: &Expr) -> Option<CodegenTy> {
+        let Expr::Literal(hale_syntax::ast::Literal::Quantity { .. }, span) = e else { return None };
+        let row = self.row(hale_types::typed_bodies::SiteKind::value(*span))?;
+        row.count?;
+        Some(self.unit_repr(&row.to))
+    }
+
+    /// A top-level constant's value, read at `e` ([`Cx::const_param`]): an
+    /// integer is its declared type's, at that type's width (`const SMALL:
+    /// U64 = 7`), as the checker's row of the read says; lowering typed
+    /// every integer constant an `Int`.
+    pub(crate) fn const_value(&mut self, e: &Expr, pv: &crate::codegen::ParamValue) -> (inkwell::values::BasicValueEnum<'ctx>, CodegenTy) {
+        match (pv, self.ty_at(e)) {
+            (crate::codegen::ParamValue::Int(n), Some(t @ (CodegenTy::U64 | CodegenTy::Narrow(_)))) => {
+                let bits = t.machine_int().map_or(64, |(b, _)| b);
+                (self.context.custom_width_int_type(bits).const_int(*n as u64, true).into(), t)
+            }
+            _ => self.const_param(pv),
+        }
     }
 
     /// GH #2111 strict mode: `e` is lowered without the checker's type.

@@ -295,7 +295,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// one body only, and a stdlib body's spans start at 0 like the first
     /// user file's, so the stdlib's bodies, which the checker records no
     /// row for, find none. Outside every declaration's body, no row.
-    fn row(&self, kind: SiteKind) -> Option<&'p ConversionRow> {
+    pub(crate) fn row(&self, kind: SiteKind) -> Option<&'p ConversionRow> {
         self.typed.conversion_in(self.current_body?, &self.site(kind))
     }
 
@@ -316,7 +316,10 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
     /// a use: its own evaluation, as the checker types it once in its own
     /// body outside every default, so its rows are read from `decl` on no
     /// evaluation path, whatever default the use stands in, and the
-    /// caller's path is back when `f` returns.
+    /// caller's path is back when `f` returns. A locus's param default is
+    /// the locus's own text the same way, typed in its body (GH #2111: a
+    /// locus literal in a type's field default read its param defaults on
+    /// the field's evaluation path, where they have no row).
     pub(crate) fn in_const_body<T>(
         &mut self,
         decl: hale_syntax::ast::NodeId,

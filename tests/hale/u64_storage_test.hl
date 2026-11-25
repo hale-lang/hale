@@ -124,6 +124,8 @@ fn main() {
     std::test::assert_eq_str("" + w.w, "[1, " + MAX + ", 2]", "a fixed array prints its U64s");
     std::test::assert_eq_str(to_string(bag.items), "[1, " + MAX + ", 3]", "and a bounded list");
     std::test::assert(BIG == U64::max() && SMALL + 1 == 8, "a const of each kind");
+    // read as the U64 each is: unsigned division and order (GH #2111)
+    std::test::assert(BIG / 2 == 9223372036854775807 && BIG > SMALL, "a const reads as its type");
 
     // a generic record, a fn's parameter and return, a locus param, a
     // hashmap cell

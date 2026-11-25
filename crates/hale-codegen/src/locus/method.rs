@@ -270,7 +270,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     match (&target_child, kind) {
                         (Some(child), "accept" | "release") => {
                             let written = if kind == "accept" { &info.accept_param } else { &info.release_param };
-                            written.as_ref().map(|(_, w)| w.clone()).filter(|w| w != child)
+                            written.as_ref().filter(|(_, w)| w != child).map(|(param, iface)| crate::typed_seam::AcceptMonomorph {
+                                iface: iface.clone(),
+                                child: child.clone(),
+                                param: param.clone(),
+                            })
                         }
                         _ => None,
                     },
