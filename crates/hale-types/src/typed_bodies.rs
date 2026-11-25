@@ -1355,7 +1355,13 @@ pub fn visit_view_nodes<'a>(item: &'a TopDecl, visit: &mut dyn FnMut(NodeId, Vie
             }
             Stmt::Return(e, _) => e.iter().for_each(|e| expr(e, out)),
             Stmt::Fail { value, .. } => expr(value, out),
-            Stmt::Recovery { args, .. } => args.iter().for_each(|e| expr(e, out)),
+            Stmt::Recovery { args, modifier, .. } => {
+                args.iter().for_each(|e| expr(e, out));
+                // `restart(c) for N`'s bound, lowered where the statement runs
+                if let Some(RecoveryModifier::For(e) | RecoveryModifier::Until(e)) = modifier {
+                    expr(e, out);
+                }
+            }
             Stmt::Violate { payload, .. } => payload.iter().for_each(|e| expr(e, out)),
             Stmt::Send { subject, value, or_disposition, .. } => {
                 expr(subject, out);
@@ -1858,6 +1864,15 @@ impl ExprTypes {
                 }
                 if let Some(m) = info.methods.iter().find(|m| m.name == send.handler && m.fallible.is_none()) {
                     self.add_expr_row(at, call, &m.ret);
+                }
+                // a handler taking a `std::api::Context` is passed
+                // `std::api::local_context()` (GH #1108), the handler's
+                // second parameter
+                if let (true, Expr::Call { args, .. }) = (send.context, call) {
+                    let param = info.methods.iter().find(|m| m.name == send.handler).and_then(|m| m.params.get(1));
+                    if let (Some(ctx), Some(t)) = (args.get(1), param) {
+                        self.add_expr_row(at, ctx, t);
+                    }
                 }
             });
         }
