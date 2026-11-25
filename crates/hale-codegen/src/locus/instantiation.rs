@@ -2809,7 +2809,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         // Finding 4: replica exprs are default text.
                         let saved_ipd = self.in_params_default;
                         self.in_params_default = true;
-                        let _ = self.in_body(info.decl, |cx| cx.lower_expr(&rep_expr, scope))?;
+                        let _ = self.in_const_body(info.decl, |cx| cx.lower_expr(&rep_expr, scope))?;
                         self.reserve_child_next = None;
                         self.in_params_default = saved_ipd;
                         self.anchor_record_slot = None;
@@ -3091,7 +3091,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                                 &mut self.pool_init_composite_param,
                                 self.pool_init && matches!(e, Expr::Array(..) | Expr::Tuple(..) | Expr::ArrayRepeat { .. }),
                             );
-                            let r = self.in_body(info.decl, |cx| cx.lower_expr(e, scope));
+                            let r = self.in_const_body(info.decl, |cx| cx.lower_expr(e, scope));
                             self.pool_init_composite_param = composite;
                             let r = r?;
                             self.in_params_default = saved_ipd;
@@ -6276,7 +6276,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     .expect("param has a default entry")
                 {
                     DefaultInit::Const(pv) => self.const_param(pv),
-                    DefaultInit::Expr(e) => self.in_body(info.decl, |cx| cx.lower_expr(e, scope))?,
+                    DefaultInit::Expr(e) => self.in_const_body(info.decl, |cx| cx.lower_expr(e, scope))?,
                     DefaultInit::Required => {
                         return Err(CodegenError::Unsupported(format!(
                             "cross-pool spawn `{}`: param `{}` is required — \

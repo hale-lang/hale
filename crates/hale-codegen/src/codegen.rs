@@ -4583,7 +4583,7 @@ pub(crate) struct Cx<'ctx, 'p> {
     /// so a call it typed fallible through `I` keeps that contract when the
     /// concrete method is infallible (the known-success adaptation, as an
     /// interface's vtable slot does; `lower_fallible_method_call`).
-    pub(crate) current_accept_interface: Option<String>,
+    pub(crate) current_accept_interface: Option<crate::typed_seam::AcceptMonomorph>,
     /// Stack of enclosing loops so `break` / `continue` can find
     /// their target blocks.
     pub(crate) loops: Vec<LoopFrame<'ctx>>,
@@ -27332,8 +27332,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 // already reject the redeclaration at the
                 // top-decl-name uniqueness check).
                 if let Some(pv) = self.user_consts.get(&id.name).cloned() {
-                    let (val, ty) = self.const_param(&pv);
-                    return Ok((val, ty));
+                    return Ok(self.const_value(e, &pv));
                 }
                 // Non-literal const (struct literal etc.): re-lower
                 // the stored initializer expression in the current
@@ -36833,7 +36832,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         args: &[Expr],
         scope: &Scope<'ctx>,
     ) -> Result<Option<FallibleCallResult<'ctx>>, CodegenError> {
-        let Some(iface) = self.current_accept_interface.clone() else { return Ok(None) };
+        let Some(iface) = self.current_accept_interface.as_ref().map(|m| m.iface.clone()) else { return Ok(None) };
         if self.locus_method_is_fallible(locus_name, method_name) {
             return Ok(None);
         }
