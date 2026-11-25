@@ -22,7 +22,14 @@ use hale_types::builtin_types::BUILTIN_TYPES;
 
 /// A function per builtin type reading each of its fields.
 fn reader_program() -> String {
-    let mut src = String::new();
+    // what injects the builtins only some programs have: a range's
+    // `RangeError`, a failing topic's `BusUnmatchedKey` (GH #2111: a
+    // parameter naming one where nothing injects it is typed `Unknown`)
+    let mut src = String::from(
+        "type Byte = Int { range: 0..256; }\n\
+         type Ev { id: Int; }\n\
+         topic K { payload: Ev; subject: \"k\"; keyed_by id; on_unmatched: fail; }\n\n",
+    );
     for t in BUILTIN_TYPES {
         let reads: Vec<String> = t
             .fields

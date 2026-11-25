@@ -1161,7 +1161,7 @@ fn register_locus(
                     let ty = match &p.ty {
                         Some(te) => resolve_type_expr(te, known),
                         None => match &p.init {
-                            ParamInit::Value(e) => infer_literal_ty(e),
+                            ParamInit::Value(e) => infer_literal_ty(e, known),
                             ParamInit::Inferred => Ty::Unknown,
                         },
                     };
@@ -2726,8 +2726,31 @@ fn prim_display(p: PrimType) -> &'static str {
 /// but no explicit `: ty`. Just enough to give `B: Int = 100`
 /// the right type when `: Int` is omitted; falls through to
 /// Unknown otherwise.
-fn infer_literal_ty(e: &Expr) -> Ty {
+fn infer_literal_ty(e: &Expr, known: &KnownNames) -> Ty {
+    let known_ty = |t: &Ty| !matches!(t, Ty::Unknown);
     match e {
+        // GH #2111: a record's or a locus's literal is its type, and an
+        // array or a tuple of literals is theirs, as lowering builds the
+        // default (a generic template's literal names no monomorph)
+        Expr::Struct { path, .. } if path.segments.len() == 1 && known.contains_key(&path.segments[0].name) => {
+            Ty::Named(path.segments[0].name.clone())
+        }
+        Expr::Array(parts, _) if !parts.is_empty() => {
+            let tys: Vec<Ty> = parts.iter().map(|p| infer_literal_ty(p, known)).collect();
+            if tys.iter().all(known_ty) && tys.windows(2).all(|w| w[0] == w[1]) {
+                Ty::Array(Box::new(tys[0].clone()), Some(parts.len() as u64))
+            } else {
+                Ty::Unknown
+            }
+        }
+        Expr::ArrayRepeat { val, count, .. } => match infer_literal_ty(val, known) {
+            Ty::Unknown => Ty::Unknown,
+            t => Ty::Array(Box::new(t), Some(*count)),
+        },
+        Expr::Tuple(parts, _) if parts.len() >= 2 => {
+            let tys: Vec<Ty> = parts.iter().map(|p| infer_literal_ty(p, known)).collect();
+            if tys.iter().all(known_ty) { Ty::Tuple(tys) } else { Ty::Unknown }
+        }
         Expr::Literal(Literal::Int(_), _) => Ty::Prim(PrimType::Int),
         Expr::Literal(Literal::Float(_), _) => Ty::Prim(PrimType::Float),
         Expr::Literal(Literal::Decimal(_), _) => Ty::Prim(PrimType::DECIMAL),

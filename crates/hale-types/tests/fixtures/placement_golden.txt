@@ -5307,6 +5307,34 @@ dynamic	W	on main|unknown (`mk2` passed as a value)	in the seed
 == crates/hale-codegen/tests/returned_aggregate_of_loci.rs#647b11c1
 dynamic	W	on unknown (`cyc1` passed as a value)	in the seed
 
+== crates/hale-codegen/tests/seam_strict_baseline.rs#9fb3d530
+row	Coordinator@main1	Coordinator	main	default
+dynamic	Worker	on main	in the seed
+
+== crates/hale-codegen/tests/seam_strict_baseline.rs#00ed8543
+root	App
+row	App@literal1	App	main	default
+shared	App@literal1.q	P #59372569
+
+== crates/hale-codegen/tests/seam_strict_baseline.rs#3d2b9e0f
+row	H@main1	H	main	default
+dynamic	Hook_Callback	on main	in the seed
+
+== crates/hale-codegen/tests/seam_strict_baseline.rs#56980b0e
+row	Solo@main1	Solo	main	default
+
+== crates/hale-codegen/tests/seam_strict_baseline.rs#23c2c26b
+root	App
+row	App@literal1	App	main	default
+row	Agg@main1	Agg	main	default
+row	Feed@main2	Feed	main	default
+
+== crates/hale-codegen/tests/seam_strict_baseline.rs#74246b44
+root	App
+row	App@literal1	App	main	default
+row	Producer@main2	Producer	main	default
+row	Sub@main1	Sub	main	default
+
 == crates/hale-codegen/tests/self_containing_locus.rs#4ea4d0ba
 shared	Holder@main1	Holder #5d65043f
 

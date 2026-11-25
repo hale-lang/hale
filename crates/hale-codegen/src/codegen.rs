@@ -24407,11 +24407,11 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                 }
             }
         }
-        // bounded[T; N] iteration (2026-07-02): a counted loop over the live
-        // slots [0, len); its row is not yet required (an unascribed param has none)
+        // bounded[T; N] iteration (2026-07-02): `for x in m.history`
+        // where the iterand statically types as bounded — counted
+        // loop over the live slots [0, len).
         if !is_self_children {
-            self.seam_fallback(iter);
-            if let Some(CodegenTy::Bounded(belem, bcap)) = self.ty_at(iter) {
+            if let Some(CodegenTy::Bounded(belem, bcap)) = self.ty_required(iter, "the checker's type of this loop's iterand") {
                 return self.lower_for_bounded(var_name, iter, belem.as_ref().clone(), bcap, body, owned, scope);
             }
         }

@@ -315,6 +315,20 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         if let Ty::Cell { elem, locus, slot } = t {
             return Some(CodegenTy::Cell(Box::new(self.layout_of(elem)?), Some((locus.clone(), slot.clone()))));
         }
+        // A batch handler's `Drain<T>` is spelled as its monomorph
+        // (`Drain_T`), which no declaration declares: the run of `T`s
+        // lowering hands the handler
+        if let Ty::Named(n) = t {
+            if let Some(elem) = n.strip_prefix("Drain_").filter(|e| self.user_types.contains_key(*e)) {
+                let span = hale_syntax::Span::new(0, 0);
+                let drain = TypeExpr::Named {
+                    path: QualifiedName { segments: vec![Ident::new("Drain".to_string(), span)], span },
+                    generic_args: vec![spelled(&Ty::Named(elem.to_string()))?],
+                    span,
+                };
+                return self.type_expr_to_codegen_ty(&drain).ok();
+            }
+        }
         let te = spelled(t)?;
         self.type_expr_to_codegen_ty(&te).ok()
     }

@@ -562,19 +562,20 @@ fn the_burn_down_only_moves_forward() {
 
 /// The knob itself. On, a program that reaches a value lowering types
 /// without the checker's row is refused, with nothing emitted, and the refusal names the site, its kind, its
-/// family and why. A locus param of a record whose every field has a
-/// default is given a `T { }` lowering synthesizes after the check (B7 /
-/// G19), which the check refuses to omit (`missing field`), so this test's
-/// program, built past the check, is that one. When it has a row, this test
-/// takes another site that has none, until there is none and the knob goes.
-/// (It took an element chain's accumulator until the chain's nodes had rows
-/// of their own, then a range loop's variable until the check bound it,
-/// then a whole-set chain terminal's `or` until its key named what it
-/// handles, then a `match` whose every arm leaves until the check recorded
-/// it as giving no value, then a generic locus's param default until
-/// lowering read it in the built monomorph, then a pool slot's `acquire()`
-/// until the check typed a cell, and then a quantity literal in a tuple's
-/// sub-pattern until lowering built it as its conversion's target.)
+/// family and why. Every check-clean program the burn-down builds has its
+/// rows; a locus param of a record whose every field has a default is
+/// given a `T { }` lowering synthesizes after the check (B7 / G19), which
+/// the check refuses to omit (`missing field`), so this test's program,
+/// built past the check, is that one. (It took an element chain's
+/// accumulator until the chain's nodes had rows of their own, then a range
+/// loop's variable until the check bound it, then a whole-set chain
+/// terminal's `or` until its key named what it handles, then a `match`
+/// whose every arm leaves until the check recorded it as giving no value,
+/// then a generic locus's param default until lowering read it in the
+/// built monomorph, then a pool slot's `acquire()` until the check typed a
+/// cell, then a quantity literal in a tuple's sub-pattern until the check
+/// typed a sub-pattern's literals, and then a direct send's
+/// `local_context()` until the check typed the call the rewrite makes.)
 #[test]
 fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
@@ -590,6 +591,243 @@ fn strict_mode_refuses_a_value_lowered_without_a_row() {
     let CodegenError::MissingRows(rows) = &err else { panic!("a MissingRows refusal: {err}") };
     let at = rows.iter().find(|r| !r.stdlib && r.kind == "struct").unwrap_or_else(|| panic!("the synthesized literal is named: {err}"));
     assert!(err.to_string().contains(&format!("program `{}` (family {})", at.kind, at.family)), "{err}");
+}
+
+/// A literal in a tuple's sub-pattern is lowered as a literal of the
+/// tuple's part it is matched against: `(1, 1min)` against an `(Int,
+/// Duration)` is an `Int` and a `Duration`, and its rows say so. The check
+/// typed a whole pattern's literal only.
+#[test]
+fn a_sub_pattern_s_literals_have_rows() {
+    let strict = BuildOptions { seam_strict: true, ..build_opts::options() };
+    let src = "fn f(t: (Int, Duration)) -> Int { return match t { (1, 1min) -> 1, _ -> 0 }; }\n\
+               fn main() { println(f((1, 60s))); }\n";
+    let out = harness::unique_bin("seam_strict_sub_pattern");
+    match build_opts::build_source(src, &out, &strict) {
+        Ok(()) => {}
+        Err(CodegenError::MissingRows(rows)) => {
+            let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+            assert!(program.is_empty(), "the program's sites have rows: {program:?}");
+        }
+        Err(e) => panic!("it builds: {e}"),
+    }
+    let ran = build_opts::build_source(src, &out, &build_opts::options())
+        .map(|()| std::process::Command::new(&out).output().expect("it runs"))
+        .expect("it builds");
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(String::from_utf8_lossy(&ran.stdout), "1\n");
+}
+
+/// Values lowering lowers that the check left untyped, or never visited:
+/// a restart bound, a shm write's binder, an unascribed param's array of
+/// loci, a generic record's array-of-instantiation field, the unprefixed
+/// `time::` calls, a generic locus's field of a fn type named by an alias
+/// called, the `local_context()` a direct send passes, and a batch
+/// handler's `Drain<T>` and its elements. Each has its row.
+#[test]
+fn what_the_check_left_untyped_has_rows() {
+    let strict = BuildOptions { seam_strict: true, lower_only: true, ..build_opts::options() };
+    let programs = [
+        ("restart bound", r#"locus Worker {
+    params { attempts: Int = 0; target: Int = 99; }
+    closure reached { self.attempts ~~ self.target within 0; epoch birth; }
+    birth() { self.attempts = self.attempts + 1; }
+    run() { println("RUN"); }
+}
+locus Coordinator {
+    params { max: Int = 2; }
+    on_failure(c: Worker, err: ClosureViolation) {
+        let k = self.max + 7;
+        println("fail", k);
+        restart(c) for self.max + 1;
+    }
+    run() { Worker { target: 99 }; }
+}
+fn main() { let c = Coordinator { }; }
+"#),
+        ("unascribed param", r#"locus C {
+    params { name: String = "c"; }
+    fn bye() { println(f"C.bye {self.name}"); }
+}
+fn close(c: C) { c.bye(); }
+locus P {
+    params { cs = [C { name: "a" }, C { name: "b" }]; n = 3; }
+    run() { std::time::sleep(20ms); }
+    dissolve() { for c in self.cs { c.bye(); } close(self.cs[0]); println(self.n + 1); }
+}
+main locus App {
+    params { q: P = P { }; }
+    run() { std::time::sleep(100ms); }
+}
+fn main() { App { }; }
+"#),
+        ("array of an instantiation", r#"
+type In {
+    k: Int = 0;
+    label: String = "";
+}
+
+type Holder<T> {
+    items: [T; 2];
+}
+
+type Shelf<T> {
+    rows: [Holder<T>; 2];
+}
+
+type Wrap {
+    h: Holder<In>;
+    tag: String = "";
+}
+
+type Box<T> {
+    v: T;
+}
+
+fn main() {
+    let a: Holder<In> = Holder { items: [In { k: 1, label: "a" }, In { k: 2, label: "b" }] };
+    let b: Holder<In> = Holder { items: [In { k: 3, label: "c" }, In { k: 4, label: "d" }] };
+    let s: Shelf<In> = Shelf { rows: [a, b] };
+    println(s.rows[1].items[0].label, s.rows[1].items[0].k);
+    let w = Wrap { h: s.rows[0], tag: "w" };
+    let x: Box<Wrap> = Box { v: w };
+    println(x.v.tag, x.v.h.items[1].label);
+}
+"#),
+        ("unprefixed time", r#"fn main() {
+    let t0 = time::monotonic();
+    let t1 = std::time::monotonic();
+    let e = t1 - t0;
+    if e > 20ms { println("ok"); }
+}
+"#),
+        ("generic fn-typed field called", r#"type Callback = fn(H) -> Int;
+locus Hook<T> { params { cb: T; } fn fire(h: H) -> Int { return self.cb(h); } }
+fn reset(h: H) -> Int { return 7; }
+locus H {
+    params { n: Int = 1; }
+    fn generic() -> Int {
+        let hk: Hook<Callback> = Hook { cb: reset };
+        return hk.fire(self);
+    }
+}
+fn main() { let h = H { }; println(h.generic()); }
+"#),
+        ("context of a direct send", r#"type Ping { n: Int; }
+topic Pings { payload: Ping; subject: "solo.ping"; }
+locus Solo {
+    bus { subscribe Pings as on_ping; publish Pings; }
+    fn on_ping(p: Ping, ctx: std::api::Context) { println(ctx.via + " " + to_string(p.n)); }
+    run() { Pings <- Ping { n: 3 }; }
+}
+fn main() { Solo { }; }
+"#),
+        ("batch handler's Drain", r#"
+        type Tick { px: Int; sz: Int; }
+        topic Quotes { payload: Tick; subject: "quotes-x"; }
+
+        locus Agg {
+            params { total: Int = 0; }
+            bus { subscribe Quotes as on_quotes; }
+            fn on_quotes(feed: Drain<Tick>) {
+                for t in feed {
+                    self.total = self.total + t.px;
+                }
+                println("agg total=", self.total);
+            }
+        }
+
+        locus Feed {
+            bus { publish Quotes; }
+            birth() {
+                Quotes <- Tick { px: 10, sz: 1 };
+                Quotes <- Tick { px: 20, sz: 2 };
+                Quotes <- Tick { px: 30, sz: 3 };
+            }
+        }
+
+        main locus App {
+            bindings {
+                Quotes: shm_ring("/hale_scratch_drain", slot_count: 1024, on_overflow: drop) where zero_copy;
+            }
+        }
+
+        fn main() {
+            App { };
+            Agg { };
+            Feed { };
+            // Give the batch reader thread time to receive + dispatch
+            // the published batch before the process exits.
+            time::sleep(500ms);
+        }
+    "#),
+        ("shm write binder", r#"
+        ring_layout ForeignRing {
+            magic 0x52494E47464D5431;
+            version 1 at 8 : u32;
+            buffer_size at 12 : u32;
+            data_at 128;
+            cursor published { at 64; repr atomic_u64; load acquire; unit bytes; }
+            framing byte_records { len_prefix u32; align 8; pad_sentinel 0xFFFFFFFF; }
+            overflow lap_detect;
+        }
+        topic Recs { payload: BytesView; }
+        locus Sub {
+            bus { subscribe Recs as on_rec; }
+            fn on_rec(v: BytesView) {
+                let kind = std::bytes::read_i64_le(v, 0) or -1;
+                let a = std::bytes::read_i64_le(v, 8) or -1;
+                if kind == 2 {
+                    let b = std::bytes::read_i64_le(v, 16) or -1;
+                    println("rec kind=2 a=", to_string(a), " b=", to_string(b));
+                } else {
+                    println("rec kind=1 a=", to_string(a));
+                }
+            }
+        }
+        locus Producer {
+            bus { publish Recs; }
+            birth() {
+                Recs.write(24) { w =>
+                    std::bytes::write_i64_le(w, 0, 1) or raise;
+                    std::bytes::write_i64_le(w, 8, 100) or raise;
+                    16
+                };
+                Recs.write(24) { w =>
+                    std::bytes::write_i64_le(w, 0, 2) or raise;
+                    std::bytes::write_i64_le(w, 8, 200) or raise;
+                    std::bytes::write_i64_le(w, 16, 201) or raise;
+                    24
+                };
+            }
+        }
+        main locus App {
+            bindings {
+                Recs: shm_ring("/hale_scratch", on_overflow: drop,
+                               layout: ForeignRing, buffer_size: 4096);
+            }
+        }
+        fn main() {
+            App { };
+            Sub { };
+            std::time::sleep(50ms);
+            Producer { };
+            std::time::sleep(500ms);
+        }
+    "#),
+    ];
+    for (what, src) in programs {
+        let out = harness::unique_bin("seam_strict_untyped");
+        match build_opts::build_source(src, &out, &strict) {
+            Ok(()) => {}
+            Err(CodegenError::MissingRows(rows)) => {
+                let program: Vec<_> = rows.iter().filter(|r| !r.stdlib).collect();
+                assert!(program.is_empty(), "{what}: the program's sites have rows: {program:?}");
+            }
+            Err(e) => panic!("{what}: it lowers: {e}"),
+        }
+        let _ = std::fs::remove_file(&out);
+    }
 }
 
 /// A locus literal in a record's field default (`type Box { k: Int =

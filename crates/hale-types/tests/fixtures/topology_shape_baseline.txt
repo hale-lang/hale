@@ -1403,6 +1403,13 @@ crates/hale-codegen/tests/scratch_local_free_fn.rs#6 d6deff10af0253e3
 crates/hale-codegen/tests/scratch_local_free_fn.rs#7 c90bffedcf802589
 crates/hale-codegen/tests/scratch_local_free_fn.rs#8 c90bffedcf802589
 crates/hale-codegen/tests/scratch_local_free_fn.rs#9 c90bffedcf802589
+crates/hale-codegen/tests/seam_strict_baseline.rs#0 f0747c4ef3c010f5
+crates/hale-codegen/tests/seam_strict_baseline.rs#1 67c370d74c3f90e5
+crates/hale-codegen/tests/seam_strict_baseline.rs#3 102ad206df1a5025
+crates/hale-codegen/tests/seam_strict_baseline.rs#4 f199d7e07893d3b2
+crates/hale-codegen/tests/seam_strict_baseline.rs#5 f00dfb8fba7c72ce
+crates/hale-codegen/tests/seam_strict_baseline.rs#6 764dceaf1892e33c
+crates/hale-codegen/tests/seam_strict_baseline.rs#7 6c6a99ba9ce10aac
 crates/hale-codegen/tests/self_containing_locus.rs#2 36d6cde9e9cbbdd1
 crates/hale-codegen/tests/self_containing_locus.rs#3 d2feb059c03c4831
 crates/hale-codegen/tests/self_containing_locus.rs#4 3b2673645848918f
