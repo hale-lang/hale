@@ -248,10 +248,20 @@ A human case waits indefinitely across restarts until its assignee resolves it:
 | `hale dna task reassign <id> --to <new> --as <user>` | `task.reassigned` | Transfers an open case to another person |
 | `hale dna retire <user> --to <successor>` | `person.retired` | Transfers all open cases held by `<user>` to `<successor>` and blocks future assignments to `<user>` |
 
-The face offers the same two steps for a case that needs no evidence. They are the head's rows `Commands::take_task` and `Commands::complete_task`, the face's **Take this Task** and **Report done**:
+The face offers the same steps for a case that needs no evidence. They are the head's rows `Commands::take_task` and `Commands::complete_task`, the board's **Take it** and **Mark done**:
 
-- **Take this Task** makes an unassigned case yours (`task.reassigned` from no one to you).
-- **Report done** closes a case that is yours, or unassigned, with what you did as text (`task.done`, `by <you>: <text>`).
+- **Take it** makes a case yours when it is unassigned or handed to a position you hold (`task.reassigned` to you).
+- **Mark done** closes a case that is yours, unassigned, or handed to a position you hold, with what you did as text (`task.done`, `by <you>: <text>`).
+
+### Tasks for positions
+
+The board also opens work without an organization: **Add task** takes what needs doing and a position from the chart, and the Task is on the board at once, for that position (`Commands::open_task`: a `task.born` and a `task.handed` to the position). Whoever holds the position works it, a person or an agent:
+
+- **Take it**, then **Post an update** as the work goes (`Commands::note_task`, a `task.noted` row with the text), even when the work itself happens elsewhere.
+- **Hand to another position** when it belongs elsewhere (`Commands::hand_task`, another `task.handed`).
+- **Mark done** with a line on what was done.
+
+**My tasks** shows the Tasks for positions you hold or that you are working; **Everyone's** shows the rest.
 
 ### With no model
 

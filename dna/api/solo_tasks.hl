@@ -1,5 +1,12 @@
-// dna/api/solo_tasks.hl — a person takes a handed Task and reports it done,
-// as rows of the head's surface (phase 4, the solo path).
+// dna/api/solo_tasks.hl — tickets for the chart's positions, and a person
+// taking a handed Task and reporting it done, as rows of the head's surface
+// (phase 4, the solo path).
+//
+// A person opens a Task for a position the chart states (`TaskOpen`): a
+// `task.born` and a `task.handed` to `position:<p>`, with no organization and
+// no model; whoever holds the position (a person or an agent) takes it, posts
+// updates (`TaskNote`, a `task.noted`), hands it to another position
+// (`TaskHand`, another `task.handed`) and reports it done.
 //
 // With no model mapped the organism's work is a person's: an ask the leader
 // could not plan is handed, unassigned, and a leg's Work is a case. Two rows
@@ -26,6 +33,48 @@ import "../operations" as ops;
 
 type TaskTake { task_id: String = ""; }
 
+// A ticket for a position: what needs doing, and the stated position whose
+// holder does it. `request_id` makes a retry the same Task.
+type TaskOpen {
+    request_id: String = "";
+    outcome: String = "";
+    position: String = "";
+}
+
+// An update on an open Task, as text.
+type TaskNote {
+    task_id: String = "";
+    text: String = "";
+}
+
+// An open Task handed to another stated position.
+type TaskHand {
+    task_id: String = "";
+    position: String = "";
+}
+
+// Who acts on a Task: the person, the positions they hold (space-separated
+// `position:` ids) and whether they hold the Board.
+type TaskSeat {
+    who: String = "";
+    positions: String = "";
+    board: Bool = false;
+}
+
+fn seat_holds(s: TaskSeat, position: String) -> Bool {
+    return s.board
+        || (std::str::starts_with(position, "position:") && dna::word_in(position, s.positions));
+}
+
+// Whether `s` may update or hand `t`: its assignee, a holder of the position
+// it is for or handed to, the person who opened it, or the Board.
+fn seat_works(s: TaskSeat, t: ops::TaskRow) -> Bool {
+    return t.assignee == s.who
+        || t.opened_by == s.who
+        || seat_holds(s, t.position)
+        || seat_holds(s, t.assignee);
+}
+
 type TaskDone {
     task_id: String = "";
     text: String = "";
@@ -38,6 +87,7 @@ type TaskAct {
     task_id: String = "";
     state: String = "";
     assignee: String = "";
+    position: String = "";
 }
 
 fn task_act_refused(id: String, code: String, why: String) -> TaskAct {
@@ -51,6 +101,7 @@ type SoloTask {
     code: String = "";
     row: ops::TaskRow = ops::TaskRow { };
     ledger_at: Int = -1;
+    history: Int = 0;
 }
 
 fn solo_read(root: String, id: String) -> SoloTask {
@@ -69,7 +120,7 @@ fn solo_read(root: String, id: String) -> SoloTask {
     if !p.load() { return SoloTask { code: p.code }; }
     let t = p.task_of(id);
     if len(t.id) == 0 { return SoloTask { code: "not_found" }; }
-    return SoloTask { ok: true, row: t, ledger_at: at };
+    return SoloTask { ok: true, row: t, ledger_at: at, history: p.history_count(id) };
 }
 
 // One Ledger row in `who`'s name at `at`: "" once it lands, else why not.
@@ -79,10 +130,11 @@ fn solo_write(
     kind: String,
     id: String,
     body: String,
-    who: String
+    who: String,
+    request: String
 ) -> String {
     let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
-    let r = ledger.write(at, kind, id, body, who, "");
+    let r = ledger.write(at, kind, id, body, who, request);
     if r.ok { return ""; }
     return if r.error == "stale_revision" || r.error == "stale" {
         "stale"
@@ -91,7 +143,8 @@ fn solo_write(
     };
 }
 
-fn solo_take(root: String, id: String, who: String) -> TaskAct {
+fn solo_take(root: String, id: String, seat: TaskSeat) -> TaskAct {
+    let who = seat.who;
     if len(id) == 0 || len(id) > 256 { return task_act_refused(id, "invalid_task", "which Task?"); }
     let s = solo_read(root, id);
     if !s.ok { return task_act_refused(id, s.code, "the Task could not be read"); }
@@ -104,23 +157,32 @@ fn solo_take(root: String, id: String, who: String) -> TaskAct {
         );
     }
     if t.assignee == who {
-        return TaskAct { ok: true, task_id: id, state: t.state, assignee: who };
+        return TaskAct {
+            ok: true,
+            task_id: id,
+            state: t.state,
+            assignee: who,
+            position: t.position,
+        };
     }
-    if len(t.assignee) > 0 {
+    let open = len(t.assignee) == 0
+        || (std::str::starts_with(t.assignee, "position:") && seat_holds(seat, t.assignee));
+    if !open {
         return task_act_refused(
             id,
             "assigned",
-            "the Task is " + t.assignee
-                + "'s; reassigning it is the Board's (Commands::reassign_task)",
+            if std::str::starts_with(t.assignee, "position:") {
+                "the Task is for " + t.assignee[9..len(t.assignee)]
+                    + "; it is taken by someone who holds that position"
+            } else {
+                "the Task is " + t.assignee + "'s; hand it to a position to move it"
+            },
         );
     }
-    let b = std::json::Builder { };
-    b.begin_object();
-    b.string_field("from", "");
-    b.string_field("to", who);
-    b.string_field("by", who);
-    b.end_object();
-    let wrote = solo_write(root, s.ledger_at, "task.reassigned", id, b.result(), who);
+    if s.history >= 127 {
+        return task_act_refused(id, "history_full", "the Task's history is full");
+    }
+    let wrote = solo_claim(root, s.ledger_at, id, t.assignee, who);
     if len(wrote) > 0 {
         return task_act_refused(
             id,
@@ -128,10 +190,23 @@ fn solo_take(root: String, id: String, who: String) -> TaskAct {
             if wrote == "stale" { "the Task moved; read it again" } else { wrote },
         );
     }
-    return TaskAct { ok: true, task_id: id, state: "handed", assignee: who };
+    return TaskAct { ok: true, task_id: id, state: "handed", assignee: who, position: t.position };
 }
 
-fn solo_done(root: String, id: String, text: String, who: String) -> TaskAct {
+// The `task.reassigned` that makes `who` the assignee of a Task handed to
+// `from` (a position they hold, or nobody).
+fn solo_claim(root: String, at: Int, id: String, from: String, who: String) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("from", from);
+    b.string_field("to", who);
+    b.string_field("by", who);
+    b.end_object();
+    return solo_write(root, at, "task.reassigned", id, b.result(), who, "");
+}
+
+fn solo_done(root: String, id: String, text: String, seat: TaskSeat) -> TaskAct {
+    let who = seat.who;
     if len(id) == 0 || len(id) > 256 { return task_act_refused(id, "invalid_task", "which Task?"); }
     let note = std::str::trim(text);
     if len(note) == 0 || len(note) > 8192 {
@@ -147,11 +222,19 @@ fn solo_done(root: String, id: String, text: String, who: String) -> TaskAct {
             "the Task is " + t.state + ", not handed to a person: nothing to report done",
         );
     }
-    if len(t.assignee) > 0 && t.assignee != who {
+    // a Task for a position the caller holds is theirs to finish: taken first,
+    // so memory reads its completion in the assignee's name
+    let claim = std::str::starts_with(t.assignee, "position:") && seat_holds(seat, t.assignee);
+    if len(t.assignee) > 0 && t.assignee != who && !claim {
         return task_act_refused(
             id,
             "assigned",
-            "the Task is " + t.assignee + "'s, not " + who + "'s",
+            if std::str::starts_with(t.assignee, "position:") {
+                "the Task is for " + t.assignee[9..len(t.assignee)] + ", which " + who
+                    + " does not hold"
+            } else {
+                "the Task is " + t.assignee + "'s, not " + who + "'s"
+            },
         );
     }
     let refusal = dna::completion_refusal(who, t.evidence_required, "", "", "");
@@ -167,7 +250,22 @@ fn solo_done(root: String, id: String, text: String, who: String) -> TaskAct {
             },
         );
     }
-    let wrote = solo_write(root, s.ledger_at, "task.done", id, "by " + who + ": " + note, who);
+    let mut at = s.ledger_at;
+    if claim {
+        if s.history >= 127 {
+            return task_act_refused(id, "history_full", "the Task's history is full");
+        }
+        let took = solo_claim(root, at, id, t.assignee, who);
+        if len(took) > 0 {
+            return task_act_refused(
+                id,
+                if took == "stale" { "stale" } else { "record_refused" },
+                if took == "stale" { "the Task moved; read it again" } else { took },
+            );
+        }
+        at = at + 1;
+    }
+    let wrote = solo_write(root, at, "task.done", id, "by " + who + ": " + note, who, "");
     if len(wrote) > 0 {
         return task_act_refused(
             id,
@@ -175,5 +273,196 @@ fn solo_done(root: String, id: String, text: String, who: String) -> TaskAct {
             if wrote == "stale" { "the Task moved; read it again" } else { wrote },
         );
     }
-    return TaskAct { ok: true, task_id: id, state: "done", assignee: who };
+    return TaskAct { ok: true, task_id: id, state: "done", assignee: who, position: t.position };
+}
+
+// Whether the chart states `position` (a `position:` node of the record's
+// graph, not a proposal).
+fn chart_states(root: String, position: String) -> Bool {
+    if !std::str::starts_with(position, "position:") || len(position) > 256 { return false; }
+    let j = dna::RecordJournal { repo: root, author: "api" };
+    let moved = j.refresh();
+    let receipts = dna::MemoryReceipts { repo: root };
+    let graph = dna::record_graph_bodies(j, receipts);
+    return len(dna::graph_body_of(graph, position)) > 0;
+}
+
+fn position_id(position: String) -> String {
+    let p = std::str::trim(position);
+    return if std::str::starts_with(p, "position:") { p } else { "position:" + p };
+}
+
+// The `task.handed` that hands Task `id` to `position`, in `who`'s name.
+fn solo_hand_row(
+    root: String,
+    at: Int,
+    id: String,
+    position: String,
+    who: String,
+    why: String,
+    request: String
+) -> String {
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("assignee", position);
+    b.string_field("position", position);
+    b.string_field("by", who);
+    b.string_field("obligation", "");
+    b.string_field("narrative", why);
+    b.end_object();
+    return solo_write(root, at, "task.handed", id, b.result(), who, request);
+}
+
+fn solo_refused_write(id: String, wrote: String) -> TaskAct {
+    return task_act_refused(
+        id,
+        if wrote == "stale" { "stale" } else { "record_refused" },
+        if wrote == "stale" { "the Task moved; read it again" } else { wrote },
+    );
+}
+
+fn solo_open(root: String, o: TaskOpen, seat: TaskSeat) -> TaskAct {
+    let who = seat.who;
+    let rid = std::str::trim(o.request_id);
+    if len(rid) == 0 || len(rid) > 128 {
+        return task_act_refused("", "invalid_request", "a request id, 1 to 128 bytes");
+    }
+    let outcome = std::str::trim(o.outcome);
+    if len(outcome) == 0 || len(outcome) > 8192 {
+        return task_act_refused("", "invalid_outcome", "what needs doing: 1 to 8192 bytes");
+    }
+    let position = position_id(o.position);
+    if !chart_states(root, position) {
+        return task_act_refused(
+            "",
+            "unknown_position",
+            "the chart states no position " + position[9..len(position)],
+        );
+    }
+    let ledger = dna::MemoryLedger { repo: root, dsn_env: dna::HEAD_DSN_ENV };
+    if !ledger.ready() {
+        return task_act_refused("", "task_source_unavailable", "the Ledger is not reachable");
+    }
+    // the same request is the same Task: its id comes from the request, and
+    // memory answers a request it has seen as it landed
+    let d = dna::digest_of(who + "\n" + rid);
+    let id = "p" + d[7..23];
+    let request = "task-open:" + d[7..len(d)];
+    let born = solo_write(root, -1, "task.born", id, outcome, who, request + ":born");
+    if len(born) > 0 { return solo_refused_write(id, born); }
+    let handed = solo_hand_row(
+        root,
+            -1,
+        id,
+        position,
+        who,
+        "opened by " + who,
+        request + ":handed",
+    );
+    if len(handed) > 0 { return solo_refused_write(id, handed); }
+    return TaskAct {
+        ok: true,
+        task_id: id,
+        state: "handed",
+        assignee: position,
+        position: position,
+    };
+}
+
+fn solo_note(root: String, n: TaskNote, seat: TaskSeat) -> TaskAct {
+    let id = n.task_id;
+    if len(id) == 0 || len(id) > 256 { return task_act_refused(id, "invalid_task", "which Task?"); }
+    let text = std::str::trim(n.text);
+    if len(text) == 0 || len(text) > 8192 {
+        return task_act_refused(id, "invalid_text", "the update, as text: 1 to 8192 bytes");
+    }
+    let s = solo_read(root, id);
+    if !s.ok { return task_act_refused(id, s.code, "the Task could not be read"); }
+    let t = s.row;
+    if t.state != "handed" {
+        return task_act_refused(id, "not_handed", "the Task is " + t.state + ", not open");
+    }
+    if !seat_works(seat, t) {
+        return task_act_refused(
+            id,
+            "forbidden",
+            "an update is posted by whoever works the Task, holds its position or opened it",
+        );
+    }
+    if s.history >= 127 {
+        return task_act_refused(id, "history_full", "the Task's history is full");
+    }
+    let b = std::json::Builder { };
+    b.begin_object();
+    b.string_field("by", seat.who);
+    b.string_field("text", text);
+    b.end_object();
+    let wrote = solo_write(root, s.ledger_at, "task.noted", id, b.result(), seat.who, "");
+    if len(wrote) > 0 { return solo_refused_write(id, wrote); }
+    return TaskAct {
+        ok: true,
+        task_id: id,
+        state: t.state,
+        assignee: t.assignee,
+        position: t.position,
+    };
+}
+
+fn solo_hand(root: String, h: TaskHand, seat: TaskSeat) -> TaskAct {
+    let id = h.task_id;
+    if len(id) == 0 || len(id) > 256 { return task_act_refused(id, "invalid_task", "which Task?"); }
+    let position = position_id(h.position);
+    if !chart_states(root, position) {
+        return task_act_refused(
+            id,
+            "unknown_position",
+            "the chart states no position " + position[9..len(position)],
+        );
+    }
+    let s = solo_read(root, id);
+    if !s.ok { return task_act_refused(id, s.code, "the Task could not be read"); }
+    let t = s.row;
+    if t.state != "handed" || !t.reassignment_supported {
+        return task_act_refused(
+            id,
+            "not_handed",
+            "the Task is " + t.state + ", not open to hand on",
+        );
+    }
+    if !seat_works(seat, t) {
+        return task_act_refused(
+            id,
+            "forbidden",
+            "a Task is handed on by whoever works it, holds its position or opened it",
+        );
+    }
+    if t.assignee == position {
+        return TaskAct {
+            ok: true,
+            task_id: id,
+            state: t.state,
+            assignee: position,
+            position: position,
+        };
+    }
+    if s.history >= 127 {
+        return task_act_refused(id, "history_full", "the Task's history is full");
+    }
+    let wrote = solo_hand_row(
+        root,
+        s.ledger_at,
+        id,
+        position,
+        seat.who,
+        "handed by " + seat.who,
+        "",
+    );
+    if len(wrote) > 0 { return solo_refused_write(id, wrote); }
+    return TaskAct {
+        ok: true,
+        task_id: id,
+        state: "handed",
+        assignee: position,
+        position: position,
+    };
 }

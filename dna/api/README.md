@@ -339,6 +339,11 @@ the [Knowledge commands](#knowledge-commands).
 | `OrganizationPropose` | `Commands::propose_organization` | `OrganizationProposal { request_id, source_head, module_digest, dependency_source, dependency_digest, record_head, source_text, rationale }` | `owner` |
 | `TaskCreate` | `Commands::create_task` | `TaskCreation { request_id, record_head, outcome, to, kind }` | any authenticated peer |
 | `TaskReassign` | `Commands::reassign_task` | `TaskReassignment { request_id, task_id, assignment_digest, assignee, to }` | `owner` |
+| `TaskOpen` | `Commands::open_task` | `TaskOpen { request_id, outcome, position }`, answered `TaskAct` (below) | a person of the record |
+| `TaskTake` | `Commands::take_task` | `TaskTake { task_id }`, answered `TaskAct` | a person of the record |
+| `TaskNote` | `Commands::note_task` | `TaskNote { task_id, text }`, answered `TaskAct` | a person of the record |
+| `TaskHand` | `Commands::hand_task` | `TaskHand { task_id, position }`, answered `TaskAct` | a person of the record |
+| `TaskDone` | `Commands::complete_task` | `TaskDone { task_id, text }`, answered `TaskAct` | a person of the record |
 | `PersonRetire` | `Commands::retire_person` | `PersonRetirement { request_id, person, subject_digest, to }` | `owner` |
 | `AttemptClaim` | `Commands::claim` | `Claim { request_id, record_head, performer_kind, performer, capabilities, data_classes, organizations, ttl: Int }` (the three lists are space-separated words) | `position` |
 | `AttemptOutcome` | `Commands::outcome` | `Outcome { request_id, attempt_id, holder, token: Int, disposition, result, result_ref, narrative, evidence, receipts, hat_digest, hat_head, hat_watermark: Int = -1, prompt_digest, renderer }` (evidence/receipts are JSON arrays as text) | `position` |
@@ -554,6 +559,37 @@ prior handoff, before pagination and total counts. Filtered data echoes
 return 404. A later page still requires `snapshot`; other read routes reject
 `assignee`. This does not establish position ownership, complete personal
 responsibility or permission to reassign.
+
+### Tasks for positions
+
+A person opens a Task for a position the chart states, and whoever holds
+that position works it, a person or an agent alike. The head writes the
+Ledger's rows itself, in the caller's name, with no organization and no
+model involved; each answers `TaskAct { ok, code, why, task_id, state,
+assignee, position }`.
+
+- `TaskOpen` writes a `task.born` (the outcome) and a `task.handed` whose
+  `assignee` and `position` are the position's id. The Task's id is
+  `p<hex>`, from the caller and `request_id`, and memory answers a request
+  it has seen as it landed, so a retry is the same Task. A position the
+  chart does not state is refused `unknown_position`.
+- `TaskTake` makes the caller the assignee of a Task handed to nobody or to
+  a position they hold (`task.reassigned` from that position); the Task
+  stays for its position. A Task handed to another person is refused
+  `assigned`.
+- `TaskNote` posts an update, 1 to 8192 bytes, as a `task.noted` row
+  `{by, text}`; `TaskHand` hands the Task to another stated position (another
+  `task.handed`, untaken). Either is the assignee's, a holder's of the
+  position the Task is for or handed to, the opener's or the Board's, on an
+  open Task.
+- `TaskDone` reports it done as text (`task.done`, `by <who>: <text>`). A
+  holder of the position it is handed to takes it in the same call, since
+  memory admits a completion only in the assignee's name.
+
+A Task's row carries `position`, `opened_by` and `result` (the terminal
+row's body), and each history entry its `text` (an update's). The board's
+`Tasks` read also says who asks: `me`, `my_positions` (space-separated
+`position:` ids) and `board`.
 
 The [native command provider](practice_review/README.md) can additionally enable
 `dna.task.reassign@1` with `HALE_DNA_TASK_POLICY`. Its existing

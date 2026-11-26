@@ -2005,11 +2005,24 @@ fn pack_adopted_steps(j: Journal, name: String) -> String {
     return found;
 }
 
-// What a batch does, counted by step: `2 open, 2 fill, 1 practice`.
+// What a batch does: each step by name for a small batch (`open eng under
+// board, fill eng with ada`), else counted by step: `2 open, 2 fill, 1
+// practice`.
 @bounded_by(steps)
 fn batch_summary(steps: String) -> String {
+    if batch_count(steps) <= 6 {
+        let mut named = "";
+        let mut rest = steps;
+        while len(rest) > 0 {
+            let nl = std::str::index_of(rest, "\n");
+            let words = batch_step_words(rest[0..nl]);
+            rest = rest[(nl + 1)..len(rest)];
+            named = named + (if len(named) > 0 { ", " } else { "" }) + words;
+        }
+        return named;
+    }
     let mut out = "";
-    let mut verbs = "open fill vacate practice idea retire-practice nursery assign unassign close merge split expose depend externalize internalize ";
+    let mut verbs = "open amend move fill vacate practice idea retire-practice nursery assign unassign close merge split expose depend externalize internalize ";
     while len(verbs) > 0 {
         let sp = std::str::index_of(verbs, " ");
         let v = verbs[0..sp];
@@ -2024,6 +2037,24 @@ fn batch_summary(steps: String) -> String {
         if n > 0 { out = out + (if len(out) > 0 { ", " } else { "" }) + to_string(n) + " " + v; }
     }
     return out;
+}
+
+// One step of a planned batch in words, its positions by name.
+fn batch_step_words(step: String) -> String {
+    let verb = batch_field(step, 0);
+    let a = batch_bare(batch_field(step, 1));
+    let b = batch_bare(batch_field(step, 2));
+    if verb == "open" { return "open " + a + (if len(b) > 0 { " under " + b } else { "" }); }
+    if verb == "fill" { return "fill " + a + " with " + b; }
+    if verb == "vacate" { return "vacate " + a + " (" + b + ")"; }
+    if verb == "move" { return "move " + a + " under " + b; }
+    if verb == "amend" { return "describe " + a; }
+    if verb == "assign" || verb == "unassign" { return verb + " " + a + " reviews " + b; }
+    return verb + " " + a;
+}
+
+fn batch_bare(id: String) -> String {
+    return if std::str::starts_with(id, "position:") { id[9..len(id)] } else { id };
 }
 
 // Why a batch family can no longer be ratified as it was proposed: planned
