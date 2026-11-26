@@ -3334,6 +3334,24 @@ handed Task that names no assignee becomes the caller's, a
 refused `evidence_required` where the bound practice wants evidence, and
 by memory's gate for anyone but the assignee).
 
+A person also opens a Task for a position the chart states, and whoever
+holds that position, a person or an agent, works it, through three more
+rows answering the same shape with the Task's `position`:
+`Commands::open_task` (`{request_id, outcome, position}`: a `task.born`
+whose body is the outcome and a `task.handed` whose `assignee` and
+`position` are the position's id, under an id `p<hex>` drawn from the
+caller and the request, outside the organization's `t<N>`; refused
+`unknown_position` for a position the graph does not state),
+`Commands::note_task` (`{task_id, text}`: a `task.noted` row `{by, text}`,
+1 to 8192 bytes, history only) and `Commands::hand_task` (`{task_id,
+position}`: another `task.handed`, to another stated position). Taking a
+Task handed to a position is the right of whoever holds it
+(`task.reassigned` from the position to them; the Task stays for its
+position), and reporting it done takes it in the same call. An update and a
+hand-off are the assignee's, a holder's of the position the Task is for or
+handed to, the opener's or the Board's, on a handed Task. No organization
+admits such a Task: it is the Ledger's rows and the people who work it.
+
 The completion is judged against what the admission bound — the
 assignee (moved by `task.reassigned`), whether evidence is required,
 which practice — never against a practice in force later: a practice

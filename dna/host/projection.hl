@@ -261,6 +261,7 @@ locus Projection {
                 }
                 else if std::str::starts_with(e.kind, "task.")
                     && e.kind != "task.resumed"
+                    && e.kind != "task.noted"
                     && len(t.id) > 0
                 {
                     t.state = e.kind[5..len(e.kind)];

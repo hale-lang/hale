@@ -7,7 +7,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isolatedEnvironment, boundedNative, memoryOwner, launchToken, graftEnvironment, ensureHabitat, graft } from './environment.mjs';
-import { seatGraph, seatRecord, unseatGraph } from './record-seats.mjs';
+import { seatGraph, seatRecord, statePositions, unseatGraph } from './record-seats.mjs';
 import { recordState, ledgerRows } from './record-memory.mjs';
 import { freePorts, commandsAnnounced } from './command-wire.mjs';
 
@@ -80,13 +80,19 @@ export const test = base.extend({
   // Positions the head's own person holds, so its forwarded commands pass
   // their gates (GH #1104 piece 5); none by default, as a fresh record.
   seats: [[], { option: true }],
-  service: async ({ recordCount, organization, organizationDrafts, definitions, knowledge, workflows, commandSubject, commandAdapter, seats }, use, testInfo) => {
+  // Positions the chart states that nobody holds.
+  vacant: [[], { option: true }],
+  // The composed head (`dna/api/practice_review`, HALE_NATIVE_COMMAND_API)
+  // in place of the plain API, so chart changes reach the record's command
+  // service: its authority policy grants the signed-in person the Board.
+  composed: [false, { option: true }],
+  service: async ({ recordCount, organization, organizationDrafts, definitions, knowledge, workflows, commandSubject, commandAdapter, seats, vacant, composed }, use, testInfo) => {
     const root = await mkdtemp('/tmp/hale-face-browser.');
     const env = isolatedEnvironment();
     if (organizationDrafts) env.HALE_DNA_ORG_DRAFTS = "1";
     env.XDG_CACHE_HOME = path.join(root, '.hale/face-cache');
     const native = workflows ? process.env.HALE_FACE_WORKFLOWS_BIN : knowledge ? process.env.HALE_FACE_KNOWLEDGE_BIN : process.env.HALE_FACE_RECORD_BIN;
-    const api = commandAdapter ? process.env.HALE_FACE_COMMAND_BIN : definitions ? process.env.HALE_FACE_CATALOG_BIN : process.env.HALE_API_BIN;
+    const api = composed ? process.env.HALE_NATIVE_COMMAND_API : commandAdapter ? process.env.HALE_FACE_COMMAND_BIN : definitions ? process.env.HALE_FACE_CATALOG_BIN : process.env.HALE_API_BIN;
     if (commandAdapter) env.HALE_FACE_SCRIPTED_COMMANDS = '1';
     if (!native || !api) throw new Error('Use npm test: it prepares the native Record writer and API paths.');
     // Knowledge lives in memory (GH #985). The fixture program migrates the
@@ -145,6 +151,14 @@ export const test = base.extend({
       await executeNative(native, [root, 'seed', String(recordCount), ...(commandSubject ? ['commands'] : [])], { env: fixtureEnv, timeout: 30_000 });
       seeded = true;
       if (seats.length) seatRecord(root, env, env.USER, seats);
+      if (vacant.length) statePositions(root, env, vacant);
+      if (composed) {
+        const policy = path.join(root, '.hale/authority.json');
+        await mkdir(path.dirname(policy), { recursive: true });
+        await writeFile(policy, JSON.stringify({ format: 'dna.practice-review-authority/1', application_id: JSON.parse(await readFile(path.join(root, 'fixture.json'), 'utf8')).application,
+          grants: [{ mode: 'local', name: env.USER, authority: 'board', practice_propose: true, review_verdict: true, recover: true }] }));
+        env.HALE_DNA_COMMAND_POLICY = policy;
+      }
       const data = JSON.parse(await readFile(path.join(root, 'fixture.json'), 'utf8'));
       // One tick of the spine's projection; the first names the head's DSN.
       const project = async () => {

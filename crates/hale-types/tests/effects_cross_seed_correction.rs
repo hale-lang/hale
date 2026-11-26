@@ -235,8 +235,8 @@ fn api() {
     // the renames-aware walk sees.
     pinned(
         "api",
-        779,
-        781,
+        809,
+        813,
         "
         Api::definition_draft_handle  does={syscall,block,env,alloc}
         Api::definitions_read  does={syscall,block,env,alloc}
@@ -254,28 +254,28 @@ fn api() {
         Commands::__rpc_call_3  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_1_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_1_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_25  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_32  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_38  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_1_49  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_28  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_35  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_41  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_1_52  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_2_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_2_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_25  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_32  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_38  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_2_49  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_28  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_35  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_41  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_2_52  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_3_1  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_row_3_10  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_19  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_25  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_27  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_32  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_38  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
-        Commands::__rpc_row_3_49  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_20  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_28  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_30  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_35  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_41  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        Commands::__rpc_row_3_52  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_seam_1  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_seam_2  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
         Commands::__rpc_seam_3  does={syscall,block,publish,time,entropy,env,alloc,secret_use,stdio}
@@ -295,6 +295,7 @@ fn api() {
         allocation_links  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         applied_at  does={syscall,block,env,alloc}
         applies_dir  does={syscall,block,env,alloc}
+        chart_states  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         fetch_organizations  does={syscall,block,time,env,alloc}
         habitat_alerts  does={syscall,block,env,alloc}
         habitat_allocate_forge  does={syscall,block,env,alloc}
@@ -321,6 +322,10 @@ fn api() {
         placement_refusal  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         placement_targets_dir  does={syscall,block,env,alloc}
         record_index  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        seat_holds  does={alloc}
+        seat_works  does={alloc}
+        solo_hand  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
+        solo_open  does={syscall,block,time,entropy,env,alloc,secret_use,stdio}
         ",
     );
 }

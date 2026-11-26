@@ -44,22 +44,31 @@ back to Inter and the system until then.
   `/organisms/<name>/face`, which hands a visitor signed in here into that
   face with its own launch token: the face you open is the
   horizon, and its chart is its own record's. Selecting a position shows its
-  mandate, its holders and what it signs; filling it (`HoldFill`) and opening a
-  position under it (`PositionOpen`) are the record's commands, each a Board
-  Review. A stated position also offers to say what it does, to move under
-  another position, and to retire: each is a one-step batch (`amend`,
-  `move`, `close`), checked first (`BatchPreview`, the chart lines it adds
-  and takes out) and then proposed (`BatchApply`) for the Board.
+  mandate, its holders and what it signs. Every change to the chart is one
+  batch (`BatchApply`), one Board Review: adding a position (its name, what
+  it sits under, one line on what it is for, and optionally who holds it:
+  `open` and `fill` in the same batch), assigning someone (`fill`), and, on a
+  stated position, saying what it does, moving it and retiring it (`amend`,
+  `move`, `close`, each checked first with `BatchPreview`). The head writes
+  the Review at once, so the change shows dashed in the chart and its
+  Review under `In review` straight away; after a change or a verdict the
+  face reads the chart and the Reviews again every 2 s for a minute, so an
+  approved change shows as stated without a reload.
 - **Board** is the handed Tasks (`Commands::tasks`, from the record and its
-  Ledger as one) and the Reviews in the lanes a board is read by: `Backlog`
+  Ledger as one), by default the signed-in person's (**My tasks**: for a
+  position they hold, or theirs to work; **Everyone's** shows all), and the
+  Reviews in the lanes a board is read by: `Backlog`
   (a Task handed to nobody), `To do` (handed to someone), `In progress` (taken by its assignee, in
   a transfer, or waiting on something), `In review` (a Review the Board has
   not decided) and `Done` (a decided Task, a settled Review). A fresh
   organization opens its whole starting chart as pending Reviews, so the
   `In review` lane offers to approve them all in one action, each its own
   verdict in the person's name, after the count is shown and confirmed. A card opens the Review or the Task; a verdict
-  (`ReviewVerdict`), taking a Task (`TaskTake`) and reporting it done
-  (`TaskDone`) are the record's commands.
+  (`ReviewVerdict`) is the record's command. **Add task** opens a Task for a
+  position the chart states (`TaskOpen`), shown under `To do` at once; a
+  Task's holder takes it (`TaskTake`), posts updates (`TaskNote`), hands it
+  to another position (`TaskHand`) and marks it done with a line on what
+  was done (`TaskDone`), and its history lists each step with its author.
 - **Knowledge** is every node the record holds, by kind, with search: a node's
   text, author, state, its bindings and edges when memory serves them, and the
   proposals as the record alone holds them when it does not. Proposing,
