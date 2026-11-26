@@ -481,6 +481,9 @@ fn main() {
         credential: std::secret::Credential {
             vault: line_value(handed, "HALE_DNA_BROKER_NODE_VAULT"),
         },
+        // a node's requests and pulls answer under the heart's inbox, as
+        // voice's do
+        inbox_prefix: inbox,
         name: "heart-node",
         timeout: 2s,
     };
@@ -546,13 +549,119 @@ fn main() {
     // not its to read
     let wide = node.sub_to(base + ".>", "") or - 1;
     node.flush() or discard;
-    owner.pub_msg(base + ".private", "", std::bytes::from_string("not the node's")) or discard;
-    owner.flush() or discard;
+    heart.pub_msg(base + ".private", "", std::bytes::from_string("not the node's")) or discard;
+    heart.flush() or discard;
     let read_wide = node.read_msg(2s) && node.last.subject == base + ".private";
     std::test::assert(
         !read_wide && std::str::contains(node.last_error, "Permissions Violation"),
         "the node reads only its own work (" + to_string(wide) + "): " + node.last_error,
     );
+    // the heart's users are an account of their own, with JetStream: the
+    // heart's on its streams and their consumers, its nodes' on pulling
+    // and acking, and nothing of its organization's
+    let account_text = text_of(
+        dna::allocation_dir(dna::nerves_root(scratch + "/keeper")) + "/nerves.d/" + kkey
+            + ".account.conf",
+    );
+    let heart_account = std::str::index_of(
+        account_text,
+        "\n" + dna::heart_broker_account(kkey) + ": {\n  jetstream: enabled\n",
+    );
+    std::test::assert(
+        heart_account > std::str::index_of(account_text, dna::nerves_account(org) + ": {")
+            && std::str::index_of(account_text, "user: " + dna::heart_broker_user(kkey) + ",")
+            > heart_account
+            && std::str::contains(
+                account_text,
+                "publish: [\"" + base + ".>\", \"$JS.API.>\"], subscribe: [\"" + base + ".>\"]",
+            )
+            && std::str::contains(
+                account_text,
+                "publish: [\"" + base + ".reply.>\", \"" + base
+                    + "._INBOX.>\", \"$JS.API.CONSUMER.MSG.NEXT.*.*\", \"$JS.ACK.>\"], subscribe: [\""
+                    + base + ".node.>\", \"" + base + "._INBOX.>\"]",
+            ),
+        "the heart's account and its JetStream grants: " + account_text,
+    );
+    // a work queue as voice keeps one: the heart makes the stream (a name
+    // the habitat never learns) and a consumer, and tickets it
+    let stream = "WORK_" + std::str::upper(kkey);
+    let made = nats::js_call(
+        heart,
+        "$JS.API.STREAM.CREATE." + stream,
+        "{\"name\": \"" + stream + "\", \"subjects\": [\"" + base
+            + ".work.>\"], \"retention\": \"workqueue\", \"storage\": \"file\"}",
+    ) or "";
+    let made_why = heart.last_error;
+    nats::js_consumer_create(
+        heart,
+        stream,
+        nats::ConsumerSpec { durable: "w_test", filter: base + ".work.m.x", ack_wait_ms: 30000 },
+    ) or discard;
+    let consumer_why = heart.last_error;
+    let ticket = nats::js_publish(
+        heart,
+        base + ".work.m.x",
+        std::bytes::from_string("ticket"),
+    ) or nats::PubAck {
+        seq: -1,
+    };
+    std::test::assert(
+        len(made) > 0 && ticket.seq == 1 && ticket.stream == stream,
+        "the heart keeps a work queue in its account: " + made_why + " / " + consumer_why + " / "
+            + heart.last_error,
+    );
+    // its node pulls the ticket, the reply under its inbox, and acks it
+    let pulled = nats::js_next(node, stream, "w_test", 3000) or nats::NatsMsg { };
+    let pulled_why = node.last_error;
+    let mut acked = false;
+    if len(pulled.reply) > 0 {
+        nats::js_ack(node, pulled) or discard;
+        node.flush() or discard;
+        acked = true;
+    }
+    // a work queue keeps a ticket until it is acked: the stream empties
+    let mut emptied = false;
+    let ack_deadline = std::time::now() + dna::wait_secs(5);
+    while acked && !emptied && std::time::now() <= ack_deadline {
+        let info = nats::js_call(heart, "$JS.API.STREAM.INFO." + stream, "") or "";
+        emptied = std::json::find_int_field(std::json::find_field_raw(info, "state"), "messages")
+            == 0 && len(info) > 0;
+        if !emptied { std::time::sleep(100ms); }
+    }
+    std::test::assert(
+        std::str::from_bytes(pulled.data) == "ticket"
+            && std::str::starts_with(pulled.subject, base + ".work.m.x")
+            && std::str::starts_with(pulled.reply, "$JS.ACK.")
+            && emptied,
+        "the node pulls the heart's ticket and acks it (" + pulled.reply + "): " + pulled_why
+            + node.last_error,
+    );
+    // the node manages nothing: neither the stream nor a consumer is its
+    let deleted = nats::js_call(node, "$JS.API.STREAM.DELETE." + stream, "") or "";
+    let delete_why = node.last_error;
+    let consumed = nats::js_call(node, "$JS.API.CONSUMER.INFO." + stream + ".w_test", "") or "";
+    std::test::assert(
+        len(deleted) == 0
+            && std::str::contains(delete_why, "Permissions Violation")
+            && len(consumed) == 0
+            && std::str::contains(node.last_error, "Permissions Violation")
+            && len(nats::js_call(heart, "$JS.API.STREAM.INFO." + stream, "") or "") > 0,
+        "the node may not delete the stream nor read its consumer: " + delete_why + " / "
+            + node.last_error,
+    );
+    // and the heart's JetStream is its account's alone: its organization's
+    // stream, which the owner reads, is not there for the heart
+    let dna_stream = dna::nerves_stream(org);
+    let owners = nats::js_call(owner, "$JS.API.STREAM.INFO." + dna_stream, "") or "";
+    let owners_why = owner.last_error;
+    let hearts = nats::js_call(heart, "$JS.API.STREAM.INFO." + dna_stream, "") or "";
+    std::test::assert(
+        len(owners) > 0 && len(hearts) == 0 && std::str::contains(heart.last_error, "10059"),
+        "the heart reaches none of its organization's streams (" + owners_why + "): "
+            + heart.last_error,
+    );
+    nats::js_stream_delete(heart, stream) or discard;
     owner.close();
     heart.close();
     node.close();

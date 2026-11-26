@@ -871,7 +871,9 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
         // a tenant's account on the habitat's nerves: its files out of the
         // server's nerves.d, the server configured without it and restarted,
         // and its JetStream data off the server's volume (the nats image has
-        // no shell to remove it from inside)
+        // no shell to remove it from inside): the organization's account's,
+        // and its heart's own account's (`heart_broker_account`), there when
+        // its heart declared the `broker` role and kept a stream
         let hkey = first;
         let id = teardown_arg(args, 1);
         let ckey = teardown_arg(args, 2);
@@ -890,7 +892,8 @@ fn teardown_local(root: String, action: String, args: String, by: String) -> Str
         let account = nerves_account(schema_for(id));
         let wiped = run_tool(
             "docker\nrun\n--rm\n-v\n" + local_habitat_project() + "_nerves-" + hkey
-                + ":/data\nbusybox:1.36\nrm\n-rf\n/data/jetstream/" + account,
+                + ":/data\nbusybox:1.36\nrm\n-rf\n/data/jetstream/" + account
+                + "\n/data/jetstream/" + heart_broker_account(ckey),
         );
         if wiped.code != 0 {
             return "the account's data was not removed from the habitat's nerves: "

@@ -891,7 +891,7 @@ fn verdict_changes() {
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 59),
             ("once-per-invocation -> per-iteration-reclaim", 32),
-            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2916),
+            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2917),
         ],
         &[
             "__lib_dna__core___batch__PlannedOn::read StructLit(\"__lib_dna__core___journal__Event\") #1 InvokedUnboundedly",
@@ -1235,6 +1235,7 @@ fn verdict_changes() {
             "__lib_dna__core___models__digest_of StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___models__model_key_slot StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___nerves__exchange_stream StringConcat #1 InvokedUnboundedly",
+            "__lib_dna__core___nerves__heart_broker_account StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___nerves__heart_broker_base StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___nerves__heart_broker_node_user StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___nerves__heart_broker_subjects StringConcat #1 InvokedUnboundedly",

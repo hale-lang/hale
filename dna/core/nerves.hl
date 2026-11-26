@@ -221,7 +221,18 @@ fn nerves_missing(org: String) -> String {
 // nodes connect as, subscribing on `heart.<key>.node.>` and publishing on
 // `heart.<key>.reply.>` and `heart.<key>._INBOX.>`. Their passwords are
 // the vault's `nats-<org>-heart` and `nats-<org>-heart-node`, drawn with
-// the organism's other secrets; JetStream is neither's.
+// the organism's other secrets.
+//
+// Both are users of an account of the heart's own, `HEART_<KEY>`, beside
+// its organization's on the same server, with JetStream of its own: the
+// heart may keep work queues there and its nodes pull from them
+// (`nerves_heart_conf`). JetStream's API is account-wide: `$JS.API.>` in
+// the organization's account would reach DNA's own stream and durables
+// (`DNA_<ID>`, `spine`, `heart`, the exchange's), and a stream the heart
+// created there could capture subjects it may not read (`_INBOX.>`, the
+// spine's deliveries), since no permission bounds a stream's subjects. In
+// an account of its own, every `$JS` subject reaches only the streams and
+// consumers the heart made. No subject crosses between the two accounts.
 fn heart_broker_user(key: String) -> String { return "heart-" + std::str::lower(key); }
 fn heart_broker_node_user(key: String) -> String { return heart_broker_user(key) + "-node"; }
 fn heart_broker_base(key: String) -> String { return "heart." + std::str::lower(key); }
@@ -230,6 +241,8 @@ fn heart_broker_vault(org: String) -> String { return nerves_vault_name(org, "he
 fn heart_broker_node_vault(org: String) -> String { return nerves_vault_name(org, "heart-node"); }
 fn heart_password_var(org: String) -> String { return nerves_password_var(org, "heart"); }
 fn heart_node_password_var(org: String) -> String { return nerves_password_var(org, "heart_node"); }
+// The heart's own account on its organism's nerves server.
+fn heart_broker_account(key: String) -> String { return "HEART_" + std::str::upper(key); }
 
 // Whether the habitat allocated the heart role `role` to the organism at
 // `root` (GH #1653). The habitat decided what the organism needs when it
@@ -245,22 +258,50 @@ fn allocated_role(root: String, role: String) -> Bool {
     return len(roles) > 0 && len(std::json::find_field_raw(roles, role)) > 0;
 }
 
-// The heart's users in its organization's account, "" when none is declared.
+// The heart's account and its two users, "" when no heart declares the
+// `broker` role: every heart that does gets JetStream in it, used or not,
+// since the account holds nothing but the heart's own.
+//
+// What JetStream adds to each user, beyond its own subjects:
+// - the heart: `$JS.API.>`, to create, update, read and delete its streams
+//   and their consumers (a work queue's, for one). Its stream's name is the
+//   heart's to choose, so no grant can name it, and none needs to: the
+//   account's API reaches the heart's own streams alone. The API's answers
+//   come back on its inbox under `heart.<key>._INBOX`, already its own.
+// - its nodes: `$JS.API.CONSUMER.MSG.NEXT.*.*` (`<stream>.<consumer>`), to
+//   pull from a consumer the heart made, and `$JS.ACK.>`, to ack, nak,
+//   term or extend what they pulled. Neither creates, changes, reads the
+//   configuration of or deletes a stream or a consumer: that stays the
+//   heart's. A pull's messages and its statuses arrive on the reply subject
+//   the pull names, so the nodes also subscribe their inbox under the
+//   heart's, `heart.<key>._INBOX.>`; it is the same prefix the heart's
+//   replies use (its clients name it, not the habitat), and what a node
+//   reads there is no more than `heart.<key>.node.>` already shows it.
 fn nerves_heart_conf(org: String, key: String) -> String {
     if len(key) == 0 { return ""; }
     let base = heart_broker_base(key);
-    return "      # the heart's broker (GH #1653): its own subject space, its replies\n"
-        + "      # under it, nothing of DNA's and no `_INBOX`\n"
+    return "# " + heart_broker_account(key)
+        + " — the heart's own account (GH #1653): its broker's\n"
+        + "# users and its JetStream, which reaches nothing of its organization's\n"
+        + heart_broker_account(key) + ": {\n"
+        + "  jetstream: enabled\n"
+        + "  users = [\n"
+        + "      # the heart: its own subject space, its replies under it, nothing of\n"
+        + "      # DNA's and no `_INBOX`; its streams and their consumers\n"
         + "      { user: " + heart_broker_user(key) + ", password: $" + heart_password_var(org)
         + ",\n"
-        + "        permissions: { publish: [\"" + base + ".>\"], subscribe: [\"" + base
-        + ".>\"] } }\n"
-        + "      # its nodes: their own work in, their replies and acks out\n"
+        + "        permissions: { publish: [\"" + base + ".>\", \"$JS.API.>\"], subscribe: [\""
+        + base + ".>\"] } }\n"
+        + "      # its nodes: their own work in, their replies out; pull from the\n"
+        + "      # heart's consumers, ack what they pulled, and read their inbox\n"
         + "      { user: " + heart_broker_node_user(key) + ", password: $"
         + heart_node_password_var(org)
         + ",\n"
         + "        permissions: { publish: [\"" + base + ".reply.>\", \"" + base
-        + "._INBOX.>\"], subscribe: [\"" + base + ".node.>\"] } }\n";
+        + "._INBOX.>\", \"$JS.API.CONSUMER.MSG.NEXT.*.*\", \"$JS.ACK.>\"], subscribe: [\""
+        + base + ".node.>\", \"" + base + "._INBOX.>\"] } }\n"
+        + "  ]\n"
+        + "}\n";
 }
 
 // The variable a role's password is named by in its organization's
@@ -287,7 +328,8 @@ fn nerves_account(org: String) -> String {
 // carries one organization, however many one server holds. `app`: the
 // application the record attaches, whose user it carries ("" when none is
 // attached, or it was detached); `heart`, the key of an organism whose
-// heart declares the `broker` role ("" when none does).
+// heart declares the `broker` role ("" when none does), whose users are an
+// account of their own after the organization's (`nerves_heart_conf`).
 fn nerves_account_text(key: String, org: String, app: String, heart: String) -> String {
     // the passwords are its secrets' (`<key>.secrets.conf`, beside it): an
     // included file reads only the variables it defines or includes, so the
@@ -310,7 +352,6 @@ fn nerves_account_text(key: String, org: String, app: String, heart: String) -> 
         + nerves_password_var(org, "spine") + ",\n"
         + "        permissions: { publish: [\"*.dna.>\", \"*.*.dna.>\", \"*.head.>\", \"*.*.head.>\", \"$JS.API.CONSUMER.CREATE.*.*\", \"$JS.API.CONSUMER.INFO.*.*\", \"$JS.API.CONSUMER.MSG.NEXT.*.*\", \"$JS.ACK.*.*.>\"], subscribe: [\"_INBOX.>\"] } }\n"
         + nerves_app_conf(org, app)
-        + nerves_heart_conf(org, heart)
         + "      # the reflexes (#988): publish their firings on their own subjects,\n"
         + "      # read nothing\n"
         + "      { user: " + nerves_user(org, "reflexes") + ", password: $"
@@ -327,7 +368,8 @@ fn nerves_account_text(key: String, org: String, app: String, heart: String) -> 
         + nerves_password_var(org, "head") + ",\n"
         + "        permissions: { publish: { deny: [\">\"] }, subscribe: [\"*.>\"] } }\n"
         + "  ]\n"
-        + "}\n";
+        + "}\n"
+        + nerves_heart_conf(org, heart);
 }
 
 // The nerves' server's nats.conf: JetStream, and an account for each

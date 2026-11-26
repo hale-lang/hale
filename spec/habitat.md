@@ -2264,9 +2264,11 @@ The genome declares its roles in its `hale.toml`:
   same name that it alone reaches, its password in the vault slot
   `postgres-heart_<id>`; provisioned on either backend. **`broker`**: two
   users of the organism's own nerves server, `heart-<id>` and
-  `heart-<id>-node`, confined to the subject space `heart.<id>.>`, their
-  passwords in the vault slots `nats-<org>-heart` and
-  `nats-<org>-heart-node`; requires `own` backends.
+  `heart-<id>-node`, confined to the subject space `heart.<id>.>`, in an
+  account of the heart's own (`HEART_<id>`) with JetStream: the heart may
+  use `$JS.API.>` there, its nodes only pull (`$JS.API.CONSUMER.MSG.NEXT`)
+  and ack (`$JS.ACK`); their passwords in the vault slots
+  `nats-<org>-heart` and `nats-<org>-heart-node`; requires `own` backends.
 - `cache` and `object-store`, and any role the habitat does not know, are
   refused by name.
 
