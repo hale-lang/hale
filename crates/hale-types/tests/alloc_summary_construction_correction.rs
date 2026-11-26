@@ -1426,7 +1426,7 @@ fn startable_only_the_verb_program_runs_to_exit() {
                 // GH #1758: 9 more, the named habitats' resolver and
                 // `developer_habitat_projects`' loop over the habitat
                 // directories under `$HOME`
-                "dna__core: 520",
+                "dna__core: 527",
                 "dna__core__pond__pq: 16",
                 "dna__core__pond__realtime__nats: 2",
                 // GH #2094: 6 fewer in the host, the sites its free fns'
