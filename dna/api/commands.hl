@@ -1100,7 +1100,12 @@ locus CommandAdmission {
     // the record and its Ledger as one. A read.
     fn tasks(a: TasksAsk, ctx: std::api::Context) -> TaskRows {
         if self.personless(ctx) { return TaskRows { code: "forbidden", why: "forbidden" }; }
-        return task_rows(self.root, a.limit);
+        let mut rows = task_rows(self.root, a.limit);
+        let seat = self.task_seat(ctx);
+        rows.me = seat.who;
+        rows.my_positions = seat.positions;
+        rows.board = seat.board;
+        return rows;
     }
     // The habitat's hosts, allocations and policy (habitat_rows.hl): reads,
     // so any authenticated caller the record knows may ask.
@@ -1176,29 +1181,68 @@ locus CommandAdmission {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
         return habitat_nursery_add(self.root, a, self.author(ctx));
     }
-    // The solo path (solo_tasks.hl): a person takes a handed Task and
-    // reports it done, as text, in their own name.
-    fn take_task(t: TaskTake, ctx: std::api::Context) -> TaskAct {
+    // The solo path (solo_tasks.hl): a person opens a Task for a position,
+    // takes a handed Task, posts updates, hands it on and reports it done,
+    // as text, in their own name.
+    fn task_seat(ctx: std::api::Context) -> TaskSeat {
         let who = self.roles.person(ctx.caller);
-        if self.personless(ctx) || len(who) == 0 {
+        if self.personless(ctx) || len(who) == 0 { return TaskSeat { }; }
+        return TaskSeat {
+            who: who,
+            positions: self.roles.positions(ctx.caller),
+            board: self.roles.holds(ctx.caller, "owner"),
+        };
+    }
+    fn take_task(t: TaskTake, ctx: std::api::Context) -> TaskAct {
+        let seat = self.task_seat(ctx);
+        if len(seat.who) == 0 {
             return task_act_refused(
                 t.task_id,
                 "forbidden",
                 "a Task is taken by a person of the record",
             );
         }
-        return solo_take(self.root, t.task_id, who);
+        return solo_take(self.root, t.task_id, seat);
     }
     fn complete_task(d: TaskDone, ctx: std::api::Context) -> TaskAct {
-        let who = self.roles.person(ctx.caller);
-        if self.personless(ctx) || len(who) == 0 {
+        let seat = self.task_seat(ctx);
+        if len(seat.who) == 0 {
             return task_act_refused(
                 d.task_id,
                 "forbidden",
                 "a Task is reported done by a person of the record",
             );
         }
-        return solo_done(self.root, d.task_id, d.text, who);
+        return solo_done(self.root, d.task_id, d.text, seat);
+    }
+    fn open_task(o: TaskOpen, ctx: std::api::Context) -> TaskAct {
+        let seat = self.task_seat(ctx);
+        if len(seat.who) == 0 {
+            return task_act_refused("", "forbidden", "a Task is opened by a person of the record");
+        }
+        return solo_open(self.root, o, seat);
+    }
+    fn note_task(n: TaskNote, ctx: std::api::Context) -> TaskAct {
+        let seat = self.task_seat(ctx);
+        if len(seat.who) == 0 {
+            return task_act_refused(
+                n.task_id,
+                "forbidden",
+                "an update is posted by a person of the record",
+            );
+        }
+        return solo_note(self.root, n, seat);
+    }
+    fn hand_task(h: TaskHand, ctx: std::api::Context) -> TaskAct {
+        let seat = self.task_seat(ctx);
+        if len(seat.who) == 0 {
+            return task_act_refused(
+                h.task_id,
+                "forbidden",
+                "a Task is handed on by a person of the record",
+            );
+        }
+        return solo_hand(self.root, h, seat);
     }
     fn ratify_sapling(n: SaplingNamed, ctx: std::api::Context) -> NurseryReply {
         if self.personless(ctx) { return NurseryReply { code: "forbidden" }; }
@@ -1386,6 +1430,15 @@ locus Commands {
     fn complete_task(d: TaskDone, ctx: std::api::Context) -> TaskAct {
         return self.admission.complete_task(d, ctx);
     }
+    fn open_task(o: TaskOpen, ctx: std::api::Context) -> TaskAct {
+        return self.admission.open_task(o, ctx);
+    }
+    fn note_task(n: TaskNote, ctx: std::api::Context) -> TaskAct {
+        return self.admission.note_task(n, ctx);
+    }
+    fn hand_task(h: TaskHand, ctx: std::api::Context) -> TaskAct {
+        return self.admission.hand_task(h, ctx);
+    }
     fn add_host(a: HostAdd, ctx: std::api::Context) -> HostReply {
         return self.admission.add_host(a, ctx);
     }
@@ -1474,10 +1527,15 @@ api HeadCommands {
     rpc Commands::propose_organization requires: [owner];
     rpc Commands::create_task;
     rpc Commands::reassign_task requires: [owner];
-    // The solo path (solo_tasks.hl): a person of the record takes a handed
-    // Task no one holds, and reports one theirs done as text.
+    // The solo path (solo_tasks.hl): a person of the record opens a Task for
+    // a position the chart states, takes one handed to nobody or to a
+    // position they hold, posts updates, hands it to another position, and
+    // reports one theirs done as text.
     rpc Commands::take_task;
     rpc Commands::complete_task;
+    rpc Commands::open_task;
+    rpc Commands::note_task;
+    rpc Commands::hand_task;
     rpc Commands::retire_person requires: [owner];
     rpc Commands::claim requires: [position];
     rpc Commands::outcome requires: [position];

@@ -1,0 +1,49 @@
+// Who may act on a Task a person opened for a chart position
+// (dna/api/solo_tasks.hl): a holder of the position it is for or handed to,
+// its assignee, the person who opened it, and the Board. The Ledger writes
+// themselves are the face's browser test's (dna/face/tests/tasks.spec.mjs),
+// over the head and memory.
+import ".." as api;
+import "../../operations" as ops;
+
+fn main() {
+    let open = ops::TaskRow {
+        id: "p1", state: "handed", assignee: "position:eng", position: "position:eng",
+        opened_by: "ada",
+    };
+    let holder = api::TaskSeat { who: "bo", positions: "position:qa position:eng" };
+    let other = api::TaskSeat { who: "cy", positions: "position:ops" };
+    let opener = api::TaskSeat { who: "ada", positions: "" };
+    let board = api::TaskSeat { who: "di", positions: "position:board", board: true };
+
+    std::test::assert(api::seat_holds(holder, "position:eng"), "a holder holds it");
+    std::test::assert(!api::seat_holds(holder, "position:en"), "a word, not a prefix");
+    std::test::assert(!api::seat_holds(holder, "eng"), "a position id, not a bare name");
+    std::test::assert(
+        api::seat_holds(board, "position:eng"),
+        "the Board answers for every position",
+    );
+
+    std::test::assert(api::seat_works(holder, open), "a holder works a Task for their position");
+    std::test::assert(api::seat_works(opener, open), "the person who opened it may update it");
+    std::test::assert(api::seat_works(board, open), "and the Board");
+    std::test::assert(!api::seat_works(other, open), "a holder of another position may not");
+
+    // taken by its holder, then handed to ops: the new position's holder
+    // works it, the one who took it no longer holds what it is for
+    let taken = ops::TaskRow {
+        id: "p1", state: "handed", assignee: "bo", position: "position:eng", opened_by: "ada",
+        taken: true,
+    };
+    std::test::assert(api::seat_works(api::TaskSeat { who: "bo" }, taken), "its assignee works it");
+    let handed = ops::TaskRow {
+        id: "p1", state: "handed", assignee: "position:ops", position: "position:ops",
+        opened_by: "ada",
+    };
+    std::test::assert(api::seat_works(other, handed), "handed to ops, its holder works it");
+    std::test::assert(
+        !api::seat_works(api::TaskSeat { who: "bo", positions: "position:eng" }, handed),
+        "eng no longer does",
+    );
+    eprintln("plain task seat cases passed");
+}

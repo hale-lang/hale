@@ -16,6 +16,14 @@ type TaskRow {
     // the assignee took it themselves (`task.reassigned` by the one it names):
     // work in progress, where a hand to someone is work to do
     taken: Bool = false;
+    // the chart position it was last handed to (`task.handed`'s `position`),
+    // kept when a holder takes it; "" for a Task handed to a person
+    position: String = "";
+    // who handed it first: the person who opened it, or the organization
+    opened_by: String = "";
+    // how it ended: the terminal row's body (`by <who>: <note>` for a Task
+    // reported done as text); "" while it is open
+    result: String = "";
 }
 type TaskAssignmentRow {
     event_id: String = "";
@@ -24,6 +32,8 @@ type TaskAssignmentRow {
     from: String = "";
     to: String = "";
     by: String = "";
+    // an update's text (`task.noted`); "" for a hand or a take
+    text: String = "";
 }
 type TaskEntry {
     row: TaskRow = TaskRow { };
@@ -155,7 +165,7 @@ locus TaskProjection {
                 || !self.object(e.body)
                 || !self.strings(
                     e.body,
-                    "assignee obligation by owner to retired_assignee transferred_from accepted_by",
+                    "assignee obligation by owner to retired_assignee transferred_from accepted_by position",
                     256,
                     false,
                 )
@@ -190,11 +200,13 @@ locus TaskProjection {
                         },
                     },
                 );
+                if entry.history == 0 { row.opened_by = self.text(e.body, "by"); }
                 entry.history = entry.history + 1;
                 entry.handed = true;
                 row.state = "handed";
                 row.taken = false;
                 row.assignee = self.text(e.body, "assignee");
+                row.position = self.text(e.body, "position");
                 row.obligation = self.text(e.body, "obligation");
                 row.acceptance_digest = self.text(e.body, "acceptance");
                 row.acceptance_bound = std::json::find_field_raw(e.body, "acceptance") != "";
@@ -260,6 +272,34 @@ locus TaskProjection {
             );
             entry.history = entry.history + 1; row.assignee = self.text(e.body, "to");
             row.taken = self.text(e.body, "to") == self.text(e.body, "by");
+        } else if e.kind == "task.noted" {
+            // an update on an open Task, in its author's name: history only
+            if row.state != "handed"
+                || !self.object(e.body)
+                || !self.strings(e.body, "by", 256, false)
+                || !self.strings(e.body, "text", 8192, true)
+                || self.text(e.body, "by") == ""
+                || self.text(e.body, "text") == ""
+            {
+                return "task_source_invalid";
+            }
+            entry.visible = entry.visible && self.visible(self.text(e.body, "by"));
+            if entry.history >= 128 { return "task_read_limit"; }
+            self.histories.push(
+                TaskHistoryEntry {
+                    task: e.entity,
+                    row: TaskAssignmentRow {
+                        event_id: e.digest,
+                        sequence: e.seq,
+                        kind: e.kind,
+                        from: row.assignee,
+                        to: row.assignee,
+                        by: self.text(e.body, "by"),
+                        text: self.text(e.body, "text"),
+                    },
+                },
+            );
+            entry.history = entry.history + 1;
         } else if e.kind == "decision.reported" {
             if row.state != "handed"
                 || !self.object(e.body)
@@ -296,6 +336,8 @@ locus TaskProjection {
                 return "task_source_invalid";
             }
             row.state = e.kind[5..len(e.kind)];
+            // a body past the read's bound is left out, never cut mid-character
+            row.result = if len(e.body) <= 8192 { e.body } else { "" };
         } else { return "task_source_unsupported"; }
         row.assignment_digest = self.basis(row.assignment_digest, e);
         row.reassignment_supported = row.state == "handed" && !entry.transfer;

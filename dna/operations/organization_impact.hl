@@ -157,6 +157,9 @@ locus OrganizationImpact {
             if t.state != "handed" || !self.object(e.body) || self.string(e.body, "to") == "" {
                 return "impact_source_invalid";
             }
+        } else if e.kind == "task.noted" {
+            // an update on an open Task changes nothing it is responsible for
+            if t.state != "handed" || !self.object(e.body) { return "impact_source_invalid"; }
         } else if e.kind == "decision.reported" {
             if t.state != "handed" || !self.object(e.body) { return "impact_source_invalid"; }
             let accepted = std::json::find_field_raw(e.body, "accepted");

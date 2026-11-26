@@ -1,0 +1,120 @@
+// Tasks a person opens for a chart position (dna/api/solo_tasks.hl), as the
+// projection reads them: the position the Task is for, kept when a holder
+// takes it and moved when it is handed to another; who opened it; updates
+// (`task.noted`) in its history with their text; and how it ended.
+import ".." as ops;
+import "../../core" as dna;
+
+locus PositionTaskCases {
+    params { }
+    fn append(j: dna::Journal, kind: String, id: String, body: String) {
+        std::test::assert(j.append_exact(j.revision(), kind, id, body).ok, "append " + kind);
+    }
+    fn open(j: dna::Journal) {
+        self.append(j, "application.observed", "app", "{}");
+        self.append(j, "task.born", "p1", "Write the release notes");
+        self.append(
+            j,
+            "task.handed",
+            "p1",
+            "{\"assignee\":\"position:eng\",\"position\":\"position:eng\",\"by\":\"ada\",\"obligation\":\"\",\"narrative\":\"opened by ada\"}",
+        );
+    }
+    fn lifecycle() {
+        let j = dna::MemJournal { };
+        self.open(j);
+        let q = ops::Queries { j: j, routed: true };
+        let v = ops::TaskProjection { j: j, visibility: q, routed: true };
+        std::test::assert(v.load(), "an opened Task reads: " + v.code);
+        let t = v.task_of("p1");
+        std::test::assert_eq_str(t.state, "handed", "opened is handed");
+        std::test::assert_eq_str(t.assignee, "position:eng", "to the position");
+        std::test::assert_eq_str(t.position, "position:eng", "and for it");
+        std::test::assert_eq_str(t.opened_by, "ada", "by the person who opened it");
+        std::test::assert(!t.taken, "nobody has taken it");
+
+        // a holder takes it: the person is the assignee, the position stays
+        self.append(
+            j,
+            "task.reassigned",
+            "p1",
+            "{\"from\":\"position:eng\",\"to\":\"bo\",\"by\":\"bo\"}",
+        );
+        self.append(
+            j,
+            "task.noted",
+            "p1",
+            "{\"by\":\"bo\",\"text\":\"drafted;\\nthe changelog is next\"}",
+        );
+        let q2 = ops::Queries { j: j, routed: true };
+        let v2 = ops::TaskProjection { j: j, visibility: q2, routed: true };
+        std::test::assert(v2.load(), "a taken, updated Task reads: " + v2.code);
+        let taken = v2.task_of("p1");
+        std::test::assert_eq_str(taken.assignee, "bo", "the holder took it");
+        std::test::assert(taken.taken, "and works it");
+        std::test::assert_eq_str(taken.position, "position:eng", "still for eng");
+        std::test::assert_eq_int(v2.history_count("p1"), 3, "opened, taken, updated");
+        let note = v2.history_at("p1", 2);
+        std::test::assert_eq_str(note.kind, "task.noted", "the update is history");
+        std::test::assert_eq_str(note.by, "bo", "in its author's name");
+        std::test::assert_eq_str(
+            note.text,
+            "drafted;\nthe changelog is next",
+            "with its text, exactly",
+        );
+        std::test::assert_eq_str(note.to, "bo", "and moves nobody");
+
+        // handed on: another position, untaken; the opener stays
+        self.append(
+            j,
+            "task.handed",
+            "p1",
+            "{\"assignee\":\"position:ops\",\"position\":\"position:ops\",\"by\":\"bo\",\"obligation\":\"\"}",
+        );
+        let q3 = ops::Queries { j: j, routed: true };
+        let v3 = ops::TaskProjection { j: j, visibility: q3, routed: true };
+        std::test::assert(v3.load(), "a re-handed Task reads: " + v3.code);
+        let moved = v3.task_of("p1");
+        std::test::assert_eq_str(moved.position, "position:ops", "for ops now");
+        std::test::assert_eq_str(moved.assignee, "position:ops", "handed to it");
+        std::test::assert(!moved.taken, "nobody there has taken it");
+        std::test::assert_eq_str(moved.opened_by, "ada", "the opener is who opened it first");
+        std::test::assert(moved.reassignment_supported, "still open to hand on");
+
+        // finished, with the note it was finished with
+        self.append(
+            j,
+            "task.reassigned",
+            "p1",
+            "{\"from\":\"position:ops\",\"to\":\"cy\",\"by\":\"cy\"}",
+        );
+        self.append(j, "task.done", "p1", "by cy: notes published");
+        let q4 = ops::Queries { j: j, routed: true };
+        let v4 = ops::TaskProjection { j: j, visibility: q4, routed: true };
+        std::test::assert(v4.load(), "a finished Task reads: " + v4.code);
+        let done = v4.task_of("p1");
+        std::test::assert_eq_str(done.state, "done", "done");
+        std::test::assert_eq_str(done.result, "by cy: notes published", "with how it ended");
+    }
+    // An update needs an open Task, an author and text; anything else makes
+    // the read refuse the history rather than guess.
+    fn refused(body: String, after_done: Bool, why: String) {
+        let j = dna::MemJournal { };
+        self.open(j);
+        if after_done { self.append(j, "task.done", "p1", "by ada: done"); }
+        self.append(j, "task.noted", "p1", body);
+        let q = ops::Queries { j: j, routed: true };
+        let v = ops::TaskProjection { j: j, visibility: q, routed: true };
+        std::test::assert(!v.load() && v.code == "task_source_invalid", why + ": " + v.code);
+    }
+}
+
+fn main() {
+    let cases = PositionTaskCases { };
+    cases.lifecycle();
+    cases.refused("{\"by\":\"bo\",\"text\":\"late\"}", true, "an update on a finished Task");
+    cases.refused("{\"by\":\"\",\"text\":\"who?\"}", false, "an update with no author");
+    cases.refused("{\"by\":\"bo\",\"text\":\"\"}", false, "an update with no text");
+    cases.refused("not json", false, "an update that is not an object");
+    eprintln("position task cases passed");
+}

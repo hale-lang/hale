@@ -63,6 +63,10 @@ const S = {
   app: null, record: null, principal: null, reads: {}, calls: new Set(),
   index: null, knowledge: null, reviews: null, practices: null, tasks: null,
   errors: {}, route: { tab: "org", id: "" },
+  // who is signed in, as the Tasks read says: the person, the positions
+  // they hold and whether they hold the Board; the board shows their Tasks
+  // unless they ask for everyone's
+  seat: { me: "", positions: [], board: false }, everyone: false,
 };
 
 // `#/<tab>[/<id>][?id=<id>&…]`: the id in the path, or as a query (a
@@ -177,7 +181,10 @@ async function loadAll() {
 // reaches the Ledger.
 async function readTasks() {
   const t = await command(S.app, "Tasks", { limit: 200 });
-  if (t && t.ok) return parseList(t.tasks);
+  if (t && t.ok) {
+    S.seat = { me: t.me || "", positions: String(t.my_positions || "").split(" ").filter(Boolean), board: !!t.board };
+    return parseList(t.tasks);
+  }
   throw new ReadError(200, (t && t.code) || (t && t.refusal && t.refusal.kind) || "tasks_refused", (t && (t.why || (t.refusal && t.refusal.reason))) || "");
 }
 
@@ -331,7 +338,7 @@ function renderOrg(main) {
   const node = org.byId.get(current);
   if (!node) {
     insp.append(el("h2", {}, "Select a position"), el("p", { class: "note" }, "A position is a seat in the organization: who holds it and what it is responsible for. Click one in the chart."));
-    if (S.calls.has("PositionOpen")) insp.append(openPositionForm(org));
+    if (S.calls.has("BatchApply")) insp.append(openPositionForm(org));
   } else if (node.kind === "part") {
     insp.append(el("h2", {}, node.name), el("p", { class: "note" }, "A part of the organization its positions sit under."));
   } else {
@@ -354,15 +361,22 @@ function positionInspector(n, org) {
   wrap.append(dl);
   if (n.text && !isDefaultText(n)) wrap.append(el("p", { class: "text" }, n.text));
   if (n.mandate.node) wrap.append(el("p", { class: "text" }, n.mandate.node.text), el("p", { class: "note mono" }, n.mandate.node.name, " · ", n.mandate.node.id.slice(0, 19)));
-  const reviews = (S.reviews || []).filter(r => r.state === "pending" && (r.question || "").includes("`" + n.name + "`"));
+  const reviews = (S.reviews || []).filter(r => r.state === "pending" && (r.id === n.review || names(r.question || "", n.name)));
   if (reviews.length) wrap.append(el("h3", {}, "waiting for approval"), el("ul", {}, reviews.map(r => el("li", {}, el("a", { href: href("board", r.id) }, r.question)))));
-  if (S.calls.has("HoldFill")) wrap.append(fillForm(n));
+  if (S.calls.has("BatchApply")) wrap.append(fillForm(n));
   if (S.calls.has("BatchApply") && n.state !== "proposed") {
     wrap.append(amendForm(n));
     if (n.id !== "position:board") wrap.append(moveForm(n, org), closeForm(n));
   }
-  if (S.calls.has("PositionOpen")) wrap.append(openPositionForm(org, n));
+  if (S.calls.has("BatchApply") && n.state !== "proposed") wrap.append(openPositionForm(org, n));
   return wrap;
+}
+
+// Whether a Review's question names the position `name`: a word of it, as
+// a batch's question names each step's positions, or in backticks.
+function names(q, name) {
+  if (q.includes("`" + name + "`")) return true;
+  return q.split(/[\s,:()]+/).includes(name);
 }
 
 // The chart drawn as a graph: one node per position, part and child
@@ -501,51 +515,85 @@ function closeForm(n) {
   });
 }
 
-function fillForm(n) {
-  const holder = el("input", { name: "holder", placeholder: "a person the record knows", required: true });
-  const out = el("div", {});
-  const form = el("form", { class: "act", onsubmit: async ev => {
-    ev.preventDefault();
-    out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
-    try {
-      const reply = await command(S.app, "HoldFill", { request_id: requestId(), record_head: S.record.record_head, position: n.id, holder: holder.value.trim() });
-      const refusal = await settled(reply, `proposed ${holder.value.trim()} holding ${n.name}; the Board ratifies it`);
-      if (refusal) out.replaceChildren(refusal);
-    } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
-  } },
-    el("h3", {}, "Assign someone"),
-    el("label", {}, "person", holder),
-    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Submit for approval")),
-    out,
-  );
-  return form;
+// A chart change submitted as one batch, which waits for approval as one
+// Review: shown at once in the chart (dashed) and under In review.
+async function submitBatch(out, steps, said) {
+  out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
+  try {
+    const reply = await command(S.app, "BatchApply", { request_id: requestId(), record_head: S.record.record_head, steps, pack: "" });
+    const refusal = await settled(reply, said);
+    if (refusal) out.replaceChildren(refusal);
+    else follow();
+  } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
 }
 
-function openPositionForm(org, under) {
-  const name = el("input", { name: "position", placeholder: under ? under.name + "/…" : "team/role", required: true, value: under ? under.name + "/" : "" });
-  const text = el("input", { name: "text", placeholder: "what this position is for, one line" });
-  const mandate = el("textarea", { name: "mandate", placeholder: "Decides: …  May not: …  Cites: …  Escalates: …", required: true });
+function fillForm(n) {
+  const holder = el("input", { name: "holder", list: "fill-people", placeholder: "who holds it: a person or an agent", required: true });
   const out = el("div", {});
-  return el("form", { class: "act", onsubmit: async ev => {
+  return el("form", { class: "act", onsubmit: ev => {
     ev.preventDefault();
-    out.replaceChildren(el("div", { class: "receipt" }, "submitting…"));
-    try {
-      const reply = await command(S.app, "PositionOpen", {
-        request_id: requestId(), record_head: S.record.record_head,
-        position: "position:" + name.value.trim(), text: text.value.trim(), mandate: mandate.value.trim(),
-        under: under ? under.id : "",
-      });
-      const refusal = await settled(reply, `proposed opening ${name.value.trim()} with its mandate; the Board ratifies both`);
-      if (refusal) out.replaceChildren(refusal);
-    } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
+    const who = holder.value.trim();
+    submitBatch(out, `fill ${n.id} ${who}\n`, `${who} holding ${n.name} is waiting for approval`);
   } },
-    el("h3", {}, under ? "Add a position under " + under.name : "Add a position"),
-    el("label", {}, "name", name),
-    el("label", {}, "description", text),
-    el("label", {}, "mandate", mandate),
+    el("h3", {}, "Assign someone"),
+    el("label", {}, "holder", holder), peopleList("fill-people"),
     el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Submit for approval")),
     out,
   );
+}
+
+// A new position: its name, what it sits under, one line on what it is for
+// (its mandate) and, optionally, who holds it; one batch, one approval.
+function openPositionForm(org, under) {
+  const name = el("input", { name: "position", placeholder: "e.g. backend", required: true });
+  const parents = statedPositions(org);
+  const sel = el("select", { name: "under" }, el("option", { value: "" }, "the top"), ...parents.map(p => el("option", { value: p.id }, p.name)));
+  if (under) for (const o of sel.options) if (o.value === under.id) o.selected = true;
+  const text = el("input", { name: "text", placeholder: "what it is for, one line", required: true });
+  const holder = el("input", { name: "holder", list: "open-people", placeholder: "optional: a person or an agent" });
+  const out = el("div", {});
+  return el("form", { class: "act", "aria-label": "Add a position", onsubmit: ev => {
+    ev.preventDefault();
+    const n = name.value.trim().replace(/^position:/, "");
+    const who = holder.value.trim();
+    const steps = `open ${n}${sel.value ? " under " + sel.value : ""} | ${text.value.trim()}\n` + (who ? `fill ${n} ${who}\n` : "");
+    submitBatch(out, steps, `${n}${who ? " held by " + who : ""} is waiting for approval`);
+  } },
+    el("h3", {}, "Add a position"),
+    el("label", {}, "name", name),
+    el("label", {}, "sits under", sel),
+    el("label", {}, "what it is for", text),
+    el("label", {}, "held by", holder), peopleList("open-people"),
+    el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Submit for approval")),
+    out,
+  );
+}
+
+// After a change the organization settles in its own time (a Review
+// approved is applied by the organization, not the head): read the chart,
+// the Reviews and the Tasks again every 2 s for a minute, drawing the
+// screen again when what they say changed.
+let following = 0;
+function follow() {
+  const mine = ++following;
+  const seen = () => JSON.stringify([S.org && S.org.positions, (S.reviews || []).map(r => r.id + r.state)]);
+  let last = seen(), n = 0;
+  const tick = async () => {
+    if (mine !== following || ++n > 30) return;
+    await Promise.all([
+      command(S.app, "Org", { limit: 500 }).then(x => { if (x && x.ok) S.org = x; }, () => {}),
+      read(S.app, "dna/reviews?limit=100").then(x => { S.reviews = x.data.items; }, () => {}),
+    ]);
+    const now = seen();
+    if (now !== last && mine === following) {
+      last = now;
+      // a form someone is typing in is not redrawn under them
+      const typing = document.activeElement && ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName) && document.activeElement.value;
+      if (!typing) render();
+    }
+    setTimeout(tick, 2000);
+  };
+  setTimeout(tick, 2000);
 }
 
 // A write that landed moves the record: read it again so every later
@@ -578,7 +626,7 @@ function receiptWhy(reply) {
 
 function renderBoard(main) {
   const reviews = S.reviews || [];
-  const tasks = S.tasks || [];
+  const tasks = (S.tasks || []).filter(t => S.everyone || mineTask(t));
   // The lanes a person expects of a board. The record's words map onto
   // them: a Task handed to nobody is backlog, handed to someone is to do,
   // one its assignee took, in a transfer or waiting on something is in progress, a Review
@@ -611,8 +659,11 @@ function renderBoard(main) {
   else if (task) insp.append(taskInspector(task));
   else insp.append(el("h2", {}, "Select a card"), el("p", { class: "note" }, "A card is a task someone is doing, or a change waiting for approval. Click one to see it."));
   // the lanes take the width; the selected card opens beneath them
+  const toggle = el("div", { class: "seg", role: "group", "aria-label": "Whose tasks" },
+    el("button", { type: "button", "aria-pressed": String(!S.everyone), onclick: () => { S.everyone = false; render(); } }, "My tasks"),
+    el("button", { type: "button", "aria-pressed": String(S.everyone), onclick: () => { S.everyone = true; render(); } }, "Everyone's"));
   main.append(el("div", { class: "board-screen" },
-    S.calls.has("TaskCreate") ? newTaskForm() : "",
+    el("div", { class: "board-bar" }, S.calls.has("TaskOpen") ? newTaskForm() : "", toggle),
     el("div", { class: "board-wrap" }, board), insp));
 }
 
@@ -648,6 +699,7 @@ function approveAll(pending) {
       ...refused.map(x => el("div", { class: "note mono" }, x))) };
     try { await loadAll(); } catch (e) { /* the next render says what could not be read */ }
     render();
+    follow();
   }
   return wrap;
 }
@@ -670,8 +722,42 @@ function reviewCard(r) {
 function taskCard(t) {
   return el("li", {}, el("a", { class: "card", href: href("board", t.id), "aria-current": t.id === S.route.id ? "true" : null },
     el("span", { class: "title" }, t.outcome || t.id),
-    el("span", { class: "meta" }, t.assignee ? (t.taken ? "taken by " : "assigned to ") + t.assignee : "nobody yet", " · ", t.state, t.waiting ? " · waiting on " + t.waiting : ""),
+    el("span", { class: "meta" }, taskWho(t), t.waiting ? " · waiting on " + t.waiting : "", isOpen(t) ? "" : " · " + t.state),
   ));
+}
+
+// ---- tasks: tickets for the chart's positions ---------------------------
+
+const posName = id => String(id || "").replace(/^position:/, "");
+const isPosition = id => String(id || "").startsWith("position:");
+function isOpen(t) { return !["done", "delivered", "decided", "refused", "retired", "failed", "cancelled", "declined", "timeout", "escalated"].includes(t.state); }
+function iHold(id) { return S.seat.board || S.seat.positions.includes(id); }
+// Mine: for a position I hold, or with me working on it.
+function mineTask(t) {
+  const me = S.seat.me;
+  return (me && t.assignee === me) || S.seat.positions.includes(t.assignee) || S.seat.positions.includes(t.position);
+}
+// Who a Task is for and who is on it, in words.
+function taskWho(t) {
+  const pos = t.position ? posName(t.position) : "";
+  if (!t.assignee) return "nobody yet";
+  if (isPosition(t.assignee)) return "for " + posName(t.assignee);
+  return (pos ? "for " + pos + " · " : "") + t.assignee + (!isOpen(t) ? "" : t.taken ? " is on it" : "");
+}
+function canTake(t) {
+  return isOpen(t) && t.state === "handed" && t.assignee !== S.seat.me && (!t.assignee || (isPosition(t.assignee) && iHold(t.assignee)));
+}
+function canWork(t) {
+  const me = S.seat.me;
+  return isOpen(t) && t.state === "handed" && !!me && (t.assignee === me || t.opened_by === me || iHold(t.position) || iHold(t.assignee));
+}
+function canFinish(t) {
+  return isOpen(t) && t.state === "handed" && (!t.assignee || t.assignee === S.seat.me || (isPosition(t.assignee) && iHold(t.assignee)));
+}
+// The positions a Task can go to: every stated one, with who holds it.
+function positionOptions(selected, except) {
+  return statedPositions(organization()).filter(p => p.id !== except).map(p => el("option", { value: p.id, selected: p.id === selected ? "" : null },
+    p.name + (p.holders.length ? " (" + p.holders.join(", ") + ")" : " (vacant)")));
 }
 
 function reviewInspector(r) {
@@ -699,6 +785,7 @@ function verdictForm(r) {
       const reply = await command(S.app, "ReviewVerdict", { request_id: requestId(), review_id: r.id, subject_digest: r.subject_digest, verdict: choice.value, comment: comment.value.trim() });
       const refusal = await settled(reply, `${choice.value} recorded on ${r.id}`);
       if (refusal) out.replaceChildren(refusal);
+      else follow();
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
     el("h3", {}, "Your decision"),
@@ -719,62 +806,79 @@ function knownPeople() {
 }
 function peopleList(id) { return el("datalist", { id }, knownPeople().map(p => el("option", { value: p }))); }
 
-// A new task, from the board: what it is for and who gets it (the record
-// hands every task to someone; the signed-in person by default).
+// A new task, from the board: what needs doing and the position whose
+// holder does it, mine by default.
 function newTaskForm() {
   const outcome = el("input", { name: "outcome", placeholder: "what needs doing, in a line", required: true, "aria-label": "What needs doing" });
-  const to = el("input", { name: "to", list: "task-people", placeholder: "who does it", required: true, value: (S.principal && S.principal.name) || "", "aria-label": "Assign to" });
+  const position = el("select", { name: "position", required: true, "aria-label": "For position" }, ...positionOptions(S.seat.positions.find(p => p !== "position:board") || S.seat.positions[0] || ""));
   const out = el("div", {});
   const form = el("form", { class: "new-task", "aria-label": "New task", onsubmit: async ev => {
     ev.preventDefault();
-    out.replaceChildren(el("div", { class: "receipt" }, "creating…"));
+    out.replaceChildren(el("div", { class: "receipt" }, "adding…"));
     try {
-      const reply = await command(S.app, "TaskCreate", { request_id: requestId(), record_head: S.record.record_head, outcome: outcome.value.trim(), to: to.value.trim(), kind: "" });
+      const reply = await command(S.app, "TaskOpen", { request_id: requestId(), outcome: outcome.value.trim(), position: position.value });
       if (!reply || reply.ok === false) { out.replaceChildren(receiptCard(reply, "")); return; }
-      S.receipt = { tab: "board", id: "", card: el("div", { class: "receipt" }, "created: ", outcome.value.trim(), " → ", to.value.trim()) };
-      await loadAll(); render();
+      S.receipt = { tab: "board", id: reply.task_id, card: el("div", { class: "receipt" }, "added for ", posName(position.value), ": ", outcome.value.trim()) };
+      await loadAll();
+      if (!S.everyone && !(S.tasks || []).some(t => t.id === reply.task_id && mineTask(t))) S.everyone = true;
+      location.hash = href("board", reply.task_id);
+      render();
     } catch (e) { out.replaceChildren(el("div", { class: "receipt refused" }, errorText(e))); }
   } },
-    outcome, to, peopleList("task-people"),
-    el("button", { class: "primary", type: "submit" }, "Create task"),
+    outcome, position,
+    el("button", { class: "primary", type: "submit" }, "Add task"),
     out,
   );
   return form;
 }
 
 function taskInspector(t) {
-  const me = S.principal && S.principal.name;
   const wrap = el("div", {}, el("h2", {}, t.outcome || t.id));
   wrap.append(el("dl", {},
-    el("dt", {}, "state"), el("dd", {}, el("span", { class: "badge" }, t.state), t.taken ? " · taken" : "", t.waiting ? " · waiting on " + t.waiting : ""),
-    el("dt", {}, "assigned to"), el("dd", {}, t.assignee || el("span", { class: "note" }, "nobody")),
+    el("dt", {}, "state"), el("dd", {}, el("span", { class: "badge" }, isOpen(t) ? (t.taken ? "in progress" : "to do") : t.state), t.waiting ? " · waiting on " + t.waiting : ""),
+    t.position || isPosition(t.assignee) ? el("dt", {}, "for") : "", t.position || isPosition(t.assignee) ? el("dd", {}, posName(t.position || t.assignee)) : "",
+    t.assignee && !isPosition(t.assignee) ? el("dt", {}, "working on it") : "", t.assignee && !isPosition(t.assignee) ? el("dd", {}, t.assignee) : "",
+    t.opened_by ? el("dt", {}, "opened by") : "", t.opened_by ? el("dd", {}, t.opened_by) : "",
+    t.result ? el("dt", {}, "result") : "", t.result ? el("dd", { class: "text" }, t.result.replace(/^by [^:]*: /, "")) : "",
     t.obligation ? el("dt", {}, "done when") : "", t.obligation ? el("dd", {}, t.obligation, t.evidence_required ? " · evidence required" : "") : "",
     el("dt", {}, "task"), el("dd", { class: "mono" }, t.id),
   ));
-  const acts = el("div", { class: "actions" });
-  // taking: an unassigned task is taken; one assigned to someone else is
-  // reassigned to the signed-in person (the record refuses a take of it)
-  const open = !["done", "delivered"].includes(t.state);
-  if (open && !t.assignee && S.calls.has("TaskTake")) acts.append(el("button", { onclick: () => act(wrap, "TaskTake", { task_id: t.id }, "taken") }, "Take this task"));
-  else if (open && t.assignee && t.assignee !== me && me && S.calls.has("TaskReassign") && t.reassignment_supported && t.assignment_digest)
-    acts.append(el("button", { onclick: () => act(wrap, "TaskReassign", { request_id: requestId(), task_id: t.id, assignment_digest: t.assignment_digest, assignee: t.assignee, to: me }, "taken over") }, "Take this task"));
-  if (S.calls.has("TaskReassign") && t.reassignment_supported && t.assignment_digest && !["done", "delivered"].includes(t.state)) {
-    const to = el("input", { list: "hand-people", placeholder: "hand to…", "aria-label": "Hand to" });
-    acts.append(to, peopleList("hand-people"), el("button", { onclick: () => {
-      if (!to.value.trim()) return;
-      act(wrap, "TaskReassign", { request_id: requestId(), task_id: t.id, assignment_digest: t.assignment_digest, assignee: t.assignee || "", to: to.value.trim() }, "handed to " + to.value.trim());
-    } }, "Hand off"));
+  if (canTake(t) && S.calls.has("TaskTake")) {
+    wrap.append(el("div", { class: "actions" }, el("button", { class: "primary", type: "button", onclick: () => act(wrap, "TaskTake", { task_id: t.id }, "you are on it") }, "Take it")));
   }
-  if (S.calls.has("TaskDone") && (!t.assignee || t.assignee === (S.principal && S.principal.name))) {
-    const text = el("input", { placeholder: "what was done, in a line" });
-    acts.append(text, el("button", { class: "primary", onclick: () => act(wrap, "TaskDone", { task_id: t.id, text: text.value.trim() }, "marked done") }, "Mark done"));
+  if (canWork(t) && S.calls.has("TaskNote")) {
+    const text = el("textarea", { name: "update", placeholder: "what happened, a link, what is next", "aria-label": "Update" });
+    wrap.append(el("form", { class: "act", "aria-label": "Post an update", onsubmit: ev => {
+      ev.preventDefault();
+      if (text.value.trim()) act(wrap, "TaskNote", { task_id: t.id, text: text.value.trim() }, "update posted");
+    } }, el("h3", {}, "Post an update"), text, el("div", { class: "actions" }, el("button", { type: "submit" }, "Post update"))));
   }
-  wrap.append(acts);
+  if (canWork(t) && S.calls.has("TaskHand") && t.reassignment_supported) {
+    const to = el("select", { name: "to", "aria-label": "Hand to" }, ...positionOptions("", t.position || t.assignee));
+    wrap.append(el("form", { class: "act", "aria-label": "Hand to another position", onsubmit: ev => {
+      ev.preventDefault();
+      if (to.value) act(wrap, "TaskHand", { task_id: t.id, position: to.value }, "handed to " + posName(to.value));
+    } }, el("h3", {}, "Hand to another position"), to, el("div", { class: "actions" }, el("button", { type: "submit" }, "Hand it over"))));
+  }
+  if (canFinish(t) && S.calls.has("TaskDone")) {
+    const text = el("input", { name: "done", placeholder: "what was done (optional)", "aria-label": "What was done" });
+    wrap.append(el("form", { class: "act", "aria-label": "Mark done", onsubmit: ev => {
+      ev.preventDefault();
+      act(wrap, "TaskDone", { task_id: t.id, text: text.value.trim() || "done" }, "marked done");
+    } }, el("h3", {}, "Finish"), text, el("div", { class: "actions" }, el("button", { class: "primary", type: "submit" }, "Mark done"))));
+  }
   const hist = Array.isArray(t.history) ? t.history : [];
-  if (hist.length) wrap.append(el("h3", {}, "history"), el("ul", { class: "history" }, hist.map(h => el("li", {},
-    el("span", { class: "mono" }, (h.kind || "").replace(/^task\./, "")), " ",
-    h.from && h.to && h.from !== h.to ? `${h.from} → ${h.to}` : (h.to || h.from || ""), h.by ? el("span", { class: "note" }, " by " + h.by) : ""))));
+  if (hist.length) wrap.append(el("h3", {}, "history"), el("ul", { class: "history" }, hist.map((h, i) => el("li", {}, historyLine(h, i)))));
   return wrap;
+}
+
+// One line of a Task's history, in words.
+function historyLine(h, i) {
+  const by = h.by ? el("span", { class: "note" }, " · " + h.by) : "";
+  if (h.kind === "task.noted") return el("span", {}, el("span", { class: "update" }, h.text || ""), by);
+  if (h.kind === "task.reassigned") return el("span", {}, h.to === h.by ? h.to + " took it" : "given to " + h.to, h.to === h.by ? "" : by);
+  if (h.kind === "task.handed") return el("span", {}, (i === 0 ? "opened for " : "handed to ") + (isPosition(h.to) ? posName(h.to) : h.to || "nobody"), by);
+  return el("span", {}, (h.kind || "").replace(/^task\./, ""), " ", h.to || "", by);
 }
 
 async function act(wrap, member, payload, said) {
