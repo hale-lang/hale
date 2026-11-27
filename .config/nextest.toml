@@ -67,15 +67,16 @@ filter = 'binary_id(hale-cli::dna_projects) and test(=dna_head::a_container_outs
 slow-timeout = { period = "60s", terminate-after = 15 }
 
 [[profile.default.overrides]]
-# The seam's burn-down (GH #2111) lowers every program of the corpus,
-# `tests/hale` and `dna/tests` under strict mode, more than 400, in one
-# test: about 300 s on CI (291 s and 304 s on the last two runs), which a
-# loaded runner took past the 8-minute limit above (#2193, a timeout
-# rather than a failure). It gets 15 minutes. `binary_id`, not
+# The seam's check that every program's values have rows (GH #2111;
+# `the_burn_down_only_moves_forward` until #2202 renamed it) lowers every
+# program of the corpus, `tests/hale`, `dna/tests` and the programs Rust
+# tests embed, well over 1000, in one test: past 300 s on CI, which a
+# loaded runner takes past the 8-minute limit above (#2193, #2210: a
+# timeout rather than a failure). It gets 15 minutes. `binary_id`, not
 # `binary(...)`: the parity job runs every binary this file names with
 # `binary(...)` under libtest's threads, and this one has no shared state
 # to put there, only its length.
-filter = 'binary_id(hale-codegen::seam_strict_baseline) and test(=the_burn_down_only_moves_forward)'
+filter = 'binary_id(hale-codegen::seam_strict_baseline) and test(=every_program_s_values_have_rows)'
 slow-timeout = { period = "60s", terminate-after = 15 }
 
 [[profile.default.overrides]]
