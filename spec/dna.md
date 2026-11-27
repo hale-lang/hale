@@ -3334,6 +3334,24 @@ handed Task that names no assignee becomes the caller's, a
 refused `evidence_required` where the bound practice wants evidence, and
 by memory's gate for anyone but the assignee).
 
+A person also opens a Task for a position the chart states, and whoever
+holds that position, a person or an agent, works it, through three more
+rows answering the same shape with the Task's `position`:
+`Commands::open_task` (`{request_id, outcome, position}`: a `task.born`
+whose body is the outcome and a `task.handed` whose `assignee` and
+`position` are the position's id, under an id `p<hex>` drawn from the
+caller and the request, outside the organization's `t<N>`; refused
+`unknown_position` for a position the graph does not state),
+`Commands::note_task` (`{task_id, text}`: a `task.noted` row `{by, text}`,
+1 to 8192 bytes, history only) and `Commands::hand_task` (`{task_id,
+position}`: another `task.handed`, to another stated position). Taking a
+Task handed to a position is the right of whoever holds it
+(`task.reassigned` from the position to them; the Task stays for its
+position), and reporting it done takes it in the same call. An update and a
+hand-off are the assignee's, a holder's of the position the Task is for or
+handed to, the opener's or the Board's, on a handed Task. No organization
+admits such a Task: it is the Ledger's rows and the people who work it.
+
 The completion is judged against what the admission bound — the
 assignee (moved by `task.reassigned`), whether evidence is required,
 which practice — never against a practice in force later: a practice
@@ -4894,7 +4912,23 @@ The live half is memory's, projected from the record by the spine
   publishes and subscribes on all of `heart.<id>.>`, and
   `heart-<id>-node`, the narrower user its nodes connect as, which
   subscribes on `heart.<id>.node.>` and publishes on `heart.<id>.reply.>`
-  and `heart.<id>._INBOX.>`; no JetStream; their passwords the vault
+  and `heart.<id>._INBOX.>`. The two are users of an account of the
+  heart's own on that server, `HEART_<ID>`, beside its organization's,
+  with JetStream enabled, so the heart may keep work queues and its nodes
+  pull from them: the heart also publishes `$JS.API.>` (its streams and
+  their consumers, created, updated, read and deleted; their names are
+  its own to choose), and its nodes `$JS.API.CONSUMER.MSG.NEXT.*.*` (a
+  pull from a consumer the heart made) and `$JS.ACK.>` (ack, nak, term
+  or progress on what they pulled), and subscribe their inbox
+  `heart.<id>._INBOX.>`, where a pull's messages arrive; a node creates,
+  changes, reads or deletes no stream or consumer. JetStream's API is
+  account-wide, and no permission bounds the subjects a stream captures,
+  so the account is the boundary: the heart's `$JS` subjects reach only
+  the streams and consumers it made, never its organization's
+  (`DNA_<ID>`, the exchange's), and no subject crosses between the two
+  accounts. Every heart granted `broker` gets the account and its
+  JetStream, used or not; dropping the organism's account drops the
+  heart account's JetStream data with it. Their passwords the vault
   slots `nats-<org>-heart` and `nats-<org>-heart-node`, drawn with the
   organism's other secrets as every drawn secret is — 32 lowercase hex
   digits, so a password is safe in a JSON document and a URL as it is;

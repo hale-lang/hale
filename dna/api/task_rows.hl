@@ -27,6 +27,12 @@ type TaskRows {
     revision: Int = 0;
     ledger_revision: Int = 0;
     tasks: String = "[]";
+    // who is asking: the person, the positions they hold (space-separated
+    // `position:` ids) and whether they hold the Board, so the board can
+    // show their Tasks and offer what they may do
+    me: String = "";
+    my_positions: String = "";
+    board: Bool = false;
 }
 
 fn task_rows(root: String, limit: Int) -> TaskRows {

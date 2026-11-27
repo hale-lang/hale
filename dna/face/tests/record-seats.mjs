@@ -49,6 +49,14 @@ export function seatRecord(root, env, person, positions) {
     appendRow(root, env, 'graph.edge', holds(position, person), body);
   }
 }
+// Positions the chart states and nobody holds: a place to hand work to.
+export function statePositions(root, env, positions) {
+  for (const position of positions) {
+    const node = 'position:' + position;
+    if (journalText(root).includes(`"kind": "graph.node", "entity": ${JSON.stringify(node)}`)) continue;
+    appendRow(root, env, 'graph.node', node, JSON.stringify({ kind: 'position', name: position }));
+  }
+}
 // GH #1123: who owns what is the graph's — `<node> <holder>` lines, a
 // firm holding a position (`position:org organization:acme`) or a person
 // holding a firm (`organization:acme alice`). Each node an edge names is

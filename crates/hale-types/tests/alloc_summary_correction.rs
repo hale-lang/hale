@@ -471,7 +471,7 @@ fn verdict_changes() {
     // changes.
     pinned(
         "dna/api",
-        4260,
+        4285,
         &[
             "__lib_dna__core___batch__batch_diff",
             "__lib_dna__core___batch__batch_filing",
@@ -655,8 +655,6 @@ fn verdict_changes() {
             "__lib_dna__core___memory_store__Pq::graph_generation",
             "__lib_dna__core___memory_store__Pq::read_graph",
             "__lib_dna__core___record__MemRecord::signer",
-            "__lib_dna__core___roles__HoldsReader::holds_any",
-            "__lib_dna__core___roles__RecordRoles::holds",
             "__lib_dna__core___roles__RecordRoles::member_mapped",
             "__lib_dna__core___roles__RecordRoles::service",
             "__lib_dna__core___roles__RecordRoles::service_mapped",
@@ -891,7 +889,7 @@ fn verdict_changes() {
         &[
             ("once-per-invocation -> ACCUMULATES-UNBOUNDED", 59),
             ("once-per-invocation -> per-iteration-reclaim", 32),
-            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2916),
+            ("per-iteration-reclaim -> ACCUMULATES-UNBOUNDED", 2926),
         ],
         &[
             "__lib_dna__core___batch__PlannedOn::read StructLit(\"__lib_dna__core___journal__Event\") #1 InvokedUnboundedly",
@@ -974,6 +972,13 @@ fn verdict_changes() {
             "__lib_dna__core___batch__batch_review_ids StringConcat #1 InUnboundedLoop",
             "__lib_dna__core___batch__batch_review_ids StringConcat #2 InUnboundedLoop",
             "__lib_dna__core___batch__batch_row StringConcat #1 InvokedUnboundedly",
+            "__lib_dna__core___batch__batch_step_words StringConcat #1 InvokedUnboundedly",
+            "__lib_dna__core___batch__batch_step_words StringConcat #11 InvokedUnboundedly",
+            "__lib_dna__core___batch__batch_step_words StringConcat #14 InvokedUnboundedly",
+            "__lib_dna__core___batch__batch_step_words StringConcat #15 InvokedUnboundedly",
+            "__lib_dna__core___batch__batch_step_words StringConcat #19 InvokedUnboundedly",
+            "__lib_dna__core___batch__batch_step_words StringConcat #4 InvokedUnboundedly",
+            "__lib_dna__core___batch__batch_step_words StringConcat #7 InvokedUnboundedly",
             "__lib_dna__core___batch__batch_usage StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___batch__pack_adopted_steps StringConcat #1 InUnboundedLoop",
             "__lib_dna__core___batch__plan_amend StringConcat #1 InvokedUnboundedly",
@@ -1235,6 +1240,7 @@ fn verdict_changes() {
             "__lib_dna__core___models__digest_of StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___models__model_key_slot StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___nerves__exchange_stream StringConcat #1 InvokedUnboundedly",
+            "__lib_dna__core___nerves__heart_broker_account StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___nerves__heart_broker_base StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___nerves__heart_broker_node_user StringConcat #1 InvokedUnboundedly",
             "__lib_dna__core___nerves__heart_broker_subjects StringConcat #1 InvokedUnboundedly",
