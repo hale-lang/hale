@@ -70,7 +70,11 @@ fn main() {
     let mut ns = [Named { name: base }; 3];
     ns[0].name = "zz";
     ns[2].n = 4;
-    std::test::assert_eq_str(ns[0].name + ns[1].name + ns[2].name, "zzn1n1", "a String field per element");
+    std::test::assert_eq_str(
+        ns[0].name + ns[1].name + ns[2].name,
+        "zzn1n1",
+        "a String field per element",
+    );
     std::test::assert_eq_int(ns[0].n * 100 + ns[1].n * 10 + ns[2].n, 4, "an Int field per element");
     std::test::assert_eq_str(base, "n1", "the String the literal read is unchanged");
 
@@ -115,10 +119,18 @@ fn main() {
     let kept = P { x: 1 };
     let mut viaf = [pass(kept); 2];
     viaf[0].x = 5;
-    std::test::assert_eq_int(kept.x * 10 + viaf[1].x, 11, "a call's place value is copied into each slot");
+    std::test::assert_eq_int(
+        kept.x * 10 + viaf[1].x,
+        11,
+        "a call's place value is copied into each slot",
+    );
     let mut viaif = [if kept.x > 0 { kept } else { P { } }; 2];
     viaif[0].x = 5;
-    std::test::assert_eq_int(kept.x * 10 + viaif[1].x, 11, "an `if`'s place value is copied into each slot");
+    std::test::assert_eq_int(
+        kept.x * 10 + viaif[1].x,
+        11,
+        "an `if`'s place value is copied into each slot",
+    );
 
     // A record field holding a repeat.
     let mut b = Board { cells: [P { x: 2 }; 3] };
