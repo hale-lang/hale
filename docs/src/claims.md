@@ -181,7 +181,7 @@ A `group` names a set of declared program elements (loci, free functions, and im
 | `alias::Name` | A declaration imported under `import "..." as alias;`, canonicalized through the compiler's symbol table. |
 | `alias::*` | Every locus and free function declared in the seed imported as `alias` (types, topics, and constants are ignored). Single-level and trailing-only (`a::*::b` and `a::b::*` are rejected). |
 | `role R` | Every API surface handler method callable by a principal holding role `R` (see [Role groups](#role-groups)). |
-| `std::m::*` | Every locus and free function in the Hale-source stdlib module `std::m` (e.g., `std::log::*`). Native-lowered stdlib modules (`std::math`) are rejected. Allowed only as a `forbid reaches` target or `avoiding` gate. |
+| `std::m::*` | Every locus and free function in the Hale-source stdlib module `std::m` (e.g., `std::log::*`), including those of a stdlib file appended only to a program that uses it (`std::io::tcp::Listener`, `std::http::BodyReader`). Native-lowered stdlib modules (`std::math`) are rejected. Allowed only as a `forbid reaches` target or `avoiding` gate. |
 | `program` *(built-in)* | Implicitly available in every claim without declaration: includes every locus and free function in the closing entrypoint's own seed (excluding imports). Redeclaring `group program` is an error. |
 
 ### Function-Grained Projection and Compile-Time Guards
