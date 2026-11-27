@@ -54,6 +54,27 @@ ORG_3F2A9C0B7D11: {
 | `reflexes` | Health daemon (`dna/reflexes`) | `nats-<org>-reflexes` | Publish on `<org>.app.reflexes.>` only; cannot read any stream |
 | `app-<name>` | Attached application (`<name>`) | `nats-<org>-app-<name>` | Publish on `<org>.app.<name>.>` only; cannot read any DNA subjects |
 
+### A heart's broker account
+
+A Hale heart that declares the `broker` heart role (`[dna] needs = [..., "broker"]`) gets two more users, `heart-<key>` for the heart and `heart-<key>-node` for its nodes, confined to the subject space `heart.<key>.>`. They are not in the organization's account: they are an account of the heart's own, `HEART_<KEY>`, written after it in the same file, with JetStream of its own. JetStream's API reaches every stream of the account it is called in, and a stream may capture subjects its creator cannot read, so the heart could not be given it beside DNA's own stream; in an account of its own, `$JS.API.>` reaches only the streams and consumers the heart made. That is what lets a heart run work queues (voice's request routing is one):
+
+```text
+HEART_3F2A9C0B7D11: {
+  jetstream: enabled
+  users = [
+      { user: heart-3f2a9c0b7d11, password: $NATS_3F2A9C0B7D11_HEART_PASSWORD,
+        permissions: { publish: ["heart.3f2a9c0b7d11.>", "$JS.API.>"], subscribe: ["heart.3f2a9c0b7d11.>"] } }
+      { user: heart-3f2a9c0b7d11-node, password: $NATS_3F2A9C0B7D11_HEART_NODE_PASSWORD,
+        permissions: { publish: ["heart.3f2a9c0b7d11.reply.>", "heart.3f2a9c0b7d11._INBOX.>", "$JS.API.CONSUMER.MSG.NEXT.*.*", "$JS.ACK.>"], subscribe: ["heart.3f2a9c0b7d11.node.>", "heart.3f2a9c0b7d11._INBOX.>"] } }
+  ]
+}
+```
+
+| NATS User | Held By | Vault Slot | Permitted Operations |
+| --- | --- | --- | --- |
+| `heart-<key>` | The heart | `nats-<org>-heart` | Publish and subscribe on `heart.<key>.>`; the whole JetStream API of its own account (its streams and consumers) |
+| `heart-<key>-node` | The heart's nodes | `nats-<org>-heart-node` | Subscribe to `heart.<key>.node.>` and its inbox `heart.<key>._INBOX.>`; publish `heart.<key>.reply.>` and `heart.<key>._INBOX.>`; pull from a consumer the heart made and ack what it pulled; never create, read or delete a stream or consumer |
+
 `hale habitat graft` generates random passwords for all NATS roles in the vault, and `hale dna upgrade` rotates them and restarts the `nerves-<id>` container so the updated credentials take effect immediately. When a component connects, pond's NATS client reads the password directly from its vault slot when writing the `CONNECT` frame—passwords never appear in URLs, CLI arguments, or environment variables.
 
 The `app-<name>` account is created when `application.attached` is recorded and revoked when you run `hale dna application remove` ([The Heart and the Body](./heart.md)). When `hale habitat graft <dir> --attach` is run on a repository root that uses Docker Compose services, it provisions `app-<project>` for those services. No application may be named `reflexes`, as `<org>.app.reflexes.>` is reserved for the reflex daemon.

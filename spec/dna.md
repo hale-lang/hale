@@ -4912,7 +4912,23 @@ The live half is memory's, projected from the record by the spine
   publishes and subscribes on all of `heart.<id>.>`, and
   `heart-<id>-node`, the narrower user its nodes connect as, which
   subscribes on `heart.<id>.node.>` and publishes on `heart.<id>.reply.>`
-  and `heart.<id>._INBOX.>`; no JetStream; their passwords the vault
+  and `heart.<id>._INBOX.>`. The two are users of an account of the
+  heart's own on that server, `HEART_<ID>`, beside its organization's,
+  with JetStream enabled, so the heart may keep work queues and its nodes
+  pull from them: the heart also publishes `$JS.API.>` (its streams and
+  their consumers, created, updated, read and deleted; their names are
+  its own to choose), and its nodes `$JS.API.CONSUMER.MSG.NEXT.*.*` (a
+  pull from a consumer the heart made) and `$JS.ACK.>` (ack, nak, term
+  or progress on what they pulled), and subscribe their inbox
+  `heart.<id>._INBOX.>`, where a pull's messages arrive; a node creates,
+  changes, reads or deletes no stream or consumer. JetStream's API is
+  account-wide, and no permission bounds the subjects a stream captures,
+  so the account is the boundary: the heart's `$JS` subjects reach only
+  the streams and consumers it made, never its organization's
+  (`DNA_<ID>`, the exchange's), and no subject crosses between the two
+  accounts. Every heart granted `broker` gets the account and its
+  JetStream, used or not; dropping the organism's account drops the
+  heart account's JetStream data with it. Their passwords the vault
   slots `nats-<org>-heart` and `nats-<org>-heart-node`, drawn with the
   organism's other secrets as every drawn secret is — 32 lowercase hex
   digits, so a password is safe in a JSON document and a URL as it is;
