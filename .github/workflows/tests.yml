@@ -404,6 +404,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -503,6 +506,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -705,6 +711,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -1164,6 +1173,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -1352,6 +1364,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -1634,6 +1649,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -1775,6 +1793,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -1892,6 +1913,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -1983,6 +2007,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
@@ -2119,6 +2146,9 @@ jobs:
             if [ -f "$f" ]; then sudo sed -i -E 's#mirror\+file:/etc/apt/apt-mirrors\.txt#http://archive.ubuntu.com/ubuntu/#; s#https?://azure\.archive\.ubuntu\.com/ubuntu/?#http://archive.ubuntu.com/ubuntu/#' "$f"; fi
           done
           echo 'Acquire::Retries "5";' | sudo tee /etc/apt/apt.conf.d/80-retries >/dev/null
+          # packages.microsoft.com answers 403 at times and fails the whole update;
+          # nothing these jobs install comes from it
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.*
           sudo apt-get update
           sudo apt-get install -y \
             llvm-18-dev libpolly-18-dev libzstd-dev \
