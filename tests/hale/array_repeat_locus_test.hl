@@ -1,0 +1,102 @@
+// GH #2208 — an array-repeat literal of a locus, `[L { }; N]`, builds N
+// loci, one per element.
+//
+// The repeat lowered its element once and stored that one value in
+// every slot, so `[Counter { }; 3]` was ONE Counter seen three times:
+// bumping element 0 changed all three, one birth ran, and the owner
+// adopted the same locus three times. A locus has identity, so the
+// repeat builds one per element, as the longhand `[Counter { },
+// Counter { }, Counter { }]` does — each with its own birth, state,
+// owner and teardown (spec/types.md § Arrays). A plain value is still
+// evaluated once and copied.
+
+locus Counter {
+    params { n: Int = 0; born: Int = 0; log: String = ""; }
+    birth() { self.born = self.born + 1; }
+    fn bump() { self.n = self.n + 1; }
+    dissolve() {
+        if self.log != "" {
+            std::io::fs::write_file_append(
+                self.log,
+                if self.n == 0 { "0" } else { "1" },
+            ) or discard;
+        }
+    }
+}
+
+// The issue's program: a field defaulted to a repeat.
+locus Issue {
+    params { cs: [Counter; 3] = [Counter { }; 3]; }
+    fn go() -> String {
+        self.cs[0].bump();
+        return "c0=" + to_string(self.cs[0].n)
+            + " c1=" + to_string(self.cs[1].n)
+            + " c2=" + to_string(self.cs[2].n);
+    }
+    fn births() -> Int { return self.cs[0].born + self.cs[1].born + self.cs[2].born; }
+}
+
+// A holder whose children are built by a repeat, in a field and in a
+// method body: each one is a child of its own, accepted once.
+locus Holder {
+    params {
+        log: String = "";
+        cs: [Counter; 3] = [Counter { }; 3];
+        accepted: Int = 0;
+    }
+    accept(c: Counter) { self.accepted = self.accepted + 1; }
+    fn spawn(k: Int) -> String {
+        let ls = [Counter { log: self.log }; 4];
+        ls[k].bump();
+        ls[k].bump();
+        return to_string(ls[0].n) + to_string(ls[1].n)
+            + to_string(ls[2].n) + to_string(ls[3].n);
+    }
+}
+
+// A fn handing back a repeat of fresh loci: the caller owns N of them.
+fn fresh(log: String) -> [Counter; 2] {
+    return [Counter { log: log }; 2];
+}
+
+fn torn_down(log: String) {
+    let h = Holder { log: log, cs: [Counter { log: log }; 3] };
+    h.cs[1].bump();
+    std::test::assert_eq_int(h.cs[0].n + h.cs[2].n, 0, "an override's repeat: three loci");
+}
+
+fn handed_back(log: String) {
+    let pair = fresh(log);
+    pair[0].bump();
+    std::test::assert_eq_int(pair[1].n, 0, "a returned repeat: two loci");
+}
+
+fn main() {
+    let i = Issue { };
+    std::test::assert_eq_str(i.go(), "c0=1 c1=0 c2=0", "bumping element 0 leaves 1 and 2 alone");
+    std::test::assert_eq_int(i.births(), 3, "each element was born once");
+
+    let h = Holder { };
+    std::test::assert_eq_str(h.spawn(2), "0020", "a body's repeat: four loci");
+    std::test::assert_eq_int(h.accepted, 4, "four children born in the holder, each accepted once");
+
+    let dir = std::io::fs::mktemp("/tmp/hale-2208-", "") or "";
+    std::test::assert(dir != "", "a scratch path");
+
+    // three children, each torn down with its own state
+    let log = dir + ".holder";
+    torn_down(log);
+    let got = std::io::fs::read_file(log) or "";
+    std::test::assert_eq_int(len(got), 3, "three teardowns, one per element: " + got);
+    std::test::assert_eq_str(std::str::replace(got, "0", ""), "1", "one of them bumped: " + got);
+
+    let log2 = dir + ".fresh";
+    handed_back(log2);
+    let got2 = std::io::fs::read_file(log2) or "";
+    std::test::assert_eq_int(len(got2), 2, "two teardowns: " + got2);
+    std::test::assert_eq_str(std::str::replace(got2, "0", ""), "1", "one of them bumped: " + got2);
+
+    std::io::fs::unlink(log) or discard;
+    std::io::fs::unlink(log2) or discard;
+    std::io::fs::unlink(dir) or discard;
+}

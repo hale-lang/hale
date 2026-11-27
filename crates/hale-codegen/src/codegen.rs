@@ -26201,6 +26201,56 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         }
     }
 
+    /// GH #2208: an element of `[e; N]` that is, or holds, a locus — a
+    /// value with identity, which N slots cannot share. A `type` cannot
+    /// hold one (the check refuses it), so records, enums and text stay
+    /// out; an interface value is a locus behind a fat pointer.
+    pub(crate) fn repeat_elem_has_identity(t: &CodegenTy) -> bool {
+        match t {
+            CodegenTy::LocusRef(_) | CodegenTy::Interface(_) => true,
+            CodegenTy::Array(e, _) | CodegenTy::Bounded(e, _) => Self::repeat_elem_has_identity(e),
+            CodegenTy::Tuple(ts) => ts.iter().any(Self::repeat_elem_has_identity),
+            _ => false,
+        }
+    }
+
+    /// GH #2208: `[e; N]` whose element has identity: `e` is lowered once
+    /// per element, as the longhand `[e, e, …]` lowers it, so each slot
+    /// holds its own locus — its own birth, state, owner adoption and
+    /// teardown. `first` is the element already lowered (slot 0); `each`
+    /// lowers one more. The storage is the array literal's.
+    pub(crate) fn emit_array_repeat_each(
+        &mut self,
+        elem_ty: &CodegenTy,
+        n: u64,
+        first: BasicValueEnum<'ctx>,
+        mut each: impl FnMut(&mut Self) -> Result<BasicValueEnum<'ctx>, CodegenError>,
+        tag: &str,
+    ) -> Result<PointerValue<'ctx>, CodegenError> {
+        let mut vals = Vec::with_capacity(n as usize);
+        vals.push(first);
+        for _ in 1..n {
+            vals.push(each(self)?);
+        }
+        let i32_t = self.context.i32_type();
+        let arr_ty = self.llvm_array_storage_type(elem_ty, n);
+        let bytes = arr_ty.size_of().expect("array storage type has known size");
+        let arr_ptr = self.arena_alloc(bytes, &format!("{tag}.alloc"))?;
+        for (i, v) in vals.iter().enumerate() {
+            let slot = unsafe {
+                self.builder.build_gep(
+                    arr_ty,
+                    arr_ptr,
+                    &[i32_t.const_int(0, false), i32_t.const_int(i as u64, false)],
+                    &format!("{tag}.slot{i}"),
+                )
+            }
+            .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+            self.builder.build_store(slot, *v).map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        Ok(arr_ptr)
+    }
+
     /// GH #767: storage + fill for a literal `[c; N]`.
     ///
     /// Storage is an entry-block `alloca` when `want_stack` says the
@@ -28092,13 +28142,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     &mut self.next_array_repeat_is_stack_local,
                 );
                 let (v, elem_ty) = self.lower_expr(val, scope)?;
-                let arr_ptr = self.emit_array_repeat_storage(
-                    &elem_ty,
-                    n,
-                    v,
-                    want_stack,
-                    "array.repeat",
-                )?;
+                // GH #2208: a locus (or anything holding one) is built
+                // once per element; N slots sharing one is aliasing.
+                let arr_ptr = if n > 1 && Self::repeat_elem_has_identity(&elem_ty) {
+                    self.emit_array_repeat_each(
+                        &elem_ty,
+                        n,
+                        v,
+                        |cx| cx.lower_expr(val, scope).map(|(v, _)| v),
+                        "array.repeat.each",
+                    )?
+                } else {
+                    self.emit_array_repeat_storage(
+                        &elem_ty,
+                        n,
+                        v,
+                        want_stack,
+                        "array.repeat",
+                    )?
+                };
                 Ok((arr_ptr.into(), CodegenTy::Array(Box::new(elem_ty), n)))
             }
             Expr::Tuple(parts, _) => {
@@ -28461,13 +28523,25 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )));
                 }
                 let n = *count;
-                let arr_ptr = self.emit_array_repeat_storage(
-                    elem_hint,
-                    n,
-                    v,
-                    want_stack,
-                    "array.repeat.coerced",
-                )?;
+                // GH #2208: one locus per element, as above.
+                let arr_ptr = if n > 1 && Self::repeat_elem_has_identity(elem_hint) {
+                    let hint = elem_hint.as_ref().clone();
+                    self.emit_array_repeat_each(
+                        &hint,
+                        n,
+                        v,
+                        |cx| cx.lower_expr_into(val, scope, Some(&hint)).map(|(v, _)| v),
+                        "array.repeat.coerced.each",
+                    )?
+                } else {
+                    self.emit_array_repeat_storage(
+                        elem_hint,
+                        n,
+                        v,
+                        want_stack,
+                        "array.repeat.coerced",
+                    )?
+                };
                 self.typed_by_row(e, (arr_ptr.into(), CodegenTy::Array(elem_hint.clone(), n)))
             }
             (Some(CodegenTy::Tuple(want_tys)), Expr::Tuple(parts, _))

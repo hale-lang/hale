@@ -1049,6 +1049,20 @@ an `Int`) are reported by the typechecker. Neither reaches codegen.
    until it returns. See § Birth order is load-bearing.
 8. Expression returns the locus handle.
 
+**One literal per element of a repeat.** An array-repeat literal
+whose element is a locus, or holds one (`[L { }; N]`, `[make(); N]`,
+`[[L { }; 2]; 3]`, an array of interface values), runs its element
+expression once per element: it is the longhand `[L { }, L { }, …]`,
+N instantiations each going through the steps above — N births, N
+owners' adoptions, N teardowns under the dissolve timing rules below
+— and each element is a locus of its own. A plain element (`[0; N]`,
+`[s; N]`) is evaluated once and copied into every slot. `[L { }; 0]`
+evaluates the literal once, for its effects, and holds nothing.
+Until GH #2208 a locus element was evaluated once too, so `[L { };
+N]` was one locus in N slots: a write through one element was seen
+through every other, one `birth()` ran, and the owner adopted the
+same instance N times.
+
 **The instance before its params.** Step 1 can already reach the
 locus being built: a default's child is instantiated inside the
 literal (its `run()` inline, step 7), and an `I{}` it births
