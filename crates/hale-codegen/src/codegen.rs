@@ -4355,6 +4355,35 @@ pub(crate) const STACK_ARRAY_MAX_BYTES: u64 = 8 * 1024;
 /// lines of IR for one local.
 const ARRAY_FILL_UNROLL_MAX: u64 = 16;
 
+/// GH #2211: how `[e; N]` fills its slots from the one value `e` lowered
+/// to (`Cx::emit_array_repeat_storage`). The literal evaluates `e` once
+/// (spec/types.md, the Array row); what differs is what each slot holds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RepeatFill {
+    /// Every slot holds the value: a scalar, or text replaced on write.
+    Share,
+    /// Every slot holds a deep copy of a value a write reaches in place
+    /// (`Cx::repeat_elem_is_place_storage`). `fresh`: `e` is a literal,
+    /// a value nothing else names, so slot 0 takes it as it is; any
+    /// other `e` (a local, a field, a call that may hand back a place's
+    /// value, an `if`) is copied into slot 0 too.
+    Copy { fresh: bool },
+}
+
+impl RepeatFill {
+    fn of(copies: bool, val: &Expr) -> Self {
+        if copies {
+            let fresh = matches!(
+                val,
+                Expr::Struct { .. } | Expr::Array(..) | Expr::ArrayRepeat { .. } | Expr::Tuple(..)
+            );
+            RepeatFill::Copy { fresh }
+        } else {
+            RepeatFill::Share
+        }
+    }
+}
+
 
 pub(crate) struct Cx<'ctx, 'p> {
     pub(crate) context: &'ctx Context,
@@ -26251,6 +26280,28 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         Ok(arr_ptr)
     }
 
+    /// GH #2211: an element of `[e; N]` that is storage a write can
+    /// reach in place — a record, an array, a tuple, a `bounded` list —
+    /// so N slots holding the one value `e` lowered to would be N names
+    /// for one value: `grid[0][1] = 5` on `[[0; 4]; 3]` was seen through
+    /// `grid[1]`. Such an element is deep-copied into each slot
+    /// ([`RepeatFill::Copy`]). A scalar is its bits; a `String` or
+    /// `Bytes` is replaced on every write, never written in place (GH
+    /// #993); a payload enum is only ever replaced (a pattern binding is
+    /// not a place); none of them takes a copy.
+    pub(crate) fn repeat_elem_is_place_storage(&self, t: &CodegenTy) -> bool {
+        // An element holding a locus is built once per slot instead
+        // (GH #2208); a copy would leave its handles shared.
+        if Self::repeat_elem_has_identity(t) {
+            return false;
+        }
+        match t {
+            CodegenTy::TypeRef(n) => self.user_types.contains_key(n.as_str()),
+            CodegenTy::Array(_, _) | CodegenTy::Tuple(_) | CodegenTy::Bounded(_, _) => true,
+            _ => false,
+        }
+    }
+
     /// GH #767: storage + fill for a literal `[c; N]`.
     ///
     /// Storage is an entry-block `alloca` when `want_stack` says the
@@ -26275,6 +26326,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         n: u64,
         v: BasicValueEnum<'ctx>,
         want_stack: bool,
+        fill: RepeatFill,
         tag: &str,
     ) -> Result<PointerValue<'ctx>, CodegenError> {
         let arr_ty = self.llvm_array_storage_type(elem_ty, n);
@@ -26322,7 +26374,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
         let i32_t = self.context.i32_type();
         let i64_t = self.context.i64_type();
 
-        if Self::is_const_zero_bits(v) {
+        if fill == RepeatFill::Share && Self::is_const_zero_bits(v) {
             // One memset. `get_abi_alignment` is the alloca's actual
             // alignment and a lower bound on the arena's (16), so it is
             // the safe number for both.
@@ -26338,12 +26390,37 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             return Ok(arr_ptr);
         }
 
-        if n > ARRAY_FILL_UNROLL_MAX {
+        // GH #2211: a copied fill stores `v` itself in slot 0 when it is
+        // fresh (a literal nothing else names), and a deep copy of it in
+        // every other slot, each in the arena the storage came from. Any
+        // other value is copied into slot 0 as well. Copies are made in a
+        // loop past two of them: one copy's code, not N - 1.
+        let (copy_arena, start) = match fill {
+            RepeatFill::Share => (None, 0),
+            RepeatFill::Copy { fresh } => (Some(self.current_arena_ptr()?), u64::from(fresh && n > 0)),
+        };
+        if start == 1 {
+            let slot0 = unsafe {
+                self.builder
+                    .build_gep(
+                        arr_ty,
+                        arr_ptr,
+                        &[i32_t.const_int(0, false), i32_t.const_int(0, false)],
+                        &format!("{}.slot0", tag),
+                    )
+                    .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
+            };
+            self.builder
+                .build_store(slot0, v)
+                .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
+        }
+        let loop_past = if copy_arena.is_some() { start + 2 } else { ARRAY_FILL_UNROLL_MAX };
+        if n > loop_past {
             if let Some(func) = host_fn {
                 let i_slot = self
                     .alloca_in_entry(i64_t.into(), &format!("{}.fill.i", tag))?;
                 self.builder
-                    .build_store(i_slot, i64_t.const_zero())
+                    .build_store(i_slot, i64_t.const_int(start, false))
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 let cond_bb =
                     self.context.append_basic_block(func, "array.fill.cond");
@@ -26385,8 +26462,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         )
                         .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
                 };
+                let elem = match copy_arena {
+                    Some(arena) => self.emit_return_value_deep_copy(v, elem_ty, arena)?,
+                    None => v,
+                };
                 self.builder
-                    .build_store(slot, v)
+                    .build_store(slot, elem)
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
                 let next = self
                     .builder
@@ -26408,7 +26489,7 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
             }
         }
 
-        for i in 0..n {
+        for i in start..n {
             let slot = unsafe {
                 self.builder
                     .build_gep(
@@ -26419,8 +26500,12 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                     )
                     .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?
             };
+            let elem = match copy_arena {
+                Some(arena) => self.emit_return_value_deep_copy(v, elem_ty, arena)?,
+                None => v,
+            };
             self.builder
-                .build_store(slot, v)
+                .build_store(slot, elem)
                 .map_err(|e| CodegenError::LlvmEmit(e.to_string()))?;
         }
         Ok(arr_ptr)
@@ -28153,11 +28238,15 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "array.repeat.each",
                     )?
                 } else {
+                    // GH #2211: a record, array, tuple or bounded element
+                    // is copied into each slot; a scalar is shared.
+                    let fill = RepeatFill::of(self.repeat_elem_is_place_storage(&elem_ty), val);
                     self.emit_array_repeat_storage(
                         &elem_ty,
                         n,
                         v,
                         want_stack,
+                        fill,
                         "array.repeat",
                     )?
                 };
@@ -28534,11 +28623,13 @@ impl<'ctx, 'p> Cx<'ctx, 'p> {
                         "array.repeat.coerced.each",
                     )?
                 } else {
+                    let fill = RepeatFill::of(self.repeat_elem_is_place_storage(elem_hint), val);
                     self.emit_array_repeat_storage(
                         elem_hint,
                         n,
                         v,
                         want_stack,
+                        fill,
                         "array.repeat.coerced",
                     )?
                 };
