@@ -8535,6 +8535,10 @@ row	Issue@main1	Issue	main	default
 dynamic	Counter	on main
 dynamic	Holder	on main
 
+== tests/hale/array_repeat_values_test.hl
+row	Calls@main1	Calls	main	default
+row	Shelf@main2	Shelf	main	default
+
 == tests/hale/as_parent_for_accepted_child_test.hl
 root	App
 row	App@literal1	App	main	default

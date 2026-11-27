@@ -1,0 +1,154 @@
+// GH #2211 — an array-repeat literal of a record, an array, a tuple or a
+// bounded list, `[e; N]`, gives each element its own value.
+//
+// The repeat lowered `e` once and stored that one value in every slot.
+// A record, array, tuple or bounded list is storage a write reaches in
+// place, so every slot was the same storage: `grid[0][1] = 5` on
+// `[[0; 4]; 3]` set `grid[1][1]` too, and `[P { x: 0 }; 3]` was one
+// record seen three times. `e` is still evaluated once (spec/types.md,
+// the Array row); each slot holds a deep copy of it, as a struct
+// binding is a copy. A scalar is shared as before.
+
+type P { x: Int = 0; }
+
+type Named { name: String; n: Int = 0; }
+
+type Row { tags: bounded[Int; 4]; }
+
+type Board { cells: [P; 3]; }
+
+// A repeat whose element is a call: the call runs once, and each slot
+// is a copy of what it returned.
+locus Calls {
+    params { made: Int = 0; }
+    fn make() -> P {
+        self.made = self.made + 1;
+        return P { x: 10 };
+    }
+    fn fill() -> String {
+        let mut ps = [self.make(); 4];
+        ps[3].x = 1;
+        return to_string(ps[0].x) + "," + to_string(ps[3].x);
+    }
+}
+
+// A locus field holding a repeat of records with a String field: a write
+// into one element of the field leaves the others alone.
+locus Shelf {
+    params { items: [Named; 3] = [Named { name: "empty" }; 3]; }
+    fn label(i: Int, s: String) { self.items[i].name = s; }
+    fn names() -> String {
+        return self.items[0].name + "|" + self.items[1].name + "|" + self.items[2].name;
+    }
+}
+
+// A fn handing back the record it was given.
+fn pass(p: P) -> P {
+    return p;
+}
+
+// A fn handing back a repeat: the caller gets N records.
+fn grid_of(k: Int) -> [[Int; 3]; 2] {
+    return [[k; 3]; 2];
+}
+
+fn main() {
+    // The issue's program.
+    let mut grid = [[0; 4]; 3];
+    grid[0][1] = 5;
+    std::test::assert_eq_int(grid[1][1], 0, "grid[1][1]: each row its own array");
+    std::test::assert_eq_int(grid[2][1], 0, "grid[2][1]");
+    std::test::assert_eq_int(grid[0][1], 5, "grid[0][1] took the write");
+    let mut ps = [P { x: 0 }; 3];
+    ps[0].x = 7;
+    std::test::assert_eq_int(ps[1].x, 0, "ps[1].x: each element its own record");
+    std::test::assert_eq_int(ps[2].x, 0, "ps[2].x");
+    std::test::assert_eq_int(ps[0].x, 7, "ps[0].x took the write");
+
+    // A record with a String field, written through two elements.
+    let base = "n" + to_string(1);
+    let mut ns = [Named { name: base }; 3];
+    ns[0].name = "zz";
+    ns[2].n = 4;
+    std::test::assert_eq_str(
+        ns[0].name + ns[1].name + ns[2].name,
+        "zzn1n1",
+        "a String field per element",
+    );
+    std::test::assert_eq_int(ns[0].n * 100 + ns[1].n * 10 + ns[2].n, 4, "an Int field per element");
+    std::test::assert_eq_str(base, "n1", "the String the literal read is unchanged");
+
+    // A nested repeat of records: every element of every row its own.
+    let mut nest = [[Named { name: "q" }; 2]; 3];
+    nest[0][0].name = "w";
+    nest[1][1].n = 3;
+    std::test::assert_eq_str(
+        nest[0][0].name + nest[0][1].name + nest[1][0].name + nest[2][0].name,
+        "wqqq",
+        "a nested repeat: one record per cell",
+    );
+    std::test::assert_eq_int(nest[0][1].n + nest[2][1].n, 0, "only nest[1][1] took n = 3");
+    std::test::assert_eq_int(nest[1][1].n, 3, "nest[1][1].n");
+
+    // Past the unrolled fill: a loop of copies.
+    let mut wide = [P { x: 1 }; 40];
+    wide[17].x = 9;
+    let mut sum = 0;
+    for p in wide { sum = sum + p.x; }
+    std::test::assert_eq_int(sum, 39 + 9, "forty records, one written");
+
+    // A tuple element and a bounded field.
+    let mut ts = [(1, P { x: 0 }); 3];
+    ts[0].1.x = 7;
+    std::test::assert_eq_int(ts[1].1.x, 0, "a tuple per element");
+    let mut rows = [Row { tags: [1, 2] }; 3];
+    push(rows[0].tags, 9) or raise;
+    std::test::assert_eq_int(count(rows[1].tags), 2, "a bounded list per element");
+    std::test::assert_eq_int(count(rows[0].tags), 3, "rows[0] took the push");
+
+    // A repeat of a local: the local is not one of the elements.
+    let mut q = P { x: 1 };
+    let mut qs = [q; 2];
+    qs[0].x = 5;
+    q.x = 6;
+    std::test::assert_eq_int(qs[1].x, 1, "qs[1] is neither qs[0] nor q");
+    std::test::assert_eq_int(qs[0].x, 5, "qs[0]");
+
+    // A call handing back a place's value, and an `if` choosing one: the
+    // place is not one of the elements either.
+    let kept = P { x: 1 };
+    let mut viaf = [pass(kept); 2];
+    viaf[0].x = 5;
+    std::test::assert_eq_int(
+        kept.x * 10 + viaf[1].x,
+        11,
+        "a call's place value is copied into each slot",
+    );
+    let mut viaif = [if kept.x > 0 { kept } else { P { } }; 2];
+    viaif[0].x = 5;
+    std::test::assert_eq_int(
+        kept.x * 10 + viaif[1].x,
+        11,
+        "an `if`'s place value is copied into each slot",
+    );
+
+    // A record field holding a repeat.
+    let mut b = Board { cells: [P { x: 2 }; 3] };
+    b.cells[1].x = 8;
+    std::test::assert_eq_int(b.cells[0].x + b.cells[2].x, 4, "a field's repeat: three records");
+
+    // A returned repeat.
+    let mut g = grid_of(3);
+    g[0][0] = 0;
+    std::test::assert_eq_int(g[1][0], 3, "a returned repeat: two rows");
+
+    // The element expression runs once.
+    let c = Calls { };
+    std::test::assert_eq_str(c.fill(), "10,1", "each slot a copy of the one result");
+    std::test::assert_eq_int(c.made, 1, "`[f(); N]` calls f once");
+
+    // A locus field.
+    let s = Shelf { };
+    s.label(1, "mid");
+    std::test::assert_eq_str(s.names(), "empty|mid|empty", "a locus field's repeat: three records");
+}

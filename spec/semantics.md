@@ -1056,8 +1056,12 @@ expression once per element: it is the longhand `[L { }, L { }, …]`,
 N instantiations each going through the steps above — N births, N
 owners' adoptions, N teardowns under the dissolve timing rules below
 — and each element is a locus of its own. A plain element (`[0; N]`,
-`[s; N]`) is evaluated once and copied into every slot. `[L { }; 0]`
-evaluates the literal once, for its effects, and holds nothing.
+`[s; N]`, `[P { }; N]`, `[[0; 4]; N]`) is evaluated once and copied
+into every slot, a record, array, tuple or `bounded` copied deeply, so
+each slot is a value of its own and `[f(); N]` calls `f` once (GH
+#2211; before it, such an element was one value in N slots, and
+`grid[0][1] = 5` on `[[0; 4]; 3]` set `grid[1][1]` as well). `[L { };
+0]` evaluates the literal once, for its effects, and holds nothing.
 Until GH #2208 a locus element was evaluated once too, so `[L { };
 N]` was one locus in N slots: a write through one element was seen
 through every other, one `birth()` ran, and the owner adopted the

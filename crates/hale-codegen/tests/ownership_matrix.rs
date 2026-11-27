@@ -17,7 +17,7 @@
 //! renderer:
 //!
 //!   * **position** — where the locus-producing expression is
-//!     written (33 of them: `let`, bare statement, receiver, a
+//!     written (34 of them: `let`, bare statement, receiver, a
 //!     receiver holder literal with a literal in its field,
 //!     argument retained / dropped, an argument to an interface
 //!     parameter whose callee writes its fields, field read, `return` of a
@@ -26,7 +26,7 @@
 //!     `or raise` / `or <literal>` / `or <call>` / default / nested
 //!     receiver, the same against an INTERFACE-typed field, `if` / `match` /
 //!     block tails, array and tuple elements, an array-repeat literal
-//!     bound and returned);
+//!     bound, nested and returned);
 //!   * **type** — the shape of the tree being instantiated (plain,
 //!     a `@form(vec)` child, one whose elements carry a nested
 //!     record, a `@form(hashmap)` child whose cells do, a grandchild,
@@ -87,7 +87,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (33 × 7 × 6 = 1386 cells, ~140 s on seven threads)
+//! The full matrix (34 × 7 × 6 = 1428 cells, ~145 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -143,7 +143,7 @@ const KNOWN_OPEN: &[(&str, &str)] = &[];
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;
 
-/// A stride co-prime with the cell count (33 · 7 · 6 = 1386 = 2·3²·7·11),
+/// A stride co-prime with the cell count (34 · 7 · 6 = 1428 = 2²·3·7·17),
 /// so topping the sample up visits the space evenly and
 /// deterministically.
 const FILL_STRIDE: usize = 101;
@@ -667,6 +667,22 @@ const POSITIONS: &[Position] = &[
             "let xs: [Subj; 3] = [Subj { n: 1 }, Subj { n: 1 }, Subj { n: 1 }];\nprintln(\"u=\", xs[0].bump(1) + xs[1].probe());",
         ),
         instances: 3,
+        extra_tags: &[],
+        needs_fallible: false,
+    },
+    // GH #2211: a repeat of a repeat. Each row is an array of its own,
+    // and each cell a locus of its own: a nested repeat shared one row
+    // across the outer slots. `bump` writes [0][0] and `probe` reads
+    // [1][0], the same column of another row.
+    Position {
+        id: "array_repeat_nested",
+        decls: "",
+        stmts: "let xs: [[Subj; 2]; 2] = [[Subj { n: 1 }; 2]; 2];\nprintln(\"u=\", xs[0][0].bump(1) + xs[1][0].probe());",
+        twin_decls: None,
+        twin_stmts: Some(
+            "let xs: [[Subj; 2]; 2] = [[Subj { n: 1 }, Subj { n: 1 }], [Subj { n: 1 }, Subj { n: 1 }]];\nprintln(\"u=\", xs[0][0].bump(1) + xs[1][0].probe());",
+        ),
+        instances: 4,
         extra_tags: &[],
         needs_fallible: false,
     },
@@ -1461,12 +1477,12 @@ fn matrix_behind_an_untaken_guard() {
 /// generator that silently produces two cells passes every oracle.
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
-    assert_eq!(POSITIONS.len(), 33, "position axis changed size");
+    assert_eq!(POSITIONS.len(), 34, "position axis changed size");
     assert_eq!(SHAPES.len(), 7, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 6, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 33 * 7 * 6);
+    assert_eq!(all.len(), 34 * 7 * 6);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 
@@ -1580,11 +1596,11 @@ fn the_matrix_is_rectangular_and_non_vacuous() {
     let with_twin =
         POSITIONS.iter().filter(|p| p.twin_stmts.is_some()).count();
     assert_eq!(
-        with_twin, 16,
+        with_twin, 17,
         "the differential covers the six expression positions (four, \
          and GH #1952's nested receiver and interface argument), the \
          eight `return` ones (five direct, three through a call that \
-         hands back its argument) and GH #2208's two array repeats \
-         against their longhand; if that set changed, say so here"
+         hands back its argument), GH #2208's two array repeats and GH \
+         #2211's nested one against their longhand; if that set changed, say so here"
     );
 }
