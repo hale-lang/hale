@@ -322,6 +322,22 @@ pub fn judge_forbid_reaches(
     }
     let no_std: BTreeSet<&'static str> = BTreeSet::new();
     let std_of = |g: GroupId| group_std.get(&g).unwrap_or(&no_std);
+    // A stdlib file appended on demand (`io_tcp_listener.hl`) is merged
+    // into the program, so its declarations are walk vertices, not
+    // absorbed interiors: a module naming them holds them as functions
+    // too, or a walk entering `std::io::tcp::Listener::accept_direct`
+    // never hits `std::io::tcp::*`, and a gate naming it never masks it
+    // (GH #2218).
+    for (gid, decls) in &group_std {
+        let set = group_fns.entry(*gid).or_default();
+        for f in &v1 {
+            let raw = &e.functions[f.index()].name;
+            let decl = raw.split_once("::").map_or(raw.as_str(), |(l, _)| l);
+            if decls.contains(decl) && crate::stdlib_modules::appended_decl(decl) {
+                set.insert(*f);
+            }
+        }
+    }
     // The evaluator iterates fn sets in FnKey order — free fns
     // (locus: None) BEFORE methods — and search halts at the first
     // hole, so seeding order is verdict-relevant.
@@ -711,8 +727,21 @@ pub fn judge_forbid_reaches(
                     let Some(gid) = n.group else { continue };
                     // a stdlib module's bodies are endpoints too: a
                     // gate over the target's module masks its target
+                    // `program` holds the bodies of the stdlib files
+                    // appended to it (`std::http::BodyReader`'s) as roots,
+                    // which no author named: a gate over their module
+                    // masks those roots, as it masks every path through
+                    // the module, and that is no overlap (GH #2218).
+                    let is_program = r.group_selectors.iter().any(|gs| {
+                        gs.group == gid && matches!(gs.selector, hale_model::SelectorForm::Program)
+                    });
                     let mut shared: Vec<String> = av_fns
                         .intersection(&group_fns[&gid])
+                        .filter(|f| {
+                            let raw = &e.functions[f.index()].name;
+                            let decl = raw.split_once("::").map_or(raw.as_str(), |(l, _)| l);
+                            !(is_program && crate::stdlib_modules::appended_decl(decl))
+                        })
                         .map(|f| e.functions[f.index()].name.clone())
                         .collect();
                     shared.extend(

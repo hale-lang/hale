@@ -691,24 +691,32 @@ pub fn is_runtime_pos(pos: u32) -> bool {
 /// observe backends' and the client binding's, `client_expand`);
 /// `None` outside them.
 pub fn runtime_source_at(pos: u32) -> Option<(&'static str, &'static str, usize)> {
-    let windows: [(u32, &'static str, &'static str); 11] = [
-        (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
-        (REST_FALLBACK_BASE, "api_rest_fallback.hl", hale_stdlib::API_REST_FALLBACK_SOURCE),
-        (crate::client_expand::CLIENT_RUNTIME_BASE, "api_client.hl", hale_stdlib::API_CLIENT_SOURCE),
-        (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
-        (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
-        (RUNTIME_BASE + 0x00E0_0000, "api_grpc.hl", hale_stdlib::API_GRPC_SOURCE),
-        (TCP_SERVE_BASE, "io_tcp_serve.hl", hale_stdlib::TCP_SERVE_SOURCE),
-        (TCP_LISTENER_BASE, "io_tcp_listener.hl", hale_stdlib::TCP_LISTENER_SOURCE),
-        (OBSERVE_BASE, "observe.hl", hale_stdlib::OBSERVE_SOURCE),
-        (HTTP_READ_BASE, "http_read.hl", hale_stdlib::HTTP_READ_SOURCE),
-        (SHA256_BASE, "crypto_sha256.hl", hale_stdlib::SHA256_SOURCE),
-    ];
-    windows.iter().find_map(|(base, name, src)| {
+    RUNTIME_FILES.iter().find_map(|(base, name, src)| {
         let local = pos.checked_sub(*base)? as usize;
         (local < src.len()).then_some((*name, *src, local))
     })
 }
+
+/// The stdlib files appended on demand, each in a window of its own: its
+/// base offset, its name as `crates/hale-stdlib/hl/` spells it, and its
+/// text. A program carries one only when it names what the file
+/// declares, so the bundled stdlib ([`hale_stdlib::AP_SOURCE`]) holds
+/// none of them; a stdlib module's declarations
+/// ([`crate::stdlib_modules`]) read them here, so `std::io::tcp::*`
+/// holds `std::io::tcp::Listener` (GH #2218).
+pub const RUNTIME_FILES: [(u32, &str, &str); 11] = [
+    (RUNTIME_BASE, "api_rpc.hl", hale_stdlib::API_RUNTIME_SOURCE),
+    (REST_FALLBACK_BASE, "api_rest_fallback.hl", hale_stdlib::API_REST_FALLBACK_SOURCE),
+    (crate::client_expand::CLIENT_RUNTIME_BASE, "api_client.hl", hale_stdlib::API_CLIENT_SOURCE),
+    (RUNTIME_BASE + 0x0080_0000, "api_hub.hl", hale_stdlib::API_HUB_SOURCE),
+    (RUNTIME_BASE + 0x00C0_0000, "io_h2.hl", hale_stdlib::API_H2_SOURCE),
+    (RUNTIME_BASE + 0x00E0_0000, "api_grpc.hl", hale_stdlib::API_GRPC_SOURCE),
+    (TCP_SERVE_BASE, "io_tcp_serve.hl", hale_stdlib::TCP_SERVE_SOURCE),
+    (TCP_LISTENER_BASE, "io_tcp_listener.hl", hale_stdlib::TCP_LISTENER_SOURCE),
+    (OBSERVE_BASE, "observe.hl", hale_stdlib::OBSERVE_SOURCE),
+    (HTTP_READ_BASE, "http_read.hl", hale_stdlib::HTTP_READ_SOURCE),
+    (SHA256_BASE, "crypto_sha256.hl", hale_stdlib::SHA256_SOURCE),
+];
 
 /// Where `api_rest_fallback.hl` parses: past the client binding's runtime,
 /// before the hub's.

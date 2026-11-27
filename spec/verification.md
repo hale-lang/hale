@@ -190,12 +190,20 @@ main locus Org {
 - **A stdlib module as a member** (same date): `std::m::*` names every
   fn-bearing declaration of the stdlib seed files that declare one of
   `std::m`'s public names, file-private helpers included (`std::log::*`
-  is the whole of `log.hl`). A namespace the stdlib does not declare in
-  Hale source is refused with a did-you-mean. Its bodies are absorbed
-  stdlib interiors of the walk, not entities, so a group holding one
+  is the whole of `log.hl`). A file appended only to a program that
+  names what it declares (`io_tcp_listener.hl`, `http_read.hl`) is such
+  a file too (GH #2218: `std::io::tcp::*` left out
+  `std::io::tcp::Listener`, so a target naming it held over a locus that
+  accepted on one, and a gate naming `std::http::*` did not mask
+  `std::http::BodyReader`). A namespace the stdlib does not declare in
+  Hale source is refused with a did-you-mean. Its bodies are stdlib
+  interiors of the walk, absorbed or, for an appended file, merged into
+  the program, so a group holding one
   may stand only as a `forbid reaches` target (a walk entering one of
   its bodies hits) or an `avoiding` gate (a walk never enters one); in
-  any other position it is refused. `avoiding std::m::*` writes the gate
+  any other position it is refused. An appended file's bodies are among
+  `program`'s roots, which no author named, so a gate over their module
+  masks them there and is no overlap with `program`. `avoiding std::m::*` writes the gate
   inline: the implicit group of that one member, named by its
   spelling. The structured-logs law,
   `forbid reaches(program, effects(stdio)) avoiding std::log::*`, so
