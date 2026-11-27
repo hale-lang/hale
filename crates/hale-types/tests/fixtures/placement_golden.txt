@@ -8528,6 +8528,13 @@ shared	Api@main2	Api #a23e2495
 shared	Proc@main1	Proc #b18b3dc0
 shared	dynamic	sites in the seed #8c882889
 
+== tests/hale/array_repeat_locus_test.hl
+row	Holder@main2	Holder	main	default
+row	Issue@main1	Issue	main	default
+-- dynamic	sites in the seed
+dynamic	Counter	on main
+dynamic	Holder	on main
+
 == tests/hale/as_parent_for_accepted_child_test.hl
 root	App
 row	App@literal1	App	main	default

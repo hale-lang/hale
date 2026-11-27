@@ -318,6 +318,8 @@ impl LiteralWalk<'_> {
                     self.expr(p, Built::Nested);
                 }
             }
+            // GH #2208: `[L { }; N]` builds its literal once per element
+            Expr::ArrayRepeat { val, .. } => self.expr(val, Built::Nested),
             Expr::Block(b) => self.block(b),
             Expr::If(i) => self.if_chain(i),
             Expr::Match(m) => {

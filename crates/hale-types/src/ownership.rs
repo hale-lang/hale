@@ -526,6 +526,7 @@ impl OwnerTable {
             Expr::Array(parts, _) | Expr::Tuple(parts, _) => {
                 parts.iter().find_map(|p| self.leaf_entry_of(p))
             }
+            Expr::ArrayRepeat { val, .. } => self.leaf_entry_of(val),
             _ => None,
         }
     }
@@ -2018,6 +2019,12 @@ fn param_field_kind(
         {
             FieldKind::Holder
         }
+        // GH #2208: `[L { }; N]`, N loci
+        ParamInit::Value(Expr::ArrayRepeat { val, count, .. })
+            if *count > 0 && matches!(val.as_ref(), Expr::Struct { path, .. } if is_locus(path)) =>
+        {
+            FieldKind::Holder
+        }
         ParamInit::Value(Expr::Tuple(parts, _)) if parts.iter().any(|p| matches!(p, Expr::Struct { path, .. } if is_locus(path))) => {
             FieldKind::Holder
         }
@@ -2329,6 +2336,13 @@ fn param_flow(f: &FnDecl) -> ParamFlow {
                     }
                 }
             }
+        }
+    }
+    // GH #2208: one returned `[L { }; N]`: N fresh parts, each built
+    // where the array is
+    if let [Expr::ArrayRepeat { val, count, .. }] = rets.as_slice() {
+        if *count > 0 && matches!(val.as_ref(), Expr::Struct { .. }) {
+            flow.parts = Some(vec![PartFlow::Fresh; *count as usize]);
         }
     }
     // one returned literal (or a `let` bound to one) holding parameters
@@ -3788,6 +3802,7 @@ impl Resolver<'_> {
                 !parts.is_empty()
                     && parts.iter().all(|p| self.is_locus_producing(p))
             }
+            Expr::ArrayRepeat { val, count, .. } => *count > 0 && self.is_locus_producing(val),
             // GH #1569: a tuple's parts of other types are plain values
             // (`(W { }, 5)`)
             Expr::Tuple(parts, _) => {
@@ -4039,8 +4054,16 @@ impl Resolver<'_> {
                 self.assign(lo, Decision::FrameTemp, "range");
                 self.assign(hi, Decision::FrameTemp, "range");
             }
-            Expr::ArrayRepeat { val, .. } => {
-                self.assign(val, Decision::FrameTemp, "array repeat")
+            // GH #2208: `[e; N]` builds `e` once per element (codegen
+            // lowers it N times when it has identity), so the element is
+            // a composite element like each of `[e, e, …]`'s. `[e; 0]`
+            // holds nothing: its one evaluation is a temporary.
+            Expr::ArrayRepeat { val, count, .. } => {
+                if *count == 0 {
+                    self.assign(val, Decision::FrameTemp, "array repeat")
+                } else {
+                    self.assign(val, d.through_delegate(), "composite element")
+                }
             }
         }
     }

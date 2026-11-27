@@ -17,7 +17,7 @@
 //! renderer:
 //!
 //!   * **position** — where the locus-producing expression is
-//!     written (31 of them: `let`, bare statement, receiver, a
+//!     written (33 of them: `let`, bare statement, receiver, a
 //!     receiver holder literal with a literal in its field,
 //!     argument retained / dropped, an argument to an interface
 //!     parameter whose callee writes its fields, field read, `return` of a
@@ -25,7 +25,8 @@
 //!     hands back its argument, param-field literal / factory /
 //!     `or raise` / `or <literal>` / `or <call>` / default / nested
 //!     receiver, the same against an INTERFACE-typed field, `if` / `match` /
-//!     block tails, array and tuple elements);
+//!     block tails, array and tuple elements, an array-repeat literal
+//!     bound and returned);
 //!   * **type** — the shape of the tree being instantiated (plain,
 //!     a `@form(vec)` child, one whose elements carry a nested
 //!     record, a `@form(hashmap)` child whose cells do, a grandchild,
@@ -86,7 +87,7 @@
 //!
 //! ## Size
 //!
-//! The full matrix (31 × 7 × 6 = 1302 cells, ~130 s on seven threads)
+//! The full matrix (33 × 7 × 6 = 1386 cells, ~140 s on seven threads)
 //! is behind `HALE_MATRIX=full`, for a nightly job. The per-PR
 //! default runs a deterministic sample (~90 cells, ~17 s) that
 //! always contains one
@@ -142,7 +143,7 @@ const KNOWN_OPEN: &[(&str, &str)] = &[];
 /// How many cells the per-PR sample aims for.
 const TARGET_SAMPLE: usize = 60;
 
-/// A stride co-prime with the cell count (31 · 7 · 6 = 1302 = 2·3·7·31),
+/// A stride co-prime with the cell count (33 · 7 · 6 = 1386 = 2·3²·7·11),
 /// so topping the sample up visits the space evenly and
 /// deterministically.
 const FILL_STRIDE: usize = 101;
@@ -651,6 +652,24 @@ const POSITIONS: &[Position] = &[
         extra_tags: &[],
         needs_fallible: false,
     },
+    // GH #2208: an array-repeat literal of a locus builds one locus
+    // per element. It used to build ONE and store it in every slot:
+    // one birth, three adoptions, and a bump of element 0 seen through
+    // all three. Its twin is the longhand literal, the program the
+    // repeat stands for; `bump` writes element 0 and `probe` reads
+    // element 1, so a shared locus prints a different `u=`.
+    Position {
+        id: "array_repeat",
+        decls: "",
+        stmts: "let xs: [Subj; 3] = [Subj { n: 1 }; 3];\nprintln(\"u=\", xs[0].bump(1) + xs[1].probe());",
+        twin_decls: None,
+        twin_stmts: Some(
+            "let xs: [Subj; 3] = [Subj { n: 1 }, Subj { n: 1 }, Subj { n: 1 }];\nprintln(\"u=\", xs[0].bump(1) + xs[1].probe());",
+        ),
+        instances: 3,
+        extra_tags: &[],
+        needs_fallible: false,
+    },
     // --- `return`: the CALLER owns it ------------------------
     //
     // The context frame here is the one that CONSUMES the handle,
@@ -663,6 +682,17 @@ const POSITIONS: &[Position] = &[
         "fn produce() -> Subj {\n    let t = Subj { n: 1 };\n    return t;\n}\n",
         "let a = produce();\nprintln(\"u=\", a.probe());",
     ),
+    // GH #2208: a returned repeat hands the caller N loci.
+    Position {
+        id: "return_array_repeat",
+        decls: "fn produce() -> [Subj; 2] {\n    return [Subj { n: 1 }; 2];\n}\n",
+        stmts: "let a = produce();\nprintln(\"u=\", a[0].bump(1) + a[1].probe());",
+        twin_decls: Some("fn produce() -> [Subj; 2] {\n    return [Subj { n: 1 }, Subj { n: 1 }];\n}\n"),
+        twin_stmts: Some("let a = produce();\nprintln(\"u=\", a[0].bump(1) + a[1].probe());"),
+        instances: 2,
+        extra_tags: &[],
+        needs_fallible: false,
+    },
     returning_position(
         "return_factory",
         "fn produce() -> Subj {\n    return make(1);\n}\n",
@@ -1431,12 +1461,12 @@ fn matrix_behind_an_untaken_guard() {
 /// generator that silently produces two cells passes every oracle.
 #[test]
 fn the_matrix_is_rectangular_and_non_vacuous() {
-    assert_eq!(POSITIONS.len(), 31, "position axis changed size");
+    assert_eq!(POSITIONS.len(), 33, "position axis changed size");
     assert_eq!(SHAPES.len(), 7, "type axis changed size");
     assert_eq!(CONTEXTS.len(), 6, "context axis changed size");
 
     let all = all_cells();
-    assert_eq!(all.len(), 31 * 7 * 6);
+    assert_eq!(all.len(), 33 * 7 * 6);
     let ids: BTreeSet<String> = all.iter().map(|c| cell_id(*c)).collect();
     assert_eq!(ids.len(), all.len(), "two cells share an id");
 
@@ -1550,10 +1580,11 @@ fn the_matrix_is_rectangular_and_non_vacuous() {
     let with_twin =
         POSITIONS.iter().filter(|p| p.twin_stmts.is_some()).count();
     assert_eq!(
-        with_twin, 14,
+        with_twin, 16,
         "the differential covers the six expression positions (four, \
-         and GH #1952's nested receiver and interface argument) and the \
+         and GH #1952's nested receiver and interface argument), the \
          eight `return` ones (five direct, three through a call that \
-         hands back its argument); if that set changed, say so here"
+         hands back its argument) and GH #2208's two array repeats \
+         against their longhand; if that set changed, say so here"
     );
 }

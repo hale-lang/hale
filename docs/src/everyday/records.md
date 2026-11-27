@@ -130,6 +130,8 @@ let zeros = [0; 8];                    // [Int; 8] filled with 0
 let pair  = (1, "one");                // tuple
 ```
 
+A repeat `[x; N]` copies a plain value into every slot. When the element is a locus it is built once per slot instead: `[Worker { }; 4]` is four Workers, each with its own birth, state and teardown, exactly as if you had written the four literals out.
+
 For growable lists, use a `@form(vec)` locus or `bounded[T; N]` ([Lists & Maps](./collections.md)).
 
 ## Type Aliases (`type Name = Target;`)
